@@ -9,7 +9,7 @@ const port = process.env.PORT || 8080;
 // CORS configuration
 const allowedOrigins = [
   'http://localhost:5173', // Local frontend
-  'https://your-frontend-production-url', // Deployed frontend
+  'horses-website-deployed-production.up.railway.app', // Deployed frontend
 ];
 
 app.use(cors({
