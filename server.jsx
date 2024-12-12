@@ -279,6 +279,10 @@ app.get('/api/racenets', (req, res) => {
   });
 });
 
+app.get('/', (req, res) => {
+  res.send('Welcome to the Horse Races Backend API. Use /api/{endpoint} to access data.');
+});
+
 // Start the server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
