@@ -13,16 +13,22 @@ const allowedOrigins = [
   'https://Abiqb93.github.io/horses-website-deployed'
 ];
 
+// app.use(cors({
+//   origin: (origin, callback) => {
+//     if (!origin || allowedOrigins.includes(origin)) {
+//       callback(null, true);
+//     } else {
+//       callback(new Error('Not allowed by CORS'));
+//     }
+//   },
+//   methods: ['GET', 'POST'],
+//   credentials: true,
+// }));
+
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  methods: ['GET', 'POST'],
-  credentials: true,
+  origin: '*', // Allow all origins
+  methods: ['GET', 'POST'], // Define allowed HTTP methods
+  credentials: true, // Allow cookies or credentials (optional, adjust if not needed)
 }));
 
 // MySQL database connection configuration
