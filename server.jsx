@@ -4,7 +4,7 @@ const mysql = require('mysql');
 const cors = require('cors');
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 8080;
 app.use(cors({
   origin: ['http://localhost:3000', 'https://your-frontend-production-url'], // Add allowed origins
   methods: ['GET', 'POST'], // Add methods if needed
@@ -281,5 +281,5 @@ app.get('/api/racenets', (req, res) => {
 
 // Start the server
 app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`);
+  console.log(`Server running on port ${port}`);
 });
