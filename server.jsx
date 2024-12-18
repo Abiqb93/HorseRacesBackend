@@ -48,7 +48,7 @@ const validTables = [
   'owner_profile', 'owner_profile_three', 'owner_profile_one',
   'jockey_name_profile', 'jockey_name_profile_three', 'jockey_name_profile_one',
   'trainer_name_profile', 'trainer_name_profile_three', 'trainer_name_profile_one',
-  'racenets',
+  'racenets', 'api_races',
 ];
 
 // Dynamic field mapping based on table name
@@ -69,6 +69,44 @@ const tableFieldMap = {
   trainer_name_profile_three: 'Sire',
   trainer_name_profile_one: 'Sire',
 };
+
+
+
+app.get('/api/api_races', (req, res) => {
+  const { date } = req.query;
+
+  if (!date) {
+    return res.status(400).json({ error: "Date parameter is required" });
+  }
+
+  // Validate the date format
+  const isValidDate = (date) => /^\d{4}-\d{2}-\d{2}$/.test(date);
+  if (!isValidDate(date)) {
+    return res.status(400).json({ error: "Invalid date format. Use YYYY-MM-DD." });
+  }
+
+  // Query to fetch data based on meetingDate
+  const query = `
+    SELECT * FROM api_races
+    WHERE TRIM(meetingDate) = ?
+    LIMIT 10;
+  `;
+
+  // Execute the query
+  db.query(query, [date], (err, rows) => {
+    if (err) {
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    // Respond with filtered data
+    res.json({
+      data: rows,
+      totalRows: rows.length,
+    });
+  });
+});
+
+
 
 // Generic endpoint for paginated and filtered data
 app.get('/api/:tableName', (req, res) => {
@@ -214,59 +252,6 @@ app.get('/api/:tableName', (req, res) => {
   });
 });
 
-// Generalized Endpoint for Suggestions and Search
-app.get('/api/:tableName', (req, res) => {
-  const { tableName } = req.params;
-  const { page = 1, limit = 10, search } = req.query;
-  const offset = (page - 1) * limit;
-
-  if (!validTables.includes(tableName)) {
-    return res.status(400).json({ error: "Invalid table name." });
-  }
-
-  const keyField = tableFieldMap[tableName];
-  if (!keyField) {
-    return res.status(400).json({ error: "No key field mapped for this table." });
-  }
-
-  let query = `SELECT * FROM ??`;
-  let params = [tableName];
-
-  if (search) {
-    query += ` WHERE ${keyField} LIKE ?`;
-    params.push(`%${search}%`);
-  }
-
-  query += ` LIMIT ? OFFSET ?`;
-  params.push(Number(limit), Number(offset));
-
-  db.query(query, params, (err, rows) => {
-    if (err) {
-      console.error("Error retrieving data:", err);
-      res.status(500).json({ error: "Database error" });
-    } else {
-      let countQuery = `SELECT COUNT(*) AS count FROM ??`;
-      let countParams = [tableName];
-
-      if (search) {
-        countQuery += ` WHERE ${keyField} LIKE ?`;
-        countParams.push(`%${search}%`);
-      }
-
-      db.query(countQuery, countParams, (countErr, countResult) => {
-        if (countErr) {
-          console.error("Error retrieving row count:", countErr);
-          res.status(500).json({ error: "Database error" });
-        } else {
-          res.json({
-            data: rows,
-            totalPages: Math.ceil(countResult[0].count / limit),
-          });
-        }
-      });
-    }
-  });
-});
 
 // Start the server
 app.listen(port, () => {
