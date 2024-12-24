@@ -48,7 +48,7 @@ const validTables = [
   'owner_profile', 'owner_profile_three', 'owner_profile_one',
   'jockey_name_profile', 'jockey_name_profile_three', 'jockey_name_profile_one',
   'trainer_name_profile', 'trainer_name_profile_three', 'trainer_name_profile_one',
-  'racenets', 'api_races',
+  'racenets', 'api_races', 'horse_names',
 ];
 
 // Dynamic field mapping based on table name
@@ -68,43 +68,37 @@ const tableFieldMap = {
   trainer_name_profile: 'Sire',
   trainer_name_profile_three: 'Sire',
   trainer_name_profile_one: 'Sire',
+  horse_names: 'Sire',
 };
 
 
 
 app.get('/api/api_races', (req, res) => {
-  const { date } = req.query;
+  const { meetingDate } = req.query;
 
-  if (!date) {
-    return res.status(400).json({ error: "Date parameter is required" });
-  }
-
-  // Validate the date format
-  const isValidDate = (date) => /^\d{4}-\d{2}-\d{2}$/.test(date);
-  if (!isValidDate(date)) {
-    return res.status(400).json({ error: "Invalid date format. Use YYYY-MM-DD." });
-  }
-
-  // Query to fetch data based on meetingDate
-  const query = `
+  let dataQuery = `
     SELECT * FROM api_races
-    WHERE TRIM(meetingDate) = ?
-    LIMIT 10;
   `;
+  const params = [];
 
-  // Execute the query
-  db.query(query, [date], (err, rows) => {
+  if (meetingDate) {
+    const startOfDay = `${meetingDate} 00:00:00`;
+    const endOfDay = `${meetingDate} 23:59:59`;
+    dataQuery += ` WHERE meetingDate BETWEEN ? AND ?`;
+    params.push(startOfDay, endOfDay);
+  }
+
+  db.query(dataQuery, params, (err, rows) => {
     if (err) {
+      console.error("Database Error:", err);
       return res.status(500).json({ error: "Database error" });
     }
 
-    // Respond with filtered data
-    res.json({
-      data: rows,
-      totalRows: rows.length,
-    });
+    console.log(`Total records fetched for ${meetingDate}:`, rows.length);
+    res.json({ data: rows });
   });
 });
+
 
 
 
