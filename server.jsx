@@ -6,38 +6,26 @@ const cors = require('cors');
 const app = express();
 const port = process.env.PORT || 8080;
 
-// CORS configuration
 const allowedOrigins = [
   'http://localhost:5173', // Local frontend
   'https://horses-website-deployed-production.up.railway.app', // Deployed frontend
-  'https://Abiqb93.github.io/horses-website-deployed'
+  'https://abiqb93.github.io', // GitHub Pages
 ];
 
-// app.use(cors({
-//   origin: (origin, callback) => {
-//     if (!origin || allowedOrigins.includes(origin)) {
-//       callback(null, true);
-//     } else {
-//       callback(new Error('Not allowed by CORS'));
-//     }
-//   },
-//   methods: ['GET', 'POST'],
-//   credentials: true,
-// }));
-
+// Updated CORS middleware
 app.use(cors({
   origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or Postman) or from allowed origins
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
     }
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Add DELETE and OPTIONS methods
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Allow all HTTP methods you need
   allowedHeaders: ['Content-Type', 'Authorization'], // Specify allowed headers
   credentials: true, // Allow cookies or credentials
 }));
-
 
 // MySQL database connection configuration
 const db = mysql.createPool({
