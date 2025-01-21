@@ -26,10 +26,18 @@ const allowedOrigins = [
 // }));
 
 app.use(cors({
-  origin: '*', // Allow all origins
-  methods: ['GET', 'POST'], // Define allowed HTTP methods
-  credentials: true, // Allow cookies or credentials (optional, adjust if not needed)
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Add DELETE and OPTIONS methods
+  allowedHeaders: ['Content-Type', 'Authorization'], // Specify allowed headers
+  credentials: true, // Allow cookies or credentials
 }));
+
 
 // MySQL database connection configuration
 const db = mysql.createPool({
@@ -48,8 +56,29 @@ const validTables = [
   'owner_profile', 'owner_profile_three', 'owner_profile_one',
   'jockey_name_profile', 'jockey_name_profile_three', 'jockey_name_profile_one',
   'trainer_name_profile', 'trainer_name_profile_three', 'trainer_name_profile_one',
-  'racenets', 'api_races', 'horse_names',
+  'racenets', 'api_races', 'horse_names', 'selected_horses',
 ];
+
+
+// Fetch all data from the "selected_horses" table
+app.get('/api/selected_horses', (req, res) => {
+  console.log("GET request received at /api/selected_horses");
+
+  // Define the SQL query to fetch all rows
+  const query = `SELECT * FROM selected_horses`;
+
+  // Execute the query
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching horses from the database:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    console.log("Horses fetched successfully:", results.length, "rows");
+    res.status(200).json(results); // Send the results back to the frontend
+  });
+});
+
 
 // Dynamic field mapping based on table name
 const tableFieldMap = {
@@ -245,6 +274,138 @@ app.get('/api/:tableName', (req, res) => {
     }
   });
 });
+
+
+app.use(express.json()); 
+
+app.post('/api/selected_horses', (req, res) => {
+  console.log("POST request received at /api/selected_horses");
+
+  // Log the headers and raw body
+  console.log("Request headers:", req.headers);
+  console.log("Raw request body:", req.body);
+
+  const horse = req.body;
+
+  // Validation: Ensure required fields are present
+  if (!horse || !horse.Sire || !horse.Country || !horse.user_id) {
+    console.error("Validation failed: Missing required fields");
+    console.error("Received data (validation failed):", horse);
+    return res.status(400).json({ error: "Invalid horse data or missing user_id" });
+  }
+
+  // Prepare the query and parameters
+  const query = `
+    INSERT INTO selected_horses (
+      Sire, Country, Runners, Runs, Winners, Wins, WinPercent_, Stakes_Winners,
+      Stakes_Wins, Group_Winners, Group_Wins, Group_1_Winners, Group_1_Wins,
+      WTR, SWTR, GWTR, G1WTR, WIV, WOE, WAX, Percent_RB2, user_id, notes
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+  const params = [
+    String(horse.Sire),
+    String(horse.Country),
+    horse.Runners !== null && horse.Runners !== undefined ? String(horse.Runners) : null,
+    horse.Runs !== null && horse.Runs !== undefined ? String(horse.Runs) : null,
+    horse.Winners !== null && horse.Winners !== undefined ? String(horse.Winners) : null,
+    horse.Wins !== null && horse.Wins !== undefined ? String(horse.Wins) : null,
+    horse.WinPercent_ !== null && horse.WinPercent_ !== undefined ? String(horse.WinPercent_) : null,
+    horse.Stakes_Winners !== null && horse.Stakes_Winners !== undefined ? String(horse.Stakes_Winners) : null,
+    horse.Stakes_Wins !== null && horse.Stakes_Wins !== undefined ? String(horse.Stakes_Wins) : null,
+    horse.Group_Winners !== null && horse.Group_Winners !== undefined ? String(horse.Group_Winners) : null,
+    horse.Group_Wins !== null && horse.Group_Wins !== undefined ? String(horse.Group_Wins) : null,
+    horse.Group_1_Winners !== null && horse.Group_1_Winners !== undefined ? String(horse.Group_1_Winners) : null,
+    horse.Group_1_Wins !== null && horse.Group_1_Wins !== undefined ? String(horse.Group_1_Wins) : null,
+    horse.WTR !== null && horse.WTR !== undefined ? String(horse.WTR) : null,
+    horse.SWTR !== null && horse.SWTR !== undefined ? String(horse.SWTR) : null,
+    horse.GWTR !== null && horse.GWTR !== undefined ? String(horse.GWTR) : null,
+    horse.G1WTR !== null && horse.G1WTR !== undefined ? String(horse.G1WTR) : null,
+    horse.WIV !== null && horse.WIV !== undefined ? String(horse.WIV) : null,
+    horse.WOE !== null && horse.WOE !== undefined ? String(horse.WOE) : null,
+    horse.WAX !== null && horse.WAX !== undefined ? String(horse.WAX) : null,
+    horse.Percent_RB2 !== null && horse.Percent_RB2 !== undefined ? String(horse.Percent_RB2) : null,
+    horse.user_id || null,
+    horse.notes ? String(horse.notes) : null,
+  ];
+
+  // Log the query and parameters
+  console.log("SQL Query:", query);
+  console.log("Query Parameters:", params);
+
+  // Execute the query
+  db.query(query, params, (err, result) => {
+    if (err) {
+      console.error("Database query error:", err);
+      return res.status(500).json({ error: "Database error", details: err.message });
+    }
+
+    console.log("Horse saved successfully with ID:", result.insertId);
+    res.status(200).json({ message: "Horse saved successfully", horse_id: result.insertId });
+  });
+});
+
+
+
+// Delete a specific horse from the database
+app.delete('/api/selected_horses/:id', (req, res) => {
+  console.log("DELETE request received at /api/selected_horses");
+
+  const horseId = req.params.id; // Extract the horse ID from the route parameter
+
+  // Validate the ID
+  if (!horseId) {
+    return res.status(400).json({ error: "Horse ID is required" });
+  }
+
+  // Prepare the SQL query
+  const query = `DELETE FROM selected_horses WHERE id = ?`;
+
+  // Execute the query
+  db.query(query, [horseId], (err, result) => {
+    if (err) {
+      console.error("Error deleting horse from the database:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Horse not found" });
+    }
+
+    console.log(`Horse with ID ${horseId} deleted successfully`);
+    res.status(200).json({ message: `Horse with ID ${horseId} deleted successfully` });
+  });
+});
+
+// Update the notes for a specific horse
+app.put('/api/selected_horses/:id', (req, res) => {
+  console.log("PUT request received at /api/selected_horses/:id");
+
+  const horseId = req.params.id; // Extract horse ID from the URL
+  const { notes } = req.body; // Extract notes from the request body
+
+  if (!horseId || notes === undefined) {
+    return res.status(400).json({ error: "Horse ID and notes are required" });
+  }
+
+  const query = `UPDATE selected_horses SET notes = ? WHERE id = ?`;
+  const params = [notes, horseId];
+
+  db.query(query, params, (err, result) => {
+    if (err) {
+      console.error("Error updating notes in the database:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Horse not found" });
+    }
+
+    console.log(`Notes updated for horse ID ${horseId}`);
+    res.status(200).json({ message: `Notes updated successfully for horse ID ${horseId}` });
+  });
+});
+
 
 
 // Start the server
