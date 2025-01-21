@@ -61,6 +61,25 @@ const validTables = [
 
 
 
+// Fetch all data from the "selected_horses" table
+app.get('/api/selected_horses', (req, res) => {
+  console.log("GET request received at /api/selected_horses");
+
+  // Define the SQL query to fetch all rows
+  const query = `SELECT * FROM selected_horses`;
+
+  // Execute the query
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching horses from the database:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    console.log("Horses fetched successfully:", results.length, "rows");
+    res.status(200).json(results); // Send the results back to the frontend
+  });
+});
+
 // Dynamic field mapping based on table name
 const tableFieldMap = {
   sire_profile: 'Sire',
@@ -388,24 +407,7 @@ app.put('/api/selected_horses/:id', (req, res) => {
 });
 
 
-// Fetch all data from the "selected_horses" table
-app.get('/api/selected_horses', (req, res) => {
-  console.log("GET request received at /api/selected_horses");
 
-  // Define the SQL query to fetch all rows
-  const query = `SELECT * FROM selected_horses`;
-
-  // Execute the query
-  db.query(query, (err, results) => {
-    if (err) {
-      console.error("Error fetching horses from the database:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
-
-    console.log("Horses fetched successfully:", results.length, "rows");
-    res.status(200).json(results); // Send the results back to the frontend
-  });
-});
 
 
 // Start the server
