@@ -44,9 +44,30 @@ const validTables = [
   'owner_profile', 'owner_profile_three', 'owner_profile_one',
   'jockey_name_profile', 'jockey_name_profile_three', 'jockey_name_profile_one',
   'trainer_name_profile', 'trainer_name_profile_three', 'trainer_name_profile_one',
-  'racenets', 'api_races', 'horse_names', 'selected_horses',
+  'racenets', 'api_races', 'horse_names', 'selected_horses', 'TimesAPI_Table',
 ];
 
+app.get('/api/TimesAPI_Table', (req, res) => {
+  const { meetingDate } = req.query;
+
+  if (!meetingDate) {
+    return res.status(400).json({ error: "meetingDate is required" });
+  }
+
+  const dataQuery = `
+    SELECT * 
+    FROM TimesAPI_Table
+    WHERE meetingDate = DATE_ADD(?, INTERVAL 1 DAY);
+  `;
+
+  db.query(dataQuery, [meetingDate], (err, rows) => {
+    if (err) {
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.json({ data: rows });
+  });
+});
 
 
 // Fetch all data from the "selected_horses" table
@@ -90,31 +111,31 @@ const tableFieldMap = {
 
 
 
-app.get('/api/api_races', (req, res) => {
-  const { meetingDate } = req.query;
+// app.get('/api/api_races', (req, res) => {
+//   const { meetingDate } = req.query;
 
-  let dataQuery = `
-    SELECT * FROM api_races
-  `;
-  const params = [];
+//   let dataQuery = `
+//     SELECT * FROM api_races
+//   `;
+//   const params = [];
 
-  if (meetingDate) {
-    const startOfDay = `${meetingDate} 00:00:00`;
-    const endOfDay = `${meetingDate} 23:59:59`;
-    dataQuery += ` WHERE meetingDate BETWEEN ? AND ?`;
-    params.push(startOfDay, endOfDay);
-  }
+//   if (meetingDate) {
+//     const startOfDay = `${meetingDate} 00:00:00`;
+//     const endOfDay = `${meetingDate} 23:59:59`;
+//     dataQuery += ` WHERE meetingDate BETWEEN ? AND ?`;
+//     params.push(startOfDay, endOfDay);
+//   }
 
-  db.query(dataQuery, params, (err, rows) => {
-    if (err) {
-      console.error("Database Error:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
+//   db.query(dataQuery, params, (err, rows) => {
+//     if (err) {
+//       console.error("Database Error:", err);
+//       return res.status(500).json({ error: "Database error" });
+//     }
 
-    console.log(`Total records fetched for ${meetingDate}:`, rows.length);
-    res.json({ data: rows });
-  });
-});
+//     console.log(`Total records fetched for ${meetingDate}:`, rows.length);
+//     res.json({ data: rows });
+//   });
+// });
 
 
 
@@ -393,7 +414,6 @@ app.put('/api/selected_horses/:id', (req, res) => {
     res.status(200).json({ message: `Notes updated successfully for horse ID ${horseId}` });
   });
 });
-
 
 
 
