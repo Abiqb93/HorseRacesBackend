@@ -44,24 +44,28 @@ const validTables = [
   'owner_profile', 'owner_profile_three', 'owner_profile_one',
   'jockey_name_profile', 'jockey_name_profile_three', 'jockey_name_profile_one',
   'trainer_name_profile', 'trainer_name_profile_three', 'trainer_name_profile_one',
-  'racenets', 'api_races', 'horse_names', 'selected_horses', 'TimesAPI_Table',
+  'racenets', 'api_races', 'horse_names', 'selected_horses', 'APIData_Table2', 'race_selection_log', 
 ];
 
-app.get('/api/TimesAPI_Table', (req, res) => {
-  const { meetingDate } = req.query;
+app.get('/api/APIData_Table2', (req, res) => {
+  let { meetingDate } = req.query;
 
   if (!meetingDate) {
     return res.status(400).json({ error: "meetingDate is required" });
   }
 
+  // Append "00:00:00" to meetingDate to ensure it includes time
+  meetingDate = `${meetingDate} 00:00:00`;
+
   const dataQuery = `
     SELECT * 
-    FROM TimesAPI_Table
-    WHERE meetingDate = DATE_ADD(?, INTERVAL 1 DAY);
+    FROM APIData_Table2
+    WHERE meetingDate = ?;
   `;
 
   db.query(dataQuery, [meetingDate], (err, rows) => {
     if (err) {
+      console.error(err);
       return res.status(500).json({ error: "Database error" });
     }
 
@@ -88,6 +92,31 @@ app.get('/api/selected_horses', (req, res) => {
     res.status(200).json(results); // Send the results back to the frontend
   });
 });
+
+
+app.post("/api/race_selection_log", (req, res) => {
+  const { user } = req.body;
+
+  if (!user) {
+    return res.status(400).json({ error: "User is required" });
+  }
+
+  const query = `
+    SELECT meetingDate, courseId, raceNumber 
+    FROM race_selection_log 
+    WHERE user = ?;
+  `;
+
+  db.query(query, [user], (err, results) => {
+    if (err) {
+      console.error("Error fetching user races:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    res.status(200).json(results);
+  });
+});
+
+
 
 // Dynamic field mapping based on table name
 const tableFieldMap = {
@@ -415,6 +444,114 @@ app.put('/api/selected_horses/:id', (req, res) => {
   });
 });
 
+
+// API Endpoint to Save Race
+app.post("/api/save-race", (req, res) => {
+  const {
+    meetingDate,
+    raceTitle,
+    countryCode,
+    courseName,
+    courseId,
+    raceNumber,
+    raceSurfaceName,
+    numberOfRunners,
+    prizeFund,
+    allHorses,
+    user
+  } = req.body;
+
+  // Validate required fields
+  if (
+    !meetingDate ||
+    !raceTitle ||
+    !countryCode ||
+    !courseName ||
+    !courseId ||
+    !raceNumber ||
+    !raceSurfaceName ||
+    !numberOfRunners ||
+    !prizeFund ||
+    !allHorses
+  ) {
+    return res.status(400).json({ error: "Missing required fields." });
+  }
+
+  // SQL query to insert the data
+  const query = `
+    INSERT INTO race_selection_log (
+      meetingDate,
+      raceTitle,
+      countryCode,
+      courseName,
+      courseId,
+      raceNumber,
+      raceSurfaceName,
+      numberOfRunners,
+      prizeFund,
+      allHorses,
+      user
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+  `;
+
+  // Execute the query
+  db.query(
+    query,
+    [
+      meetingDate,
+      raceTitle,
+      countryCode,
+      courseName,
+      courseId,
+      raceNumber,
+      raceSurfaceName,
+      numberOfRunners,
+      prizeFund,
+      JSON.stringify(allHorses), // Convert allHorses to JSON string
+      user || "Tom" // Default to "Tom" if user is not provided
+    ],
+    (err, results) => {
+      if (err) {
+        console.error("Error saving race selection:", err);
+        return res.status(500).json({ error: "Database error." });
+      }
+      res.status(200).json({ message: "Race selection saved successfully!" });
+    }
+  );
+});
+
+
+
+// Delete a specific race from the database
+app.delete('/api/race_selection_log/:id', (req, res) => {
+  console.log("DELETE request received at /api/race_selection_log");
+
+  const raceId = req.params.id; // Extract the race ID from the route parameter
+
+  // Validate the ID
+  if (!raceId) {
+    return res.status(400).json({ error: "Race ID is required" });
+  }
+
+  // Prepare the SQL query
+  const query = `DELETE FROM race_selection_log WHERE id = ?`;
+
+  // Execute the query
+  db.query(query, [raceId], (err, result) => {
+    if (err) {
+      console.error("Error deleting race from the database:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Race not found" });
+    }
+
+    console.log(`Race with ID ${raceId} deleted successfully`);
+    res.status(200).json({ message: `Race with ID ${raceId} deleted successfully` });
+  });
+});
 
 
 
