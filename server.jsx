@@ -44,7 +44,7 @@ const validTables = [
   'owner_profile', 'owner_profile_three', 'owner_profile_one',
   'jockey_name_profile', 'jockey_name_profile_three', 'jockey_name_profile_one',
   'trainer_name_profile', 'trainer_name_profile_three', 'trainer_name_profile_one',
-  'racenets', 'api_races', 'horse_names', 'selected_horses', 'APIData_Table2', 'race_selection_log', 
+  'racenets', 'api_races', 'horse_names', 'selected_horses', 'APIData_Table2', 'race_selection_log', 'mareupdates', 'dampedigree_ratings',
 ];
 
 app.get('/api/APIData_Table2', (req, res) => {
@@ -167,9 +167,82 @@ const tableFieldMap = {
 // });
 
 
+app.get('/api/mareupdates', (req, res) => {
+  console.log("GET request received at /api/mareupdates");
+
+  const { sireName, page = 1, limit = 10 } = req.query;
+  const offset = (page - 1) * limit;
+
+  let query = `SELECT * FROM mareupdates`;
+  let params = [];
+
+  if (sireName) {
+    query += " WHERE sireName LIKE ?";
+    params.push(`%${sireName}%`);
+  }
+
+  query += ` LIMIT ? OFFSET ?`;
+  params.push(Number(limit), Number(offset));
+
+  db.query(query, params, (err, results) => {
+    if (err) {
+      console.error("Error fetching mare updates from the database:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    db.query(`SELECT COUNT(*) AS total FROM mareupdates${sireName ? " WHERE sireName LIKE ?" : ""}`, sireName ? [`%${sireName}%`] : [], (countErr, countResults) => {
+      if (countErr) {
+        console.error("Error counting mare updates:", countErr);
+        return res.status(500).json({ error: "Database error" });
+      }
+
+      const totalPages = Math.ceil(countResults[0].total / limit);
+      console.log(`Mare updates fetched successfully: ${results.length} rows`);
+
+      res.status(200).json({ data: results, totalPages });
+    });
+  });
+});
 
 
-// Generic endpoint for paginated and filtered data
+app.get('/api/dampedigree_ratings', (req, res) => {
+  console.log("GET request received at /api/dampedigree_ratings");
+
+  const { horseName, page = 1, limit = 10 } = req.query;
+  const offset = (page - 1) * limit;
+
+  let query = `SELECT * FROM dampedigree_ratings`;
+  let params = [];
+
+  if (horseName) {
+    query += " WHERE horseName LIKE ?";
+    params.push(`%${horseName}%`);
+  }
+
+  query += ` LIMIT ? OFFSET ?`;
+  params.push(Number(limit), Number(offset));
+
+  db.query(query, params, (err, results) => {
+    if (err) {
+      console.error("Error fetching mare updates from the database:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    db.query(`SELECT COUNT(*) AS total FROM dampedigree_ratings${horseName ? " WHERE sireName LIKE ?" : ""}`, horseName ? [`%${horseName}%`] : [], (countErr, countResults) => {
+      if (countErr) {
+        console.error("Error counting mare updates:", countErr);
+        return res.status(500).json({ error: "Database error" });
+      }
+
+      const totalPages = Math.ceil(countResults[0].total / limit);
+      console.log(`Mare updates fetched successfully: ${results.length} rows`);
+
+      res.status(200).json({ data: results, totalPages });
+    });
+  });
+});
+
+
 app.get('/api/:tableName', (req, res) => {
   const { tableName } = req.params;
   const {
@@ -193,13 +266,28 @@ app.get('/api/:tableName', (req, res) => {
     wax,
     sire,
     country,
+    sortBy,
+    order = 'asc'
   } = req.query;
+
   const offset = (page - 1) * limit;
 
   // Validate tableName
   if (!validTables.includes(tableName)) {
     return res.status(400).json({ error: "Invalid table name." });
   }
+
+  // Define valid columns for sorting
+  const validSortColumns = [
+    "Sire", "Country", "Runners", "Runs", "Winners", "Wins", "WinPercent_", 
+    "Stakes_Winners", "Stakes_Wins", "Group_Winners", "Group_Wins", 
+    "Group_1_Winners", "Group_1_Wins", "WTR", "SWTR", "GWTR", "G1WTR", 
+    "WIV", "WOE", "WAX", "Percent_RB2"
+  ];
+
+  // Validate sorting column
+  const safeSortBy = sortBy && validSortColumns.includes(sortBy) ? sortBy : null;
+  const safeOrder = order.toLowerCase() === "desc" ? "DESC" : "ASC";
 
   // Construct query dynamically
   let query = `SELECT * FROM ??`;
@@ -217,104 +305,87 @@ app.get('/api/:tableName', (req, res) => {
     params.push(country);
   }
 
-  if (runnersMin) {
-    conditions.push("Runners >= ?");
-    params.push(Number(runnersMin));
-  }
-  if (runnersMax) {
-    conditions.push("Runners <= ?");
-    params.push(Number(runnersMax));
-  }
-  if (runsMin) {
-    conditions.push("Runs >= ?");
-    params.push(Number(runsMin));
-  }
-  if (runsMax) {
-    conditions.push("Runs <= ?");
-    params.push(Number(runsMax));
-  }
-  if (winners) {
-    conditions.push("Winners <= ?");
-    params.push(Number(winners));
-  }
-  if (win) {
-    conditions.push("Wins <= ?");
-    params.push(Number(win));
-  }
-  if (stakesWins) {
-    conditions.push("Stakes_Wins = ?");
-    params.push(Number(stakesWins));
-  }
-  if (groupWins) {
-    conditions.push("Group_Wins = ?");
-    params.push(Number(groupWins));
-  }
-  if (group1Wins) {
-    conditions.push("Group_1_Wins = ?");
-    params.push(Number(group1Wins));
-  }
-  if (wtr) {
-    conditions.push("CAST(REPLACE(WTR, '%', '') AS DECIMAL(10, 2)) <= ?");
-    params.push(parseFloat(wtr));
-  }
-  if (swtr) {
-    conditions.push("CAST(REPLACE(SWTR, '%', '') AS DECIMAL(10, 2)) <= ?");
-    params.push(parseFloat(swtr));
-  }
-  if (gwtr) {
-    conditions.push("CAST(REPLACE(GWTR, '%', '') AS DECIMAL(10, 2)) <= ?");
-    params.push(parseFloat(gwtr));
-  }
-  if (g1wtr) {
-    conditions.push("CAST(REPLACE(G1WTR, '%', '') AS DECIMAL(10, 2)) <= ?");
-    params.push(parseFloat(g1wtr));
-  }
-  if (wiv) {
-    conditions.push("WIV <= ?");
-    params.push(Number(wiv));
-  }
-  if (woe) {
-    conditions.push("WOE <= ?");
-    params.push(Number(woe));
-  }
-  if (wax) {
-    conditions.push("WAX <= ?");
-    params.push(Number(wax));
-  }
+  const numericFilters = {
+    "Runners": { min: runnersMin, max: runnersMax },
+    "Runs": { min: runsMin, max: runsMax },
+    "Winners": { max: winners },
+    "Wins": { max: win },
+    "Stakes_Wins": { exact: stakesWins },
+    "Group_Wins": { exact: groupWins },
+    "Group_1_Wins": { exact: group1Wins },
+    "WTR": { max: wtr },
+    "SWTR": { max: swtr },
+    "GWTR": { max: gwtr },
+    "G1WTR": { max: g1wtr },
+    "WIV": { max: wiv },
+    "WOE": { max: woe },
+    "WAX": { max: wax }
+  };
+
+  Object.entries(numericFilters).forEach(([key, filter]) => {
+    if (filter.min) {
+      conditions.push(`${key} >= ?`);
+      params.push(Number(filter.min));
+    }
+    if (filter.max) {
+      conditions.push(`${key} <= ?`);
+      params.push(Number(filter.max));
+    }
+    if (filter.exact) {
+      conditions.push(`${key} = ?`);
+      params.push(Number(filter.exact));
+    }
+  });
 
   if (conditions.length > 0) {
     query += ` WHERE ${conditions.join(" AND ")}`;
   }
 
+  // **Adding sorting**
+  if (safeSortBy) {
+    query += ` ORDER BY \`${safeSortBy}\` ${safeOrder}`;
+  }
+
+  // **Adding pagination**
   query += ` LIMIT ? OFFSET ?`;
   params.push(Number(limit), Number(offset));
+
+  console.log("Final Query:", query);
+  console.log("Query Params:", params);
 
   db.query(query, params, (err, rows) => {
     if (err) {
       console.error("Error retrieving data:", err);
-      res.status(500).json({ error: "Database error" });
-    } else {
-      db.query(
-        `SELECT COUNT(*) AS count FROM ??${conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : ''}`,
-        params.slice(0, -2),
-        (countErr, countResult) => {
-          if (countErr) {
-            console.error("Error retrieving row count:", countErr);
-            res.status(500).json({ error: "Database error" });
-          } else {
-            res.json({
-              data: rows,
-              totalPages: Math.ceil(countResult[0].count / limit),
-            });
-          }
-        }
-      );
+      return res.status(500).json({ error: "Database error" });
     }
+
+    // Count query for pagination
+    let countQuery = `SELECT COUNT(*) AS count FROM ??`;
+    let countParams = [tableName];
+
+    if (conditions.length > 0) {
+      countQuery += ` WHERE ${conditions.join(" AND ")}`;
+      countParams.push(...params.slice(1, -2)); // Remove LIMIT and OFFSET
+    }
+
+    db.query(countQuery, countParams, (countErr, countResult) => {
+      if (countErr) {
+        console.error("Error retrieving row count:", countErr);
+        return res.status(500).json({ error: "Database error" });
+      }
+
+      res.json({
+        data: rows,
+        totalPages: Math.ceil(countResult[0].count / limit)
+      });
+    });
   });
 });
 
 
 app.use(express.json()); 
+
+
 
 app.post('/api/selected_horses', (req, res) => {
   console.log("POST request received at /api/selected_horses");
@@ -552,6 +623,8 @@ app.delete('/api/race_selection_log/:id', (req, res) => {
     res.status(200).json({ message: `Race with ID ${raceId} deleted successfully` });
   });
 });
+
+
 
 
 
