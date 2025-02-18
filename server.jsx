@@ -74,12 +74,32 @@ app.get('/api/APIData_Table2', (req, res) => {
 });
 
 
-// Fetch all data from the "selected_horses" table
 app.get('/api/selected_horses', (req, res) => {
   console.log("GET request received at /api/selected_horses");
 
-  // Define the SQL query to fetch all rows
-  const query = `SELECT * FROM selected_horses`;
+  // Extract sorting parameters
+  const { sortBy, order = 'asc' } = req.query;
+
+  // Define valid columns for sorting
+  const validSortColumns = [
+    "HorseName", "Sire", "Dam", "Trainer", "Jockey", "Owner",
+    "Country", "Age", "Runs", "Wins", "Stakes_Wins", "Group_Wins", 
+    "Group_1_Wins", "Earnings"
+  ]; // Adjust based on actual table columns
+
+  // Validate sorting column
+  const safeSortBy = sortBy && validSortColumns.includes(sortBy) ? sortBy : null;
+  const safeOrder = order.toLowerCase() === "desc" ? "DESC" : "ASC";
+
+  // Construct the SQL query
+  let query = `SELECT * FROM selected_horses`;
+
+  // Apply sorting if a valid column is provided
+  if (safeSortBy) {
+    query += ` ORDER BY \`${safeSortBy}\` ${safeOrder}`;
+  }
+
+  console.log("Final Query:", query);
 
   // Execute the query
   db.query(query, (err, results) => {
@@ -89,10 +109,9 @@ app.get('/api/selected_horses', (req, res) => {
     }
 
     console.log("Horses fetched successfully:", results.length, "rows");
-    res.status(200).json(results); // Send the results back to the frontend
+    res.status(200).json(results); // Send the sorted results back to the frontend
   });
 });
-
 
 app.post("/api/race_selection_log", (req, res) => {
   const { user } = req.body;
@@ -208,34 +227,57 @@ app.get('/api/mareupdates', (req, res) => {
 app.get('/api/dampedigree_ratings', (req, res) => {
   console.log("GET request received at /api/dampedigree_ratings");
 
-  const { horseName, page = 1, limit = 10 } = req.query;
+  const { horseName, page = 1, limit = 10, sortBy, order = 'asc' } = req.query;
   const offset = (page - 1) * limit;
+
+  // Define valid columns for sorting
+  const validSortColumns = [
+    "horseName", "sireName", "damName", "ownerFullName",
+    "max_performanceRating_Target_Variable", "avg_performanceRating_Target_Variable"
+  ];
+
+  // Validate sorting column and order
+  const safeSortBy = sortBy && validSortColumns.includes(sortBy) ? sortBy : null;
+  const safeOrder = order.toLowerCase() === "desc" ? "DESC" : "ASC";
 
   let query = `SELECT * FROM dampedigree_ratings`;
   let params = [];
 
+  // Apply filtering by horseName if provided
   if (horseName) {
     query += " WHERE horseName LIKE ?";
     params.push(`%${horseName}%`);
   }
 
+  // Apply sorting if a valid column is provided
+  if (safeSortBy) {
+    query += ` ORDER BY \`${safeSortBy}\` ${safeOrder}`;
+  }
+
+  // Apply pagination
   query += ` LIMIT ? OFFSET ?`;
   params.push(Number(limit), Number(offset));
 
+  console.log("Final Query:", query, "Params:", params);
+
   db.query(query, params, (err, results) => {
     if (err) {
-      console.error("Error fetching mare updates from the database:", err);
+      console.error("Error fetching dampedigree_ratings from the database:", err);
       return res.status(500).json({ error: "Database error" });
     }
 
-    db.query(`SELECT COUNT(*) AS total FROM dampedigree_ratings${horseName ? " WHERE sireName LIKE ?" : ""}`, horseName ? [`%${horseName}%`] : [], (countErr, countResults) => {
+    // Count total records for pagination
+    const countQuery = `SELECT COUNT(*) AS total FROM dampedigree_ratings${horseName ? " WHERE horseName LIKE ?" : ""}`;
+    const countParams = horseName ? [`%${horseName}%`] : [];
+
+    db.query(countQuery, countParams, (countErr, countResults) => {
       if (countErr) {
-        console.error("Error counting mare updates:", countErr);
+        console.error("Error counting dampedigree_ratings:", countErr);
         return res.status(500).json({ error: "Database error" });
       }
 
       const totalPages = Math.ceil(countResults[0].total / limit);
-      console.log(`Mare updates fetched successfully: ${results.length} rows`);
+      console.log(`Data fetched successfully: ${results.length} rows`);
 
       res.status(200).json({ data: results, totalPages });
     });
