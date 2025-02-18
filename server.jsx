@@ -77,11 +77,11 @@ app.get('/api/APIData_Table2', (req, res) => {
 app.get('/api/selected_horses', (req, res) => {
   console.log("GET request received at /api/selected_horses");
 
-  // Extract user_id and sorting parameters
-  const { user_id, sortBy, order = 'asc' } = req.query;
+  // Extract user identifiers and sorting parameters
+  const { user_id, user, sortBy, order = 'asc' } = req.query;
 
-  if (!user_id) {
-    return res.status(400).json({ error: "User ID is required" });
+  if (!user_id && !user) {
+    return res.status(400).json({ error: "User ID or username is required" });
   }
 
   // Define valid columns for sorting
@@ -95,9 +95,17 @@ app.get('/api/selected_horses', (req, res) => {
   const safeSortBy = sortBy && validSortColumns.includes(sortBy) ? sortBy : null;
   const safeOrder = order.toLowerCase() === "desc" ? "DESC" : "ASC";
 
-  // Construct the SQL query
-  let query = `SELECT * FROM selected_horses WHERE user_id = ?`;
-  let params = [user_id];
+  // Construct SQL query and parameters
+  let query = `SELECT * FROM selected_horses WHERE `;
+  let params = [];
+
+  if (user_id) {
+    query += ` user_id = ? `;
+    params.push(user_id);
+  } else if (user) {
+    query += ` user = ? `;
+    params.push(user);
+  }
 
   if (safeSortBy) {
     query += ` ORDER BY \`${safeSortBy}\` ${safeOrder}`;
@@ -111,7 +119,7 @@ app.get('/api/selected_horses', (req, res) => {
       return res.status(500).json({ error: "Database error" });
     }
 
-    console.log(`Horses fetched successfully for user ${user_id}: ${results.length} rows`);
+    console.log(`Horses fetched successfully for user ${user_id || user}: ${results.length} rows`);
     res.status(200).json(results);
   });
 });
