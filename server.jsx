@@ -125,8 +125,8 @@ app.get('/api/selected_horses', (req, res) => {
 });
 
 
-app.post("/api/race_selection_log", (req, res) => {
-  const { user } = req.body;
+app.get("/api/race_selection_log", (req, res) => {
+  const { user } = req.query; // Read user from query parameters
 
   if (!user) {
     return res.status(400).json({ error: "User is required" });
@@ -146,7 +146,6 @@ app.post("/api/race_selection_log", (req, res) => {
     res.status(200).json(results);
   });
 });
-
 
 
 // Dynamic field mapping based on table name
