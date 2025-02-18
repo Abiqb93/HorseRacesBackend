@@ -77,41 +77,45 @@ app.get('/api/APIData_Table2', (req, res) => {
 app.get('/api/selected_horses', (req, res) => {
   console.log("GET request received at /api/selected_horses");
 
-  // Extract sorting parameters
-  const { sortBy, order = 'asc' } = req.query;
+  // Extract user_id and sorting parameters
+  const { user_id, sortBy, order = 'asc' } = req.query;
+
+  if (!user_id) {
+    return res.status(400).json({ error: "User ID is required" });
+  }
 
   // Define valid columns for sorting
   const validSortColumns = [
     "HorseName", "Sire", "Dam", "Trainer", "Jockey", "Owner",
     "Country", "Age", "Runs", "Wins", "Stakes_Wins", "Group_Wins", 
     "Group_1_Wins", "Earnings"
-  ]; // Adjust based on actual table columns
+  ]; 
 
   // Validate sorting column
   const safeSortBy = sortBy && validSortColumns.includes(sortBy) ? sortBy : null;
   const safeOrder = order.toLowerCase() === "desc" ? "DESC" : "ASC";
 
   // Construct the SQL query
-  let query = `SELECT * FROM selected_horses`;
+  let query = `SELECT * FROM selected_horses WHERE user_id = ?`;
+  let params = [user_id];
 
-  // Apply sorting if a valid column is provided
   if (safeSortBy) {
     query += ` ORDER BY \`${safeSortBy}\` ${safeOrder}`;
   }
 
-  console.log("Final Query:", query);
+  console.log("Final Query:", query, "Params:", params);
 
-  // Execute the query
-  db.query(query, (err, results) => {
+  db.query(query, params, (err, results) => {
     if (err) {
       console.error("Error fetching horses from the database:", err);
       return res.status(500).json({ error: "Database error" });
     }
 
-    console.log("Horses fetched successfully:", results.length, "rows");
-    res.status(200).json(results); // Send the sorted results back to the frontend
+    console.log(`Horses fetched successfully for user ${user_id}: ${results.length} rows`);
+    res.status(200).json(results);
   });
 });
+
 
 app.post("/api/race_selection_log", (req, res) => {
   const { user } = req.body;
