@@ -5,7 +5,23 @@ const cors = require('cors');
 const app = express();
 const port = process.env.PORT || 8080;
 
-app.use(cors());
+const allowedOrigins = [
+  'http://localhost:5173', // Local frontend
+  'https://horses-website-deployed-production.up.railway.app', // Deployed frontend
+  'https://abiqb93.github.io', // GitHub Pages
+];
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 
 const db = mysql.createPool({
@@ -13,7 +29,7 @@ const db = mysql.createPool({
   user: "abiqb93",
   password: "Saps123$#",
   database: "horseprofileshub",
-  port: 3306,
+  port: 3307,
   connectionLimit: 10,
 });
 
