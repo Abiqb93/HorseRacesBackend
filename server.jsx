@@ -29,7 +29,7 @@ const db = mysql.createPool({
   user: "abiqb93",
   password: "Saps123$#",
   database: "horseprofileshub",
-  port: 3307,
+  port: 3306,
   connectionLimit: 10,
 });
 
