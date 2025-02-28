@@ -6,7 +6,7 @@ const app = express();
 const port = process.env.PORT || 8080;
 
 const allowedOrigins = [
-  'http://localhost:5173', // Local frontend
+  'http://localhost:3000', // Local frontend
   'https://horses-website-deployed-production.up.railway.app', // Deployed frontend
   'https://abiqb93.github.io', // GitHub Pages
 ];
