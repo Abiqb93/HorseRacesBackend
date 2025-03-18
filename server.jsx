@@ -354,6 +354,7 @@ app.get('/api/:tableName', (req, res) => {
     wax,
     sire,
     country,
+    raceType,
     sortBy,
     order = 'asc'
   } = req.query;
@@ -391,6 +392,11 @@ app.get('/api/:tableName', (req, res) => {
   if (country) {
     conditions.push("Country = ?");
     params.push(country);
+  }
+
+  if (raceType) { 
+    conditions.push("raceType = ?");
+    params.push(raceType);
   }
 
   const numericFilters = {
