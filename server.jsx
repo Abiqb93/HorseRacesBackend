@@ -45,8 +45,223 @@ const validTables = [
   'owner_profile', 'owner_profile_three', 'owner_profile_one',
   'jockey_name_profile', 'jockey_name_profile_three', 'jockey_name_profile_one',
   'trainer_name_profile', 'trainer_name_profile_three', 'trainer_name_profile_one',
-  'racenets', 'api_races', 'horse_names', 'selected_horses', 'APIData_Table2', 'race_selection_log', 'mareupdates', 'dampedigree_ratings', 'Companies'
+  'racenets', 'api_races', 'horse_names', 'selected_horses', 'APIData_Table2', 'race_selection_log', 'mareupdates', 'dampedigree_ratings', 'Companies', 
+  'sire_age_reports', 'sire_country_reports', 'sire_sex_reports', 'sire_worldwide_reports', 'sire_crop_reports', 'sire_distance_reports', 
+  'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift'
 ];
+
+
+app.get('/api/sire_age_reports', (req, res) => {
+  const { sire } = req.query;
+
+  if (!sire) {
+    return res.status(400).json({ error: "Missing required query parameter: sire" });
+  }
+
+  console.log("Filtering sire_age_reports for sire:", sire);
+ 
+  const query = `
+    SELECT * 
+    FROM sire_age_reports
+    WHERE LOWER(TRIM(Sire)) = LOWER(TRIM(?));
+  `;
+
+  db.query(query, [sire], (err, results) => {
+    if (err) {
+      console.error("Error fetching sire_age_reports:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+// 1. sire_birthyear_reports
+app.get('/api/sire_crop_reports', (req, res) => {
+  const { sire } = req.query;
+
+  if (!sire) {
+    return res.status(400).json({ error: "Missing required query parameter: sire" });
+  }
+
+  console.log("Filtering sire_crop_reports for sire:", sire);
+
+  const query = `
+    SELECT * 
+    FROM sire_crop_reports
+    WHERE LOWER(TRIM(Sire)) = LOWER(TRIM(?));
+  `;
+
+  db.query(query, [sire], (err, results) => {
+    if (err) {
+      console.error("Error fetching sire_crop_reports:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
+// 1. sire_birthyear_reports
+app.get('/api/sire_distance_reports', (req, res) => {
+  const { sire } = req.query;
+
+  if (!sire) {
+    return res.status(400).json({ error: "Missing required query parameter: sire" });
+  }
+
+  console.log("Filtering sire_distance_reports for sire:", sire);
+
+  const query = `
+    SELECT * 
+    FROM sire_distance_reports
+    WHERE LOWER(TRIM(Sire)) = LOWER(TRIM(?));
+  `;
+
+  db.query(query, [sire], (err, results) => {
+    if (err) {
+      console.error("Error fetching sire_distance_reports:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+// 2. sire_country_reports
+app.get('/api/sire_country_reports', (req, res) => {
+  const { sire } = req.query;
+
+  if (!sire) {
+    return res.status(400).json({ error: "Missing required query parameter: sire" });
+  }
+
+  console.log("Filtering sire_country_reports for sire:", sire);
+
+  const query = `
+    SELECT * 
+    FROM sire_country_reports
+    WHERE LOWER(TRIM(Sire)) = LOWER(TRIM(?));
+  `;
+
+  db.query(query, [sire], (err, results) => {
+    if (err) {
+      console.error("Error fetching sire_country_reports:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
+// 2. sire_country_reports
+app.get('/api/sire_country_reports', (req, res) => {
+  const { sire } = req.query;
+
+  if (!sire) {
+    return res.status(400).json({ error: "Missing required query parameter: sire" });
+  }
+
+  console.log("Filtering sire_country_reports for sire:", sire);
+
+  const query = `
+    SELECT * 
+    FROM sire_country_reports
+    WHERE LOWER(TRIM(Sire)) = LOWER(TRIM(?));
+  `;
+
+  db.query(query, [sire], (err, results) => {
+    if (err) {
+      console.error("Error fetching sire_country_reports:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
+// 3. sire_sex_reports
+app.get('/api/sire_sex_reports', (req, res) => {
+  const { sire } = req.query;
+
+  if (!sire) {
+    return res.status(400).json({ error: "Missing required query parameter: sire" });
+  }
+
+  console.log("Filtering sire_sex_reports for sire:", sire);
+
+  const query = `
+    SELECT * 
+    FROM sire_sex_reports
+    WHERE LOWER(TRIM(Sire)) = LOWER(TRIM(?));
+  `;
+
+  db.query(query, [sire], (err, results) => {
+    if (err) {
+      console.error("Error fetching sire_sex_reports:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
+// 4. sire_worldwide_reports
+app.get('/api/sire_worldwide_reports', (req, res) => {
+  const { sire } = req.query;
+
+  if (!sire) {
+    return res.status(400).json({ error: "Missing required query parameter: sire" });
+  }
+
+  console.log("Filtering sire_worldwide_reports for sire:", sire);
+
+  const query = `
+    SELECT * 
+    FROM sire_worldwide_reports
+    WHERE LOWER(TRIM(Sire)) = LOWER(TRIM(?));
+  `;
+
+  db.query(query, [sire], (err, results) => {
+    if (err) {
+      console.error("Error fetching sire_worldwide_reports:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
+app.get('/api/sire_uplift', (req, res) => {
+  const { sire } = req.query;
+
+  if (!sire) {
+    return res.status(400).json({ error: "Missing required query parameter: sire" });
+  }
+
+  console.log("Filtering sire_uplift for sire:", sire);
+
+  const query = `
+    SELECT * 
+    FROM sire_uplift
+    WHERE LOWER(TRIM(sireName)) = LOWER(TRIM(?));
+  `;
+
+  db.query(query, [sire], (err, results) => {
+    if (err) {
+      console.error("Error fetching sire_uplift:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
 
 
 // Search companies by any field dynamically
@@ -354,7 +569,7 @@ app.get('/api/:tableName', (req, res) => {
     wax,
     sire,
     country,
-    raceType,
+    RaceTypeDetail,
     sortBy,
     order = 'asc'
   } = req.query;
@@ -394,9 +609,9 @@ app.get('/api/:tableName', (req, res) => {
     params.push(country);
   }
 
-  if (raceType) { 
-    conditions.push("raceType = ?");
-    params.push(raceType);
+  if (RaceTypeDetail) { 
+    conditions.push("RaceTypeDetail = ?");
+    params.push(RaceTypeDetail);
   }
 
   const numericFilters = {
@@ -719,6 +934,50 @@ app.delete('/api/race_selection_log/:id', (req, res) => {
 });
 
 
+app.get("/api/going/:table", (req, res) => {
+  const { table } = req.params;
+  const { page = 1, limit = 10, sire = "" } = req.query;
+
+  if (!validTables.includes(table)) {
+    return res.status(400).json({ error: "Invalid table requested." });
+  }
+
+  const offset = (parseInt(page) - 1) * parseInt(limit);
+  const searchTerm = `%${sire}%`;
+
+  const countQuery = `
+    SELECT COUNT(*) AS total FROM \`${table}\`
+    WHERE Sire LIKE ?
+  `;
+
+  const dataQuery = `
+    SELECT * FROM \`${table}\`
+    WHERE Sire LIKE ?
+    LIMIT ? OFFSET ?
+  `;
+
+  db.query(countQuery, [searchTerm], (countErr, countResults) => {
+    if (countErr) {
+      console.error("Count Query Error:", countErr);
+      return res.status(500).json({ error: "Database count error" });
+    }
+
+    const total = countResults[0].total;
+    const totalPages = Math.ceil(total / limit);
+
+    db.query(dataQuery, [searchTerm, parseInt(limit), offset], (dataErr, results) => {
+      if (dataErr) {
+        console.error("Data Query Error:", dataErr);
+        return res.status(500).json({ error: "Database data error" });
+      }
+
+      return res.status(200).json({
+        data: results,
+        totalPages,
+      });
+    });
+  });
+});
 
 
 
