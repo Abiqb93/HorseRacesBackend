@@ -266,26 +266,81 @@ app.get('/api/sire_uplift', (req, res) => {
 
 // Search companies by any field dynamically
 app.get('/api/companies', (req, res) => {
-  const { query } = req.query;
-  if (!query) {
-    return res.status(400).json({ error: "Search query is required" });
+  const {
+    query,
+    firstName,
+    lastName,
+    company,
+    category,
+    country,
+    listingCategory,
+    region,
+    servicesOffered,
+    operatingHours
+  } = req.query;
+
+  let sql = `SELECT * FROM Companies WHERE 1=1`;
+  const params = [];
+
+  if (query) {
+    const searchTerm = `%${query}%`;
+    sql += ` AND (
+      first_name LIKE ? OR last_name LIKE ? OR company_name LIKE ? OR 
+      category LIKE ? OR country LIKE ? OR city LIKE ? OR 
+      email LIKE ? OR phone LIKE ? OR website LIKE ? OR 
+      description LIKE ? OR listing_category LIKE ? OR region LIKE ? OR 
+      services_offered LIKE ? OR operating_hours LIKE ?
+    )`;
+    for (let i = 0; i < 14; i++) {
+      params.push(searchTerm);
+    }
   }
 
-  const searchQuery = `%${query}%`;
-  const sql = `
-    SELECT * FROM Companies 
-    WHERE first_name LIKE ? 
-    OR last_name LIKE ? 
-    OR company_name LIKE ? 
-    OR category LIKE ? 
-    OR country LIKE ? 
-    OR city LIKE ? 
-    OR email LIKE ? 
-    OR phone LIKE ? 
-    OR website LIKE ? 
-    OR description LIKE ?`;
+  // Optional filters
+  if (firstName) {
+    sql += ` AND first_name LIKE ?`;
+    params.push(`%${firstName}%`);
+  }
 
-  const params = new Array(10).fill(searchQuery);
+  if (lastName) {
+    sql += ` AND last_name LIKE ?`;
+    params.push(`%${lastName}%`);
+  }
+
+  if (company) {
+    sql += ` AND company_name LIKE ?`;
+    params.push(`%${company}%`);
+  }
+
+  if (category) {
+    sql += ` AND category LIKE ?`;
+    params.push(`%${category}%`);
+  }
+
+  if (country) {
+    sql += ` AND country LIKE ?`;
+    params.push(`%${country}%`);
+  }
+
+  if (listingCategory) {
+    sql += ` AND listing_category LIKE ?`;
+    params.push(`%${listingCategory}%`);
+  }
+
+  if (region) {
+    sql += ` AND region LIKE ?`;
+    params.push(`%${region}%`);
+  }
+
+  if (servicesOffered) {
+    sql += ` AND services_offered LIKE ?`;
+    params.push(`%${servicesOffered}%`);
+  }
+
+  if (operatingHours) {
+    sql += ` AND operating_hours LIKE ?`;
+    params.push(`%${operatingHours}%`);
+  }
 
   db.query(sql, params, (err, results) => {
     if (err) {
@@ -295,6 +350,7 @@ app.get('/api/companies', (req, res) => {
     res.status(200).json(results);
   });
 });
+
 
 app.get('/api/APIData_Table2', (req, res) => {
   let { meetingDate } = req.query;
