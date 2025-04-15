@@ -264,7 +264,41 @@ app.get('/api/sire_uplift', (req, res) => {
 
 
 
-// Search companies by any field dynamically
+// Autocomplete suggestions endpoint
+app.get('/api/companies/suggestions', (req, res) => {
+  const { query } = req.query;
+
+  if (!query || query.trim().length < 2) {
+    return res.status(400).json({ error: "Query too short" });
+  }
+
+  const searchTerm = `%${query}%`;
+
+  const sql = `
+    SELECT DISTINCT company_name, first_name, last_name 
+    FROM Companies 
+    WHERE 
+      first_name LIKE ? OR 
+      last_name LIKE ? OR 
+      company_name LIKE ?
+    LIMIT 10
+  `;
+
+  db.query(sql, [searchTerm, searchTerm, searchTerm], (err, results) => {
+    if (err) {
+      console.error("Error fetching suggestions:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    const suggestions = results
+      .map((row) => row.company_name || row.first_name || row.last_name)
+      .filter(Boolean);
+
+    res.status(200).json([...new Set(suggestions)]);
+  });
+});
+
+
 app.get('/api/companies', (req, res) => {
   const {
     query,
@@ -275,28 +309,53 @@ app.get('/api/companies', (req, res) => {
     country,
     listingCategory,
     region,
-    servicesOffered,
-    operatingHours
+    servicesOffered
   } = req.query;
 
-  let sql = `SELECT * FROM Companies WHERE 1=1`;
+  // ✅ Include `city` in selected columns
+  let sql = `
+    SELECT 
+      company_name,
+      first_name,
+      last_name,
+      category,
+      country,
+      region,
+      city,
+      services_offered,
+      listing_category,
+      email,
+      phone,
+      website
+    FROM Companies
+    WHERE 1=1
+  `;
+
   const params = [];
 
   if (query) {
     const searchTerm = `%${query}%`;
     sql += ` AND (
-      first_name LIKE ? OR last_name LIKE ? OR company_name LIKE ? OR 
-      category LIKE ? OR country LIKE ? OR city LIKE ? OR 
-      email LIKE ? OR phone LIKE ? OR website LIKE ? OR 
-      description LIKE ? OR listing_category LIKE ? OR region LIKE ? OR 
-      services_offered LIKE ? OR operating_hours LIKE ?
+      first_name LIKE ? OR 
+      last_name LIKE ? OR 
+      company_name LIKE ? OR 
+      category LIKE ? OR 
+      country LIKE ? OR 
+      city LIKE ? OR 
+      email LIKE ? OR 
+      phone LIKE ? OR 
+      website LIKE ? OR 
+      description LIKE ? OR 
+      listing_category LIKE ? OR 
+      region LIKE ? OR 
+      services_offered LIKE ?
     )`;
-    for (let i = 0; i < 14; i++) {
+    for (let i = 0; i < 13; i++) {
       params.push(searchTerm);
     }
   }
 
-  // Optional filters
+  // Optional filters (excluding operatingHours)
   if (firstName) {
     sql += ` AND first_name LIKE ?`;
     params.push(`%${firstName}%`);
@@ -335,11 +394,6 @@ app.get('/api/companies', (req, res) => {
   if (servicesOffered) {
     sql += ` AND services_offered LIKE ?`;
     params.push(`%${servicesOffered}%`);
-  }
-
-  if (operatingHours) {
-    sql += ` AND operating_hours LIKE ?`;
-    params.push(`%${operatingHours}%`);
   }
 
   db.query(sql, params, (err, results) => {
