@@ -47,7 +47,8 @@ const validTables = [
   'trainer_name_profile', 'trainer_name_profile_three', 'trainer_name_profile_one',
   'racenets', 'api_races', 'horse_names', 'selected_horses', 'APIData_Table2', 'race_selection_log', 'mareupdates', 'dampedigree_ratings', 'Companies', 
   'sire_age_reports', 'sire_country_reports', 'sire_sex_reports', 'sire_worldwide_reports', 'sire_crop_reports', 'sire_distance_reports', 
-  'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift'
+  'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
+  'RacesAndEntries', 'horseTracking', 'attheraces'
 ];
 
 
@@ -75,6 +76,177 @@ app.get('/api/sire_age_reports', (req, res) => {
     res.status(200).json({ data: results });
   });
 });
+
+
+app.get('/api/ClosingEntries', (req, res) => {
+  const query = `SELECT * FROM ClosingEntries`;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching ClosingEntries:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
+app.get("/api/attheraces/:horseName", (req, res) => {
+  const horseName = req.params.horseName;
+
+  const query = `
+    SELECT * FROM attheraces
+    WHERE LOWER(horse) = LOWER(?)
+    LIMIT 5
+  `;
+
+  db.query(query, [horseName], (err, results) => {
+    if (err) {
+      console.error("Error fetching sectional data:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (results.length === 0) {
+      return res.status(200).json({ data: [], message: "No Sectional Data Found" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
+
+app.get('/api/RacesAndEntries', (req, res) => {
+  const query = `SELECT * FROM RacesAndEntries`;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching ClosingEntries:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
+app.get('/api/EntriesTracking', (req, res) => {
+  const query = `SELECT * FROM EntriesTracking`;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching EntriesTracking:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
+app.get('/api/DeclarationsTracking', (req, res) => {
+  const query = `SELECT * FROM DeclarationsTracking`;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching DeclarationsTracking:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
+app.get('/api/ConfirmationsTracking', (req, res) => {
+  const query = `SELECT * FROM ConfirmationsTracking`;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching ConfirmationsTracking:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
+app.use(express.json()); 
+
+
+app.get('/api/horseTracking/all', (req, res) => {
+  const query = `SELECT * FROM horse_tracking ORDER BY trackingDate DESC`;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching all tracking data:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+// GET all tracking entries for a specific horse
+app.get('/api/horseTracking/:horseName', (req, res) => {
+  const horseName = req.params.horseName;
+  const query = `SELECT * FROM horse_tracking WHERE horseName = ? ORDER BY noteDateTime DESC`;
+
+  db.query(query, [horseName], (err, results) => {
+    if (err) {
+      console.error("Error fetching horseTracking:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+// POST a new tracking entry
+app.post('/api/horseTracking', (req, res) => {
+  const { horseName, note, noteDateTime, trackingDate } = req.body;
+
+  if (!horseName || !trackingDate) {
+    return res.status(400).json({ error: "horseName and trackingDate are required." });
+  }
+
+  const query = `INSERT INTO horse_tracking (horseName, note, noteDateTime, trackingDate)
+                VALUES (?, ?, COALESCE(?, NOW()), ?)`;
+  const values = [horseName, note || null, noteDateTime, trackingDate];
+
+  db.query(query, values, (err, result) => {
+    if (err) {
+      console.error("Error inserting horseTracking:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(201).json({ message: "Horse tracking entry added.", id: result.insertId });
+  });
+});
+
+// DELETE all entries for a specific horse
+app.delete('/api/horseTracking/:horseName', (req, res) => {
+  const horseName = req.params.horseName;
+
+  const query = `DELETE FROM horse_tracking WHERE horseName = ?`;
+  db.query(query, [horseName], (err, result) => {
+    if (err) {
+      console.error("Error deleting horseTracking:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "No tracking entries found for that horse." });
+    }
+
+    res.status(200).json({ message: `Deleted ${result.affectedRows} tracking entries.` });
+  });
+});
+
+
+
 
 // 1. sire_birthyear_reports
 app.get('/api/sire_crop_reports', (req, res) => {
@@ -406,6 +578,31 @@ app.get('/api/companies', (req, res) => {
 });
 
 
+app.get('/api/APIData_Table2/horse', (req, res) => {
+  const { horseName } = req.query;
+
+  if (!horseName) {
+    return res.status(400).json({ error: "Missing required query parameter: horseName" });
+  }
+
+  const query = `
+    SELECT * 
+    FROM APIData_Table2
+    WHERE LOWER(CONVERT(horseName USING utf8mb4)) = LOWER(CONVERT(? USING utf8mb4));
+  `;
+
+  db.query(query, [horseName], (err, rows) => {
+    if (err) {
+      console.error("Error fetching records:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: rows });
+  });
+});
+
+
+
 app.get('/api/APIData_Table2', (req, res) => {
   let { meetingDate } = req.query;
 
@@ -433,55 +630,55 @@ app.get('/api/APIData_Table2', (req, res) => {
 });
 
 
-app.get('/api/selected_horses', (req, res) => {
-  console.log("GET request received at /api/selected_horses");
+// app.get('/api/selected_horses', (req, res) => {
+//   console.log("GET request received at /api/selected_horses");
 
-  // Extract user identifiers and sorting parameters
-  const { user_id, user, sortBy, order = 'asc' } = req.query;
+//   // Extract user identifiers and sorting parameters
+//   const { user_id, user, sortBy, order = 'asc' } = req.query;
 
-  if (!user_id && !user) {
-    return res.status(400).json({ error: "User ID or username is required" });
-  }
+//   if (!user_id && !user) {
+//     return res.status(400).json({ error: "User ID or username is required" });
+//   }
 
-  // Define valid columns for sorting
-  const validSortColumns = [
-    "HorseName", "Sire", "Dam", "Trainer", "Jockey", "Owner",
-    "Country", "Age", "Runs", "Wins", "Stakes_Wins", "Group_Wins", 
-    "Group_1_Wins", "Earnings"
-  ]; 
+//   // Define valid columns for sorting
+//   const validSortColumns = [
+//     "HorseName", "Sire", "Dam", "Trainer", "Jockey", "Owner",
+//     "Country", "Age", "Runs", "Wins", "Stakes_Wins", "Group_Wins", 
+//     "Group_1_Wins", "Earnings"
+//   ]; 
 
-  // Validate sorting column
-  const safeSortBy = sortBy && validSortColumns.includes(sortBy) ? sortBy : null;
-  const safeOrder = order.toLowerCase() === "desc" ? "DESC" : "ASC";
+//   // Validate sorting column
+//   const safeSortBy = sortBy && validSortColumns.includes(sortBy) ? sortBy : null;
+//   const safeOrder = order.toLowerCase() === "desc" ? "DESC" : "ASC";
 
-  // Construct SQL query and parameters
-  let query = `SELECT * FROM selected_horses WHERE `;
-  let params = [];
+//   // Construct SQL query and parameters
+//   let query = `SELECT * FROM selected_horses WHERE `;
+//   let params = [];
 
-  if (user_id) {
-    query += ` user_id = ? `;
-    params.push(user_id);
-  } else if (user) {
-    query += ` user = ? `;
-    params.push(user);
-  }
+//   if (user_id) {
+//     query += ` user_id = ? `;
+//     params.push(user_id);
+//   } else if (user) {
+//     query += ` user = ? `;
+//     params.push(user);
+//   }
 
-  if (safeSortBy) {
-    query += ` ORDER BY \`${safeSortBy}\` ${safeOrder}`;
-  }
+//   if (safeSortBy) {
+//     query += ` ORDER BY \`${safeSortBy}\` ${safeOrder}`;
+//   }
 
-  console.log("Final Query:", query, "Params:", params);
+//   console.log("Final Query:", query, "Params:", params);
 
-  db.query(query, params, (err, results) => {
-    if (err) {
-      console.error("Error fetching horses from the database:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
+//   db.query(query, params, (err, results) => {
+//     if (err) {
+//       console.error("Error fetching horses from the database:", err);
+//       return res.status(500).json({ error: "Database error" });
+//     }
 
-    console.log(`Horses fetched successfully for user ${user_id || user}: ${results.length} rows`);
-    res.status(200).json(results);
-  });
-});
+//     console.log(`Horses fetched successfully for user ${user_id || user}: ${results.length} rows`);
+//     res.status(200).json(results);
+//   });
+// });
 
 
 app.post("/api/race_selection_log", (req, res) => {
@@ -802,137 +999,216 @@ app.get('/api/:tableName', (req, res) => {
 });
 
 
-app.use(express.json()); 
 
 
 
-app.post('/api/selected_horses', (req, res) => {
-  console.log("POST request received at /api/selected_horses");
 
-  // Log the headers and raw body
-  console.log("Request headers:", req.headers);
-  console.log("Raw request body:", req.body);
+// app.post('/api/selected_horses', (req, res) => {
+//   console.log("POST request received at /api/selected_horses");
 
-  const horse = req.body;
+//   // Log the headers and raw body
+//   console.log("Request headers:", req.headers);
+//   console.log("Raw request body:", req.body);
 
-  // Validation: Ensure required fields are present
-  if (!horse || !horse.Sire || !horse.Country || !horse.user_id) {
-    console.error("Validation failed: Missing required fields");
-    console.error("Received data (validation failed):", horse);
-    return res.status(400).json({ error: "Invalid horse data or missing user_id" });
+//   const horse = req.body;
+
+//   // Validation: Ensure required fields are present
+//   if (!horse || !horse.Sire || !horse.Country || !horse.user_id) {
+//     console.error("Validation failed: Missing required fields");
+//     console.error("Received data (validation failed):", horse);
+//     return res.status(400).json({ error: "Invalid horse data or missing user_id" });
+//   }
+
+//   // Prepare the query and parameters
+//   const query = `
+//     INSERT INTO selected_horses (
+//       Sire, Country, Runners, Runs, Winners, Wins, WinPercent_, Stakes_Winners,
+//       Stakes_Wins, Group_Winners, Group_Wins, Group_1_Winners, Group_1_Wins,
+//       WTR, SWTR, GWTR, G1WTR, WIV, WOE, WAX, Percent_RB2, user_id, notes
+//     )
+//     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+//   `;
+//   const params = [
+//     String(horse.Sire),
+//     String(horse.Country),
+//     horse.Runners !== null && horse.Runners !== undefined ? String(horse.Runners) : null,
+//     horse.Runs !== null && horse.Runs !== undefined ? String(horse.Runs) : null,
+//     horse.Winners !== null && horse.Winners !== undefined ? String(horse.Winners) : null,
+//     horse.Wins !== null && horse.Wins !== undefined ? String(horse.Wins) : null,
+//     horse.WinPercent_ !== null && horse.WinPercent_ !== undefined ? String(horse.WinPercent_) : null,
+//     horse.Stakes_Winners !== null && horse.Stakes_Winners !== undefined ? String(horse.Stakes_Winners) : null,
+//     horse.Stakes_Wins !== null && horse.Stakes_Wins !== undefined ? String(horse.Stakes_Wins) : null,
+//     horse.Group_Winners !== null && horse.Group_Winners !== undefined ? String(horse.Group_Winners) : null,
+//     horse.Group_Wins !== null && horse.Group_Wins !== undefined ? String(horse.Group_Wins) : null,
+//     horse.Group_1_Winners !== null && horse.Group_1_Winners !== undefined ? String(horse.Group_1_Winners) : null,
+//     horse.Group_1_Wins !== null && horse.Group_1_Wins !== undefined ? String(horse.Group_1_Wins) : null,
+//     horse.WTR !== null && horse.WTR !== undefined ? String(horse.WTR) : null,
+//     horse.SWTR !== null && horse.SWTR !== undefined ? String(horse.SWTR) : null,
+//     horse.GWTR !== null && horse.GWTR !== undefined ? String(horse.GWTR) : null,
+//     horse.G1WTR !== null && horse.G1WTR !== undefined ? String(horse.G1WTR) : null,
+//     horse.WIV !== null && horse.WIV !== undefined ? String(horse.WIV) : null,
+//     horse.WOE !== null && horse.WOE !== undefined ? String(horse.WOE) : null,
+//     horse.WAX !== null && horse.WAX !== undefined ? String(horse.WAX) : null,
+//     horse.Percent_RB2 !== null && horse.Percent_RB2 !== undefined ? String(horse.Percent_RB2) : null,
+//     horse.user_id || null,
+//     horse.notes ? String(horse.notes) : null,
+//   ];
+
+//   // Log the query and parameters
+//   console.log("SQL Query:", query);
+//   console.log("Query Parameters:", params);
+
+//   // Execute the query
+//   db.query(query, params, (err, result) => {
+//     if (err) {
+//       console.error("Database query error:", err);
+//       return res.status(500).json({ error: "Database error", details: err.message });
+//     }
+
+//     console.log("Horse saved successfully with ID:", result.insertId);
+//     res.status(200).json({ message: "Horse saved successfully", horse_id: result.insertId });
+//   });
+// });
+
+
+
+// // Delete a specific horse from the database
+// app.delete('/api/selected_horses/:id', (req, res) => {
+//   console.log("DELETE request received at /api/selected_horses");
+
+//   const horseId = req.params.id; // Extract the horse ID from the route parameter
+
+//   // Validate the ID
+//   if (!horseId) {
+//     return res.status(400).json({ error: "Horse ID is required" });
+//   }
+
+//   // Prepare the SQL query
+//   const query = `DELETE FROM selected_horses WHERE id = ?`;
+
+//   // Execute the query
+//   db.query(query, [horseId], (err, result) => {
+//     if (err) {
+//       console.error("Error deleting horse from the database:", err);
+//       return res.status(500).json({ error: "Database error" });
+//     }
+
+//     if (result.affectedRows === 0) {
+//       return res.status(404).json({ error: "Horse not found" });
+//     }
+
+//     console.log(`Horse with ID ${horseId} deleted successfully`);
+//     res.status(200).json({ message: `Horse with ID ${horseId} deleted successfully` });
+//   });
+// });
+
+// // Update the notes for a specific horse
+// app.put('/api/selected_horses/:id', (req, res) => {
+//   console.log("PUT request received at /api/selected_horses/:id");
+
+//   const horseId = req.params.id; // Extract horse ID from the URL
+//   const { notes } = req.body; // Extract notes from the request body
+
+//   if (!horseId || notes === undefined) {
+//     return res.status(400).json({ error: "Horse ID and notes are required" });
+//   }
+
+//   const query = `UPDATE selected_horses SET notes = ? WHERE id = ?`;
+//   const params = [notes, horseId];
+
+//   db.query(query, params, (err, result) => {
+//     if (err) {
+//       console.error("Error updating notes in the database:", err);
+//       return res.status(500).json({ error: "Database error" });
+//     }
+
+//     if (result.affectedRows === 0) {
+//       return res.status(404).json({ error: "Horse not found" });
+//     }
+
+//     console.log(`Notes updated for horse ID ${horseId}`);
+//     res.status(200).json({ message: `Notes updated successfully for horse ID ${horseId}` });
+//   });
+// });
+
+
+// --- POST: Track a new horse ---
+app.post("/api/selected_horses", (req, res) => {
+  const { horse_name, user_id, notes } = req.body;
+
+  if (!horse_name || !user_id) {
+    return res.status(400).json({ error: "Missing horse_name or user_id" });
   }
 
-  // Prepare the query and parameters
+  const unique_key = `${horse_name}_${user_id}`;
+
   const query = `
-    INSERT INTO selected_horses (
-      Sire, Country, Runners, Runs, Winners, Wins, WinPercent_, Stakes_Winners,
-      Stakes_Wins, Group_Winners, Group_Wins, Group_1_Winners, Group_1_Wins,
-      WTR, SWTR, GWTR, G1WTR, WIV, WOE, WAX, Percent_RB2, user_id, notes
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO selected_horses (horse_name, user_id, unique_key, notes)
+    VALUES (?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE notes = VALUES(notes), note_date = CURRENT_TIMESTAMP
   `;
-  const params = [
-    String(horse.Sire),
-    String(horse.Country),
-    horse.Runners !== null && horse.Runners !== undefined ? String(horse.Runners) : null,
-    horse.Runs !== null && horse.Runs !== undefined ? String(horse.Runs) : null,
-    horse.Winners !== null && horse.Winners !== undefined ? String(horse.Winners) : null,
-    horse.Wins !== null && horse.Wins !== undefined ? String(horse.Wins) : null,
-    horse.WinPercent_ !== null && horse.WinPercent_ !== undefined ? String(horse.WinPercent_) : null,
-    horse.Stakes_Winners !== null && horse.Stakes_Winners !== undefined ? String(horse.Stakes_Winners) : null,
-    horse.Stakes_Wins !== null && horse.Stakes_Wins !== undefined ? String(horse.Stakes_Wins) : null,
-    horse.Group_Winners !== null && horse.Group_Winners !== undefined ? String(horse.Group_Winners) : null,
-    horse.Group_Wins !== null && horse.Group_Wins !== undefined ? String(horse.Group_Wins) : null,
-    horse.Group_1_Winners !== null && horse.Group_1_Winners !== undefined ? String(horse.Group_1_Winners) : null,
-    horse.Group_1_Wins !== null && horse.Group_1_Wins !== undefined ? String(horse.Group_1_Wins) : null,
-    horse.WTR !== null && horse.WTR !== undefined ? String(horse.WTR) : null,
-    horse.SWTR !== null && horse.SWTR !== undefined ? String(horse.SWTR) : null,
-    horse.GWTR !== null && horse.GWTR !== undefined ? String(horse.GWTR) : null,
-    horse.G1WTR !== null && horse.G1WTR !== undefined ? String(horse.G1WTR) : null,
-    horse.WIV !== null && horse.WIV !== undefined ? String(horse.WIV) : null,
-    horse.WOE !== null && horse.WOE !== undefined ? String(horse.WOE) : null,
-    horse.WAX !== null && horse.WAX !== undefined ? String(horse.WAX) : null,
-    horse.Percent_RB2 !== null && horse.Percent_RB2 !== undefined ? String(horse.Percent_RB2) : null,
-    horse.user_id || null,
-    horse.notes ? String(horse.notes) : null,
-  ];
 
-  // Log the query and parameters
-  console.log("SQL Query:", query);
-  console.log("Query Parameters:", params);
-
-  // Execute the query
-  db.query(query, params, (err, result) => {
+  db.query(query, [horse_name, user_id, unique_key, notes || null], (err, result) => {
     if (err) {
-      console.error("Database query error:", err);
-      return res.status(500).json({ error: "Database error", details: err.message });
-    }
-
-    console.log("Horse saved successfully with ID:", result.insertId);
-    res.status(200).json({ message: "Horse saved successfully", horse_id: result.insertId });
-  });
-});
-
-
-
-// Delete a specific horse from the database
-app.delete('/api/selected_horses/:id', (req, res) => {
-  console.log("DELETE request received at /api/selected_horses");
-
-  const horseId = req.params.id; // Extract the horse ID from the route parameter
-
-  // Validate the ID
-  if (!horseId) {
-    return res.status(400).json({ error: "Horse ID is required" });
-  }
-
-  // Prepare the SQL query
-  const query = `DELETE FROM selected_horses WHERE id = ?`;
-
-  // Execute the query
-  db.query(query, [horseId], (err, result) => {
-    if (err) {
-      console.error("Error deleting horse from the database:", err);
+      console.error("Insert error:", err);
       return res.status(500).json({ error: "Database error" });
     }
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "Horse not found" });
-    }
-
-    console.log(`Horse with ID ${horseId} deleted successfully`);
-    res.status(200).json({ message: `Horse with ID ${horseId} deleted successfully` });
+    return res.status(200).json({ message: "Horse tracked successfully" });
   });
 });
 
-// Update the notes for a specific horse
-app.put('/api/selected_horses/:id', (req, res) => {
-  console.log("PUT request received at /api/selected_horses/:id");
+// --- PUT: Update notes for a tracked horse by unique_key ---
+app.put("/api/selected_horses/:unique_key", (req, res) => {
+  const { unique_key } = req.params;
+  const { notes } = req.body;
 
-  const horseId = req.params.id; // Extract horse ID from the URL
-  const { notes } = req.body; // Extract notes from the request body
-
-  if (!horseId || notes === undefined) {
-    return res.status(400).json({ error: "Horse ID and notes are required" });
+  if (!notes || !unique_key) {
+    return res.status(400).json({ error: "Missing notes or unique_key" });
   }
 
-  const query = `UPDATE selected_horses SET notes = ? WHERE id = ?`;
-  const params = [notes, horseId];
-
-  db.query(query, params, (err, result) => {
+  const query = `UPDATE selected_horses SET notes = ?, note_date = CURRENT_TIMESTAMP WHERE unique_key = ?`;
+  db.query(query, [notes, unique_key], (err, result) => {
     if (err) {
-      console.error("Error updating notes in the database:", err);
+      console.error("Update error:", err);
       return res.status(500).json({ error: "Database error" });
     }
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "Horse not found" });
-    }
-
-    console.log(`Notes updated for horse ID ${horseId}`);
-    res.status(200).json({ message: `Notes updated successfully for horse ID ${horseId}` });
+    return res.status(200).json({ message: "Notes updated successfully" });
   });
 });
+
+// --- GET: Fetch all tracked horses by user_id ---
+app.get("/api/selected_horses", (req, res) => {
+  const { user_id } = req.query;
+
+  if (!user_id) {
+    return res.status(400).json({ error: "Missing user_id" });
+  }
+
+  const query = `SELECT * FROM selected_horses WHERE user_id = ? ORDER BY tracked_on DESC`;
+  db.query(query, [user_id], (err, results) => {
+    if (err) {
+      console.error("Fetch error:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    return res.status(200).json(results);
+  });
+});
+
+// --- DELETE: Remove a tracked horse ---
+app.delete("/api/selected_horses/:unique_key", (req, res) => {
+  const { unique_key } = req.params;
+  if (!unique_key) return res.status(400).json({ error: "Missing unique_key" });
+
+  const query = `DELETE FROM selected_horses WHERE unique_key = ?`;
+  db.query(query, [unique_key], (err, result) => {
+    if (err) {
+      console.error("Delete error:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    return res.status(200).json({ message: "Horse untracked successfully" });
+  });
+});
+
 
 
 // API Endpoint to Save Race
@@ -1088,6 +1364,7 @@ app.get("/api/going/:table", (req, res) => {
     });
   });
 });
+
 
 
 
