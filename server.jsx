@@ -48,7 +48,7 @@ const validTables = [
   'racenets', 'api_races', 'horse_names', 'selected_horses', 'APIData_Table2', 'race_selection_log', 'mareupdates', 'dampedigree_ratings', 'Companies', 
   'sire_age_reports', 'sire_country_reports', 'sire_sex_reports', 'sire_worldwide_reports', 'sire_crop_reports', 'sire_distance_reports', 
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
-  'RacesAndEntries', 'horseTracking', 'attheraces'
+  'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords'
 ];
 
 
@@ -84,6 +84,34 @@ app.get('/api/ClosingEntries', (req, res) => {
   db.query(query, (err, results) => {
     if (err) {
       console.error("Error fetching ClosingEntries:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
+app.get('/api/IrelandRaceRecords', (req, res) => {
+  const query = `SELECT * FROM IrelandRaceRecords`;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching IrelandRaceRecords:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
+app.get('/api/FranceRaceRecords', (req, res) => {
+  const query = `SELECT * FROM FranceRaceRecords`;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching FranceRaceRecords:", err);
       return res.status(500).json({ error: "Database error" });
     }
 
@@ -204,17 +232,44 @@ app.get('/api/horseTracking/:horseName', (req, res) => {
   });
 });
 
-// POST a new tracking entry
 app.post('/api/horseTracking', (req, res) => {
-  const { horseName, note, noteDateTime, trackingDate } = req.body;
+  const {
+    horseName,
+    note,
+    noteDateTime,
+    trackingDate,
+    trackingType,
+    TrackingType,
+    user,
+    User
+  } = req.body;
+
+  const finalTrackingType = trackingType || TrackingType || null;
+  const finalUser = user || User || null;
 
   if (!horseName || !trackingDate) {
     return res.status(400).json({ error: "horseName and trackingDate are required." });
   }
 
-  const query = `INSERT INTO horse_tracking (horseName, note, noteDateTime, trackingDate)
-                VALUES (?, ?, COALESCE(?, NOW()), ?)`;
-  const values = [horseName, note || null, noteDateTime, trackingDate];
+  const query = `
+    INSERT INTO horse_tracking (
+      horseName,
+      note,
+      noteDateTime,
+      trackingDate,
+      TrackingType,
+      User
+    ) VALUES (?, ?, COALESCE(?, NOW()), ?, ?, ?)
+  `;
+
+  const values = [
+    horseName,
+    note || null,
+    noteDateTime,
+    trackingDate,
+    finalTrackingType,
+    finalUser
+  ];
 
   db.query(query, values, (err, result) => {
     if (err) {
@@ -578,6 +633,29 @@ app.get('/api/companies', (req, res) => {
 });
 
 
+// app.get('/api/APIData_Table2/horse', (req, res) => {
+//   const { horseName } = req.query;
+
+//   if (!horseName) {
+//     return res.status(400).json({ error: "Missing required query parameter: horseName" });
+//   }
+
+//   const query = `
+//     SELECT * 
+//     FROM APIData_Table2
+//     WHERE LOWER(CONVERT(horseName USING utf8mb4)) = LOWER(CONVERT(? USING utf8mb4));
+//   `;
+
+//   db.query(query, [horseName], (err, rows) => {
+//     if (err) {
+//       console.error("Error fetching records:", err);
+//       return res.status(500).json({ error: "Database error" });
+//     }
+
+//     res.status(200).json({ data: rows });
+//   });
+// });
+
 app.get('/api/APIData_Table2/horse', (req, res) => {
   const { horseName } = req.query;
 
@@ -585,13 +663,19 @@ app.get('/api/APIData_Table2/horse', (req, res) => {
     return res.status(400).json({ error: "Missing required query parameter: horseName" });
   }
 
+  const startTime = Date.now();
+
+  // Case-insensitive WHERE clause using collation — this **may** still use index
   const query = `
     SELECT * 
     FROM APIData_Table2
-    WHERE LOWER(CONVERT(horseName USING utf8mb4)) = LOWER(CONVERT(? USING utf8mb4));
+    WHERE horseName = ?;
   `;
 
   db.query(query, [horseName], (err, rows) => {
+    const elapsed = (Date.now() - startTime) / 1000;
+    console.log(`Query for horse "${horseName}" took ${elapsed.toFixed(2)} seconds`);
+
     if (err) {
       console.error("Error fetching records:", err);
       return res.status(500).json({ error: "Database error" });
