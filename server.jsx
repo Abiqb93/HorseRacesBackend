@@ -2,6 +2,7 @@
 const express = require('express');
 const mysql = require('mysql');
 const cors = require('cors');
+const bcrypt = require('bcrypt');
 
 const app = express();
 const port = process.env.PORT || 8080;
@@ -11,6 +12,7 @@ const allowedOrigins = [
   'http://localhost:3000', // Local frontend
   'https://horses-website-deployed-production.up.railway.app', // Deployed frontend
   'https://abiqb93.github.io', // GitHub Pages
+  'https://www.blandfordbloodstock.tech' 
 ];
 
 // Updated CORS middleware
@@ -48,8 +50,10 @@ const validTables = [
   'racenets', 'api_races', 'horse_names', 'selected_horses', 'APIData_Table2', 'race_selection_log', 'mareupdates', 'dampedigree_ratings', 'Companies', 
   'sire_age_reports', 'sire_country_reports', 'sire_sex_reports', 'sire_worldwide_reports', 'sire_crop_reports', 'sire_distance_reports', 
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
-  'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords'
+  'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts'
 ];
+
+
 
 
 app.get('/api/sire_age_reports', (req, res) => {
@@ -204,25 +208,34 @@ app.get('/api/ConfirmationsTracking', (req, res) => {
 app.use(express.json()); 
 
 
-app.get('/api/horseTracking/all', (req, res) => {
-  const query = `SELECT * FROM horse_tracking ORDER BY trackingDate DESC`;
+// ✅ GET: All tracking entries for a specific user
+app.get('/api/horseTracking', (req, res) => {
+  const { user } = req.query;
+  if (!user) {
+    return res.status(400).json({ error: "Missing user parameter" });
+  }
 
-  db.query(query, (err, results) => {
+  const query = `SELECT * FROM horse_tracking WHERE User = ? ORDER BY trackingDate DESC`;
+  db.query(query, [user], (err, results) => {
     if (err) {
-      console.error("Error fetching all tracking data:", err);
+      console.error("Error fetching tracking:", err);
       return res.status(500).json({ error: "Database error" });
     }
-
     res.status(200).json({ data: results });
   });
 });
 
-// GET all tracking entries for a specific horse
+// ✅ GET: All tracking entries for a specific horse and user
 app.get('/api/horseTracking/:horseName', (req, res) => {
   const horseName = req.params.horseName;
-  const query = `SELECT * FROM horse_tracking WHERE horseName = ? ORDER BY noteDateTime DESC`;
+  const { user } = req.query;
 
-  db.query(query, [horseName], (err, results) => {
+  if (!user) {
+    return res.status(400).json({ error: "Missing user parameter" });
+  }
+
+  const query = `SELECT * FROM horse_tracking WHERE horseName = ? AND User = ? ORDER BY noteDateTime DESC`;
+  db.query(query, [horseName, user], (err, results) => {
     if (err) {
       console.error("Error fetching horseTracking:", err);
       return res.status(500).json({ error: "Database error" });
@@ -232,6 +245,7 @@ app.get('/api/horseTracking/:horseName', (req, res) => {
   });
 });
 
+// ✅ POST: Add new tracking entry for a specific user
 app.post('/api/horseTracking', (req, res) => {
   const {
     horseName,
@@ -245,10 +259,10 @@ app.post('/api/horseTracking', (req, res) => {
   } = req.body;
 
   const finalTrackingType = trackingType || TrackingType || null;
-  const finalUser = user || User || null;
+  const finalUser = user || User;
 
-  if (!horseName || !trackingDate) {
-    return res.status(400).json({ error: "horseName and trackingDate are required." });
+  if (!horseName || !trackingDate || !finalUser) {
+    return res.status(400).json({ error: "horseName, trackingDate, and user are required." });
   }
 
   const query = `
@@ -281,19 +295,24 @@ app.post('/api/horseTracking', (req, res) => {
   });
 });
 
-// DELETE all entries for a specific horse
+// ✅ DELETE: Remove tracking entry for a horse and specific user
 app.delete('/api/horseTracking/:horseName', (req, res) => {
   const horseName = req.params.horseName;
+  const { user } = req.query;
 
-  const query = `DELETE FROM horse_tracking WHERE horseName = ?`;
-  db.query(query, [horseName], (err, result) => {
+  if (!user) {
+    return res.status(400).json({ error: "Missing user parameter" });
+  }
+
+  const query = `DELETE FROM horse_tracking WHERE horseName = ? AND User = ?`;
+  db.query(query, [horseName, user], (err, result) => {
     if (err) {
       console.error("Error deleting horseTracking:", err);
       return res.status(500).json({ error: "Database error" });
     }
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "No tracking entries found for that horse." });
+      return res.status(404).json({ error: "No tracking entries found for that horse and user." });
     }
 
     res.status(200).json({ message: `Deleted ${result.affectedRows} tracking entries.` });
@@ -765,27 +784,25 @@ app.get('/api/APIData_Table2', (req, res) => {
 // });
 
 
-app.post("/api/race_selection_log", (req, res) => {
-  const { user } = req.body;
+// GET: Fetch all race logs for a specific user
+app.get("/api/race_selection_log", (req, res) => {
+  const { user } = req.query;
 
   if (!user) {
     return res.status(400).json({ error: "User is required" });
   }
 
-  const query = `
-    SELECT meetingDate, courseId, raceNumber 
-    FROM race_selection_log 
-    WHERE user = ?;
-  `;
+  const query = `SELECT * FROM race_selection_log WHERE user = ? ORDER BY meetingDate DESC`;
 
   db.query(query, [user], (err, results) => {
     if (err) {
-      console.error("Error fetching user races:", err);
+      console.error("Error fetching race logs:", err);
       return res.status(500).json({ error: "Database error" });
     }
-    res.status(200).json(results);
+    res.status(200).json({ data: results });
   });
 });
+
 
 
 
@@ -1450,6 +1467,82 @@ app.get("/api/going/:table", (req, res) => {
 });
 
 
+app.post('/api/register', (req, res) => {
+  const { name, userID, email, mobile, password } = req.body;
+
+  if (!name || !userID || !email || !password) {
+    return res.status(400).json({ message: 'Missing required fields.' });
+  }
+
+  const checkQuery = 'SELECT * FROM UserAccounts WHERE email = ? OR user_id = ?';
+
+  db.query(checkQuery, [email, userID], (err, results) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ message: 'Internal server error.' });
+    }
+
+    if (results.length > 0) {
+      return res.status(409).json({ message: 'Email or User ID already registered.' });
+    }
+
+    bcrypt.hash(password, 10, (hashErr, hashedPassword) => {
+      if (hashErr) {
+        console.error('Hashing error:', hashErr);
+        return res.status(500).json({ message: 'Error encrypting password.' });
+      }
+
+      const insertQuery = `
+        INSERT INTO UserAccounts (name, user_id, email, password_hash, mobile_number)
+        VALUES (?, ?, ?, ?, ?)
+      `;
+
+      db.query(
+        insertQuery,
+        [name, userID, email, hashedPassword, mobile || null],
+        (insertErr) => {
+          if (insertErr) {
+            console.error('Insert error:', insertErr);
+            return res.status(500).json({ message: 'Internal server error.' });
+          }
+
+          return res.status(201).json({ message: 'User registered successfully.' });
+        }
+      );
+    });
+  });
+});
+
+
+app.post('/api/login', (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Missing email or password.' });
+  }
+
+  const query = 'SELECT * FROM UserAccounts WHERE email = ? LIMIT 1';
+
+  db.query(query, [email], async (err, results) => {
+    if (err) {
+      console.error('Login error:', err);
+      return res.status(500).json({ message: 'Database error.' });
+    }
+
+    if (results.length === 0) {
+      return res.status(401).json({ message: 'Invalid credentials.' });
+    }
+
+    const user = results[0];
+    const match = await bcrypt.compare(password, user.password_hash);
+
+    if (!match) {
+      return res.status(401).json({ message: 'Invalid credentials.' });
+    }
+
+    return res.status(200).json({ message: 'Login successful', userId: user.user_id });
+  });
+});
 
 
 // Start the server
