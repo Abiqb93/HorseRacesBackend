@@ -12,7 +12,8 @@ const allowedOrigins = [
   'http://localhost:3000', // Local frontend
   'https://horses-website-deployed-production.up.railway.app', // Deployed frontend
   'https://abiqb93.github.io', // GitHub Pages
-  'https://www.blandfordbloodstock.tech' 
+  'https://www.blandfordbloodstock.tech',
+  'http://www.blandfordbloodstock.tech'  
 ];
 
 // Updated CORS middleware
