@@ -3,6 +3,8 @@ const express = require('express');
 const mysql = require('mysql');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
+const nodemailer = require('nodemailer');
+const crypto = require('crypto');
 
 const app = express();
 const port = process.env.PORT || 8080;
@@ -1545,6 +1547,112 @@ app.post('/api/login', (req, res) => {
   });
 });
 
+
+app.post('/api/change-password', async (req, res) => {
+  const { email, oldPassword, newPassword } = req.body;
+
+  if (!email || !oldPassword || !newPassword) {
+    return res.status(400).json({ message: 'Missing required fields.' });
+  }
+
+  try {
+    const selectQuery = 'SELECT password_hash FROM UserAccounts WHERE email = ? LIMIT 1';
+    db.query(selectQuery, [email], async (err, results) => {
+      if (err) {
+        console.error('Error fetching user:', err);
+        return res.status(500).json({ message: 'Internal server error.' });
+      }
+
+      if (results.length === 0) {
+        return res.status(404).json({ message: 'User not found.' });
+      }
+
+      const existingHash = results[0].password_hash;
+      const isMatch = await bcrypt.compare(oldPassword, existingHash);
+
+      if (!isMatch) {
+        return res.status(401).json({ message: 'Old password is incorrect.' });
+      }
+
+      try {
+        const newHashedPassword = await bcrypt.hash(newPassword, 10);
+        const updateQuery = 'UPDATE UserAccounts SET password_hash = ? WHERE email = ?';
+
+        db.query(updateQuery, [newHashedPassword, email], (updateErr) => {
+          if (updateErr) {
+            console.error('Error updating password:', updateErr);
+            return res.status(500).json({ message: 'Failed to update password.' });
+          }
+
+          return res.status(200).json({ message: 'Password changed successfully.' });
+        });
+      } catch (hashErr) {
+        console.error('Error hashing new password:', hashErr);
+        return res.status(500).json({ message: 'Error processing password.' });
+      }
+    });
+  } catch (error) {
+    console.error('Unexpected error:', error);
+    return res.status(500).json({ message: 'Server error.' });
+  }
+});
+
+app.post('/api/forgot-password', async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) return res.status(400).json({ message: 'Email is required.' });
+
+  // Step 1: Check if user exists
+  const selectQuery = 'SELECT * FROM UserAccounts WHERE email = ? LIMIT 1';
+  db.query(selectQuery, [email], async (err, results) => {
+    if (err) {
+      console.error('DB error:', err);
+      return res.status(500).json({ message: 'Server error.' });
+    }
+
+    if (results.length === 0) {
+      return res.status(404).json({ message: 'No account found with this email.' });
+    }
+
+    // Step 2: Generate random 8-character password
+    const tempPassword = crypto.randomBytes(4).toString('hex'); // e.g., 'f4a1b2c3'
+
+    // Step 3: Hash it
+    const hashedPassword = await bcrypt.hash(tempPassword, 10);
+
+    // Step 4: Update password in DB
+    const updateQuery = 'UPDATE UserAccounts SET password_hash = ? WHERE email = ?';
+    db.query(updateQuery, [hashedPassword, email], async (updateErr) => {
+      if (updateErr) {
+        console.error('Update error:', updateErr);
+        return res.status(500).json({ message: 'Failed to update password.' });
+      }
+
+      // Step 5: Send email using nodemailer
+      try {
+        const transporter = nodemailer.createTransport({
+          service: 'gmail',
+          auth: {
+            user: 'bloodstockblandford@gmail.com', // ✅ your Gmail
+            pass: 'bhnf jsgm gpwd jhjo',    // ✅ your 16-character app password
+          },
+        });
+
+        await transporter.sendMail({
+          from: '"Blandford Bloodstock" <your_email@gmail.com>',
+          to: email,
+          subject: 'Your Temporary Password',
+          text: `Your temporary password is: ${tempPassword}\n\nPlease log in and change it immediately.`,
+        });
+
+        return res.status(200).json({ message: 'Temporary password sent to your email.' });
+      } catch (mailErr) {
+        console.error('Email error:', mailErr);
+        return res.status(500).json({ message: 'Password updated, but failed to send email.' });
+      }
+    });
+  });
+});
 
 // Start the server
 app.listen(port, () => {
