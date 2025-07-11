@@ -28,7 +28,7 @@ app.use(cors({
       callback(new Error('Not allowed by CORS'));
     }
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], // Allow all HTTP methods you need
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', "PATCH"], // Allow all HTTP methods you need
   allowedHeaders: ['Content-Type', 'Authorization'], // Specify allowed headers
   credentials: true, // Allow cookies or credentials
 }));
@@ -53,7 +53,7 @@ const validTables = [
   'racenets', 'api_races', 'horse_names', 'selected_horses', 'APIData_Table2', 'race_selection_log', 'mareupdates', 'dampedigree_ratings', 'Companies', 
   'sire_age_reports', 'sire_country_reports', 'sire_sex_reports', 'sire_worldwide_reports', 'sire_crop_reports', 'sire_distance_reports', 
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
-  'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts'
+  'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results'
 ];
 
 
@@ -896,6 +896,99 @@ app.get('/api/mareupdates', (req, res) => {
 });
 
 
+app.get('/api/userSearch', (req, res) => {
+  const searchQuery = req.query.q;
+
+  if (!searchQuery || searchQuery.trim().length === 0) {
+    return res.status(400).json({ message: 'Missing search query.' });
+  }
+
+  const sql = `
+    SELECT name, user_id, email 
+    FROM UserAccounts 
+    WHERE name LIKE ? OR user_id LIKE ?
+    LIMIT 10
+  `;
+
+  const queryParam = `%${searchQuery.trim()}%`;
+
+  db.query(sql, [queryParam, queryParam], (err, results) => {
+    if (err) {
+      console.error("User search error:", err);
+      return res.status(500).json({ message: "Server error." });
+    }
+
+    return res.status(200).json({ results });
+  });
+});
+
+
+app.post('/api/horse_tracking_shares', (req, res) => {
+  const { owner_user_id, shared_with_user_id } = req.body;
+
+  if (!owner_user_id || !shared_with_user_id) {
+    return res.status(400).json({ message: 'Both owner_user_id and shared_with_user_id are required.' });
+  }
+
+  const checkQuery = `
+    SELECT * FROM horse_tracking_shares 
+    WHERE owner_user_id = ? AND shared_with_user_id = ?
+  `;
+
+  db.query(checkQuery, [owner_user_id, shared_with_user_id], (err, results) => {
+    if (err) {
+      console.error('Error checking existing share:', err);
+      return res.status(500).json({ message: 'Database error.' });
+    }
+
+    if (results.length > 0) {
+      return res.status(409).json({ message: 'Tracking already shared with this user.' });
+    }
+
+    const insertQuery = `
+      INSERT INTO horse_tracking_shares (owner_user_id, shared_with_user_id)
+      VALUES (?, ?)
+    `;
+
+    db.query(insertQuery, [owner_user_id, shared_with_user_id], (insertErr) => {
+      if (insertErr) {
+        console.error('Insert error:', insertErr);
+        return res.status(500).json({ message: 'Failed to share tracking.' });
+      }
+
+      return res.status(201).json({ message: 'Tracking shared successfully.' });
+    });
+  });
+});
+
+
+app.get('/api/horse_tracking_shares', (req, res) => {
+  console.log("GET /api/horse_tracking_shares hit");
+
+  const sql = `
+    SELECT 
+      s.owner_user_id, 
+      s.shared_with_user_id, 
+      u1.name AS owner_name, 
+      u2.name AS shared_with_name 
+    FROM horse_tracking_shares s
+    LEFT JOIN UserAccounts u1 ON s.owner_user_id = u1.user_id
+    LEFT JOIN UserAccounts u2 ON s.shared_with_user_id = u2.user_id
+    ORDER BY s.id DESC
+  `;
+
+  db.query(sql, (err, results) => {
+    if (err) {
+      console.error("Error fetching shared tracking records:", err);
+      return res.status(500).json({ message: "Failed to fetch data." });
+    }
+
+    return res.status(200).json({ data: results });
+  });
+});
+
+
+
 app.get('/api/dampedigree_ratings', (req, res) => {
   console.log("GET request received at /api/dampedigree_ratings");
 
@@ -1653,6 +1746,119 @@ app.post('/api/forgot-password', async (req, res) => {
     });
   });
 });
+
+
+app.get('/api/reviewed_results', (req, res) => {
+  const user_id = req.query.user_id;
+
+  if (!user_id) {
+    return res.status(400).json({ error: "Missing user_id parameter" });
+  }
+
+  const query = `
+    SELECT horse_name, race_title, race_date
+    FROM reviewed_results
+    WHERE user_id = ?
+  `;
+
+  db.query(query, [user_id], (err, results) => {
+    if (err) {
+      console.error("Error fetching reviewed results:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    // ✅ Format race_date as plain YYYY-MM-DD string (no timezones)
+    const formattedResults = results.map(r => ({
+      ...r,
+      race_date: new Date(r.race_date).toISOString().split("T")[0],
+    }));
+
+    res.status(200).json({ data: formattedResults });
+  });
+});
+
+app.post('/api/reviewed_results', (req, res) => {
+  const { user_id, horse_name, race_title, race_date } = req.body;
+
+  if (!user_id || !horse_name || !race_title || !race_date) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+
+  // ✅ Trust frontend to send YYYY-MM-DD
+  const cleanDate = race_date;
+
+  const query = `
+    INSERT IGNORE INTO reviewed_results (user_id, horse_name, race_title, race_date)
+    VALUES (?, ?, ?, ?)
+  `;
+
+  db.query(query, [user_id, horse_name, race_title, cleanDate], (err, result) => {
+    if (err) {
+      console.error("Error inserting reviewed result:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(201).json({ message: "Result marked as reviewed." });
+  });
+});
+
+
+app.post('/api/race_watchlist', (req, res) => {
+  const { user_id, race_title, race_date, source_table } = req.body;
+
+  const sql = `
+    INSERT INTO race_watchlist (user_id, race_title, race_date, source_table)
+    VALUES (?, ?, ?, ?)
+  `;
+
+  db.query(sql, [user_id, race_title, race_date, source_table], (err, result) => {
+    if (err) {
+      console.error('Error inserting race_watchlist entry:', err);
+      return res.status(500).json({ error: 'Database insert failed' });
+    }
+    res.status(201).json({ message: 'Watchlist entry added', id: result.insertId });
+  });
+});
+
+app.get('/api/race_watchlist/:userId', (req, res) => {
+  const userId = req.params.userId;
+
+  const sql = `
+    SELECT * FROM race_watchlist WHERE user_id = ? ORDER BY race_date ASC
+  `;
+
+  db.query(sql, [userId], (err, results) => {
+    if (err) {
+      console.error('Error fetching race_watchlist:', err);
+      return res.status(500).json({ error: 'Database query failed' });
+    }
+    res.json(results);
+  });
+});
+
+app.patch('/api/race_watchlist/:id/done', (req, res) => {
+  const watchlistId = req.params.id;
+
+  const sql = `
+    UPDATE race_watchlist SET done = TRUE WHERE id = ?
+  `;
+
+  db.query(sql, [watchlistId], (err, result) => {
+    if (err) {
+      console.error('Error updating watchlist item:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Watchlist item not found' });
+    }
+
+    res.json({ message: 'Watchlist item marked as done' });
+  });
+});
+
+
+
 
 // Start the server
 app.listen(port, () => {
