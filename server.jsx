@@ -1804,14 +1804,14 @@ app.post('/api/reviewed_results', (req, res) => {
 
 
 app.post('/api/race_watchlist', (req, res) => {
-  const { user_id, race_title, race_date, source_table } = req.body;
+  const { user_id, race_title, race_date, race_time, source_table } = req.body;
 
   const sql = `
-    INSERT INTO race_watchlist (user_id, race_title, race_date, source_table)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO race_watchlist (user_id, race_title, race_date, race_time, source_table)
+    VALUES (?, ?, ?, ?, ?)
   `;
 
-  db.query(sql, [user_id, race_title, race_date, source_table], (err, result) => {
+  db.query(sql, [user_id, race_title, race_date, race_time, source_table], (err, result) => {
     if (err) {
       console.error('Error inserting race_watchlist entry:', err);
       return res.status(500).json({ error: 'Database insert failed' });
