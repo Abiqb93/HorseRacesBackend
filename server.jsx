@@ -53,7 +53,7 @@ const validTables = [
   'racenets', 'api_races', 'horse_names', 'selected_horses', 'APIData_Table2', 'race_selection_log', 'mareupdates', 'dampedigree_ratings', 'Companies', 
   'sire_age_reports', 'sire_country_reports', 'sire_sex_reports', 'sire_worldwide_reports', 'sire_crop_reports', 'sire_distance_reports', 
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
-  'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares'
+  'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist'
 ];
 
 
