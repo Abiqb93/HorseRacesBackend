@@ -53,7 +53,8 @@ const validTables = [
   'racenets', 'api_races', 'horse_names', 'selected_horses', 'APIData_Table2', 'race_selection_log', 'mareupdates', 'dampedigree_ratings', 'Companies', 
   'sire_age_reports', 'sire_country_reports', 'sire_sex_reports', 'sire_worldwide_reports', 'sire_crop_reports', 'sire_distance_reports', 
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
-  'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist'
+  'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
+  'sire_tracking', 'dam_tracking', 'owner_tracking'
 ];
 
 
@@ -708,6 +709,93 @@ app.get('/api/APIData_Table2/horse', (req, res) => {
 });
 
 
+app.get('/api/APIData_Table2/sire', (req, res) => {
+  const { sireName } = req.query;
+
+  if (!sireName) {
+    return res.status(400).json({ error: "Missing required query parameter: sireName" });
+  }
+
+  const startTime = Date.now();
+
+  const query = `
+    SELECT horseName 
+    FROM APIData_Table2
+    WHERE sireName = ?;
+  `;
+
+  db.query(query, [sireName], (err, rows) => {
+    const elapsed = (Date.now() - startTime) / 1000;
+    console.log(`Query for sire "${sireName}" took ${elapsed.toFixed(2)} seconds`);
+
+    if (err) {
+      console.error("Error fetching records:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: rows });
+  });
+});
+
+
+
+app.get('/api/APIData_Table2/dam', (req, res) => {
+  const { damName } = req.query;
+
+  if (!damName) {
+    return res.status(400).json({ error: "Missing required query parameter: damName" });
+  }
+
+  const startTime = Date.now();
+
+  const query = `
+    SELECT horseName 
+    FROM APIData_Table2
+    WHERE damName = ?;
+  `;
+
+  db.query(query, [damName], (err, rows) => {
+    const elapsed = (Date.now() - startTime) / 1000;
+    console.log(`Query for sire "${damName}" took ${elapsed.toFixed(2)} seconds`);
+
+    if (err) {
+      console.error("Error fetching records:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: rows });
+  });
+});
+
+
+app.get('/api/APIData_Table2/owner', (req, res) => {
+  const { ownerFullName } = req.query;
+
+  if (!ownerFullName) {
+    return res.status(400).json({ error: "Missing required query parameter: ownerFullName" });
+  }
+
+  const startTime = Date.now();
+
+  const query = `
+    SELECT horseName 
+    FROM APIData_Table2
+    WHERE ownerFullName = ?;
+  `;
+
+  db.query(query, [ownerFullName], (err, rows) => {
+    const elapsed = (Date.now() - startTime) / 1000;
+    console.log(`Query for sire "${ownerFullName}" took ${elapsed.toFixed(2)} seconds`);
+
+    if (err) {
+      console.error("Error fetching records:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: rows });
+  });
+});
+
 
 app.get('/api/APIData_Table2', (req, res) => {
   let { meetingDate } = req.query;
@@ -805,6 +893,192 @@ app.get("/api/race_selection_log", (req, res) => {
     res.status(200).json({ data: results });
   });
 });
+
+
+app.post("/api/sire_tracking", (req, res) => {
+  const { sireName, correspondingHorses, user_id } = req.body;
+
+  if (!sireName || !correspondingHorses || !user_id) {
+    return res.status(400).json({ error: "Missing required fields." });
+  }
+
+  const query = `
+    INSERT INTO sire_tracking (sireName, correspondingHorses, user_id)
+    VALUES (?, ?, ?);
+  `;
+
+  db.query(query, [sireName, JSON.stringify(correspondingHorses), user_id], (err, results) => {
+    if (err) {
+      console.error("Error saving sire tracking:", err);
+      return res.status(500).json({ error: "Database error." });
+    }
+    res.status(200).json({ message: "Sire tracking saved successfully!" });
+  });
+});
+
+
+app.get("/api/sire_tracking", (req, res) => {
+  const { user } = req.query;
+
+  if (!user) {
+    return res.status(400).json({ error: "User is required" });
+  }
+
+  const query = `SELECT * FROM sire_tracking WHERE user_id = ? ORDER BY created_at DESC`;
+
+  db.query(query, [user], (err, results) => {
+    if (err) {
+      console.error("Error fetching sire tracking:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    res.status(200).json({ data: results });
+  });
+});
+
+
+app.delete("/api/sire_tracking/:id", (req, res) => {
+  const id = req.params.id;
+  if (!id) return res.status(400).json({ error: "ID is required" });
+
+  const query = `DELETE FROM sire_tracking WHERE id = ?`;
+
+  db.query(query, [id], (err, result) => {
+    if (err) {
+      console.error("Error deleting sire tracking:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Record not found" });
+    }
+    res.status(200).json({ message: "Sire tracking deleted successfully." });
+  });
+});
+
+
+
+
+
+app.post("/api/dam_tracking", (req, res) => {
+  const { damName, correspondingHorses, user_id } = req.body;
+
+  if (!damName || !correspondingHorses || !user_id) {
+    return res.status(400).json({ error: "Missing required fields." });
+  }
+
+  const query = `
+    INSERT INTO dam_tracking (damName, correspondingHorses, user_id)
+    VALUES (?, ?, ?);
+  `;
+
+  db.query(query, [damName, JSON.stringify(correspondingHorses), user_id], (err, results) => {
+    if (err) {
+      console.error("Error saving dam tracking:", err);
+      return res.status(500).json({ error: "Database error." });
+    }
+    res.status(200).json({ message: "Dam tracking saved successfully!" });
+  });
+});
+
+
+app.get("/api/dam_tracking", (req, res) => {
+  const { user } = req.query;
+
+  if (!user) {
+    return res.status(400).json({ error: "User is required" });
+  }
+
+  const query = `SELECT * FROM dam_tracking WHERE user_id = ? ORDER BY created_at DESC`;
+
+  db.query(query, [user], (err, results) => {
+    if (err) {
+      console.error("Error fetching dam tracking:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    res.status(200).json({ data: results });
+  });
+});
+
+
+app.delete("/api/dam_tracking/:id", (req, res) => {
+  const id = req.params.id;
+  if (!id) return res.status(400).json({ error: "ID is required" });
+
+  const query = `DELETE FROM dam_tracking WHERE id = ?`;
+
+  db.query(query, [id], (err, result) => {
+    if (err) {
+      console.error("Error deleting dam tracking:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Record not found" });
+    }
+    res.status(200).json({ message: "Dam tracking deleted successfully." });
+  });
+});
+
+
+
+
+app.post("/api/owner_tracking", (req, res) => {
+  const { ownerFullName, correspondingHorses, user_id } = req.body;
+
+  if (!ownerFullName || !correspondingHorses || !user_id) {
+    return res.status(400).json({ error: "Missing required fields." });
+  }
+
+  const query = `
+    INSERT INTO owner_tracking (ownerFullName, correspondingHorses, user_id)
+    VALUES (?, ?, ?);
+  `;
+
+  db.query(query, [ownerFullName, JSON.stringify(correspondingHorses), user_id], (err, results) => {
+    if (err) {
+      console.error("Error saving Owner tracking:", err);
+      return res.status(500).json({ error: "Database error." });
+    }
+    res.status(200).json({ message: "Owner tracking saved successfully!" });
+  });
+});
+
+
+app.get("/api/owner_tracking", (req, res) => {
+  const { user } = req.query;
+
+  if (!user) {
+    return res.status(400).json({ error: "User is required" });
+  }
+
+  const query = `SELECT * FROM owner_tracking WHERE user_id = ? ORDER BY created_at DESC`;
+
+  db.query(query, [user], (err, results) => {
+    if (err) {
+      console.error("Error fetching owner tracking:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    res.status(200).json({ data: results });
+  });
+});
+
+
+app.delete("/api/owner_tracking/:id", (req, res) => {
+  const id = req.params.id;
+  if (!id) return res.status(400).json({ error: "ID is required" });
+
+  const query = `DELETE FROM owner_tracking WHERE id = ?`;
+
+  db.query(query, [id], (err, result) => {
+    if (err) {
+      console.error("Error deleting owner tracking:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Record not found" });
+    }
+    res.status(200).json({ message: "Owner tracking deleted successfully." });
+  });
+});
+
 
 
 
