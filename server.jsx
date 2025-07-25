@@ -1,3 +1,5 @@
+require("./emailNotifier");
+
 // Import required modules
 const express = require('express');
 const mysql = require('mysql');
@@ -133,8 +135,7 @@ app.get("/api/attheraces/:horseName", (req, res) => {
 
   const query = `
     SELECT * FROM attheraces
-    WHERE LOWER(horse) = LOWER(?)
-    LIMIT 5
+    WHERE horse = ?
   `;
 
   db.query(query, [horseName], (err, results) => {
@@ -151,6 +152,27 @@ app.get("/api/attheraces/:horseName", (req, res) => {
   });
 });
 
+app.get("/api/racingtv/:horseName", (req, res) => {
+  const horseName = req.params.horseName;
+
+  const query = `
+    SELECT * FROM racingtv
+    WHERE horseName = ?
+  `;
+
+  db.query(query, [horseName], (err, results) => {
+    if (err) {
+      console.error("❌ Error fetching RacingTV data:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (results.length === 0) {
+      return res.status(200).json({ data: [], message: "No RacingTV Data Found" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
 
 
 app.get('/api/RacesAndEntries', (req, res) => {
@@ -2077,15 +2099,23 @@ app.post('/api/reviewed_results', (req, res) => {
 });
 
 
+// POST: Add race to watchlist (with optional notify flag)
 app.post('/api/race_watchlist', (req, res) => {
-  const { user_id, race_title, race_date, race_time, source_table } = req.body;
+  const {
+    user_id,
+    race_title,
+    race_date,
+    race_time,
+    source_table,
+    notify = false, // optional: default to false
+  } = req.body;
 
   const sql = `
-    INSERT INTO race_watchlist (user_id, race_title, race_date, race_time, source_table)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO race_watchlist (user_id, race_title, race_date, race_time, source_table, notify)
+    VALUES (?, ?, ?, ?, ?, ?)
   `;
 
-  db.query(sql, [user_id, race_title, race_date, race_time, source_table], (err, result) => {
+  db.query(sql, [user_id, race_title, race_date, race_time, source_table, notify], (err, result) => {
     if (err) {
       console.error('Error inserting race_watchlist entry:', err);
       return res.status(500).json({ error: 'Database insert failed' });
@@ -2094,6 +2124,7 @@ app.post('/api/race_watchlist', (req, res) => {
   });
 });
 
+// GET: Fetch all races for a user
 app.get('/api/race_watchlist/:userId', (req, res) => {
   const userId = req.params.userId;
 
@@ -2110,6 +2141,7 @@ app.get('/api/race_watchlist/:userId', (req, res) => {
   });
 });
 
+// PATCH: Mark a race as done
 app.patch('/api/race_watchlist/:id/done', (req, res) => {
   const watchlistId = req.params.id;
 
@@ -2131,7 +2163,28 @@ app.patch('/api/race_watchlist/:id/done', (req, res) => {
   });
 });
 
+// PATCH: Toggle email notification
+app.patch('/api/race_watchlist/:id/notify', (req, res) => {
+  const watchlistId = req.params.id;
+  const { notify } = req.body;
 
+  const sql = `
+    UPDATE race_watchlist SET notify = ? WHERE id = ?
+  `;
+
+  db.query(sql, [notify, watchlistId], (err, result) => {
+    if (err) {
+      console.error('Error updating notify field:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Watchlist item not found' });
+    }
+
+    res.json({ message: `Notification ${notify ? 'enabled' : 'disabled'}` });
+  });
+});
 
 
 // Start the server
