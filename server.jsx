@@ -281,7 +281,11 @@ app.post('/api/horseTracking', (req, res) => {
     trackingType,
     TrackingType,
     user,
-    User
+    User,
+    damName,
+    sireName,
+    ownerFullName,
+    trainerFullName
   } = req.body;
 
   const finalTrackingType = trackingType || TrackingType || null;
@@ -298,8 +302,12 @@ app.post('/api/horseTracking', (req, res) => {
       noteDateTime,
       trackingDate,
       TrackingType,
-      User
-    ) VALUES (?, ?, COALESCE(?, NOW()), ?, ?, ?)
+      User,
+      Dam,
+      Sire,
+      Owner,
+      Trainer
+    ) VALUES (?, ?, COALESCE(?, NOW()), ?, ?, ?, ?, ?, ?, ?)
   `;
 
   const values = [
@@ -308,7 +316,11 @@ app.post('/api/horseTracking', (req, res) => {
     noteDateTime,
     trackingDate,
     finalTrackingType,
-    finalUser
+    finalUser,
+    damName || null,
+    sireName || null,
+    ownerFullName || null,
+    trainerFullName || null
   ];
 
   db.query(query, values, (err, result) => {
@@ -320,6 +332,7 @@ app.post('/api/horseTracking', (req, res) => {
     res.status(201).json({ message: "Horse tracking entry added.", id: result.insertId });
   });
 });
+
 
 // ✅ DELETE: Remove tracking entry for a horse and specific user
 app.delete('/api/horseTracking/:horseName', (req, res) => {
@@ -344,7 +357,6 @@ app.delete('/api/horseTracking/:horseName', (req, res) => {
     res.status(200).json({ message: `Deleted ${result.affectedRows} tracking entries.` });
   });
 });
-
 
 
 
@@ -918,18 +930,37 @@ app.get("/api/race_selection_log", (req, res) => {
 
 
 app.post("/api/sire_tracking", (req, res) => {
-  const { sireName, correspondingHorses, user_id } = req.body;
+  const {
+    sireName,
+    correspondingHorses,
+    user_id,
+    trackingDate,
+    notes
+  } = req.body;
 
   if (!sireName || !correspondingHorses || !user_id) {
     return res.status(400).json({ error: "Missing required fields." });
   }
 
   const query = `
-    INSERT INTO sire_tracking (sireName, correspondingHorses, user_id)
-    VALUES (?, ?, ?);
+    INSERT INTO sire_tracking (
+      sireName,
+      correspondingHorses,
+      user_id,
+      trackingDate,
+      notes
+    ) VALUES (?, ?, ?, ?, ?);
   `;
 
-  db.query(query, [sireName, JSON.stringify(correspondingHorses), user_id], (err, results) => {
+  const values = [
+    sireName,
+    JSON.stringify(correspondingHorses),
+    user_id,
+    trackingDate || null,
+    notes || null
+  ];
+
+  db.query(query, values, (err, results) => {
     if (err) {
       console.error("Error saving sire tracking:", err);
       return res.status(500).json({ error: "Database error." });
@@ -981,18 +1012,37 @@ app.delete("/api/sire_tracking/:id", (req, res) => {
 
 
 app.post("/api/dam_tracking", (req, res) => {
-  const { damName, correspondingHorses, user_id } = req.body;
+  const {
+    damName,
+    correspondingHorses,
+    user_id,
+    trackingDate,
+    notes
+  } = req.body;
 
   if (!damName || !correspondingHorses || !user_id) {
     return res.status(400).json({ error: "Missing required fields." });
   }
 
   const query = `
-    INSERT INTO dam_tracking (damName, correspondingHorses, user_id)
-    VALUES (?, ?, ?);
+    INSERT INTO dam_tracking (
+      damName,
+      correspondingHorses,
+      user_id,
+      trackingDate,
+      notes
+    ) VALUES (?, ?, ?, ?, ?);
   `;
 
-  db.query(query, [damName, JSON.stringify(correspondingHorses), user_id], (err, results) => {
+  const values = [
+    damName,
+    JSON.stringify(correspondingHorses),
+    user_id,
+    trackingDate || null,
+    notes || null
+  ];
+
+  db.query(query, values, (err, results) => {
     if (err) {
       console.error("Error saving dam tracking:", err);
       return res.status(500).json({ error: "Database error." });
@@ -1043,18 +1093,37 @@ app.delete("/api/dam_tracking/:id", (req, res) => {
 
 
 app.post("/api/owner_tracking", (req, res) => {
-  const { ownerFullName, correspondingHorses, user_id } = req.body;
+  const {
+    ownerFullName,
+    correspondingHorses,
+    user_id,
+    trackingDate,
+    notes
+  } = req.body;
 
   if (!ownerFullName || !correspondingHorses || !user_id) {
     return res.status(400).json({ error: "Missing required fields." });
   }
 
   const query = `
-    INSERT INTO owner_tracking (ownerFullName, correspondingHorses, user_id)
-    VALUES (?, ?, ?);
+    INSERT INTO owner_tracking (
+      ownerFullName,
+      correspondingHorses,
+      user_id,
+      trackingDate,
+      notes
+    ) VALUES (?, ?, ?, ?, ?);
   `;
 
-  db.query(query, [ownerFullName, JSON.stringify(correspondingHorses), user_id], (err, results) => {
+  const values = [
+    ownerFullName,
+    JSON.stringify(correspondingHorses),
+    user_id,
+    trackingDate || null,
+    notes || null
+  ];
+
+  db.query(query, values, (err, results) => {
     if (err) {
       console.error("Error saving Owner tracking:", err);
       return res.status(500).json({ error: "Database error." });
@@ -1062,7 +1131,6 @@ app.post("/api/owner_tracking", (req, res) => {
     res.status(200).json({ message: "Owner tracking saved successfully!" });
   });
 });
-
 
 app.get("/api/owner_tracking", (req, res) => {
   const { user } = req.query;
