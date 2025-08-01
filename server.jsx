@@ -1,4 +1,4 @@
-require("./emailNotifier");
+// require("./emailNotifier");
 
 // Import required modules
 const express = require('express');
@@ -271,7 +271,6 @@ app.get('/api/horseTracking/:horseName', (req, res) => {
   });
 });
 
-// ✅ POST: Add new tracking entry for a specific user
 app.post('/api/horseTracking', (req, res) => {
   const {
     horseName,
@@ -281,7 +280,11 @@ app.post('/api/horseTracking', (req, res) => {
     trackingType,
     TrackingType,
     user,
-    User
+    User,
+    sireName,
+    damName,
+    ownerFullName,
+    trainerFullName
   } = req.body;
 
   const finalTrackingType = trackingType || TrackingType || null;
@@ -298,8 +301,12 @@ app.post('/api/horseTracking', (req, res) => {
       noteDateTime,
       trackingDate,
       TrackingType,
-      User
-    ) VALUES (?, ?, COALESCE(?, NOW()), ?, ?, ?)
+      User,
+      sireName,
+      damName,
+      ownerFullName,
+      trainerFullName
+    ) VALUES (?, ?, COALESCE(?, NOW()), ?, ?, ?, ?, ?, ?, ?)
   `;
 
   const values = [
@@ -308,7 +315,11 @@ app.post('/api/horseTracking', (req, res) => {
     noteDateTime,
     trackingDate,
     finalTrackingType,
-    finalUser
+    finalUser,
+    sireName || null,
+    damName || null,
+    ownerFullName || null,
+    trainerFullName || null
   ];
 
   db.query(query, values, (err, result) => {
@@ -2099,7 +2110,7 @@ app.post('/api/reviewed_results', (req, res) => {
 });
 
 
-// POST: Add race to watchlist (with optional notify flag)
+// POST: Add race to watchlist (with optional notify, bookmark, notes)
 app.post('/api/race_watchlist', (req, res) => {
   const {
     user_id,
@@ -2107,15 +2118,17 @@ app.post('/api/race_watchlist', (req, res) => {
     race_date,
     race_time,
     source_table,
-    notify = false, // optional: default to false
+    notify = false,
+    bookmark = false,
+    notes = ''
   } = req.body;
 
   const sql = `
-    INSERT INTO race_watchlist (user_id, race_title, race_date, race_time, source_table, notify)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO race_watchlist (user_id, race_title, race_date, race_time, source_table, notify, bookmark, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
-  db.query(sql, [user_id, race_title, race_date, race_time, source_table, notify], (err, result) => {
+  db.query(sql, [user_id, race_title, race_date, race_time, source_table, notify, bookmark, notes], (err, result) => {
     if (err) {
       console.error('Error inserting race_watchlist entry:', err);
       return res.status(500).json({ error: 'Database insert failed' });
@@ -2185,6 +2198,57 @@ app.patch('/api/race_watchlist/:id/notify', (req, res) => {
     res.json({ message: `Notification ${notify ? 'enabled' : 'disabled'}` });
   });
 });
+
+
+// PATCH: Toggle bookmark flag
+app.patch('/api/race_watchlist/:id/bookmark', (req, res) => {
+  const watchlistId = req.params.id;
+  const { bookmark } = req.body;
+
+  const sql = `
+    UPDATE race_watchlist SET bookmark = ? WHERE id = ?
+  `;
+
+  db.query(sql, [bookmark, watchlistId], (err, result) => {
+    if (err) {
+      console.error('Error updating bookmark field:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Watchlist item not found' });
+    }
+
+    res.json({ message: `Bookmark ${bookmark ? 'added' : 'removed'}` });
+  });
+});
+
+
+// PATCH: Update notes field
+app.patch('/api/race_watchlist/:id/notes', (req, res) => {
+  const watchlistId = req.params.id;
+  const { notes } = req.body;
+
+  const sql = `
+    UPDATE race_watchlist SET notes = ? WHERE id = ?
+  `;
+
+  db.query(sql, [notes, watchlistId], (err, result) => {
+    if (err) {
+      console.error('Error updating notes field:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Watchlist item not found' });
+    }
+
+    res.json({ message: 'Notes updated successfully' });
+  });
+});
+
+
+
 
 
 // Start the server
