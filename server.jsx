@@ -56,8 +56,35 @@ const validTables = [
   'sire_age_reports', 'sire_country_reports', 'sire_sex_reports', 'sire_worldwide_reports', 'sire_crop_reports', 'sire_distance_reports', 
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
   'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
-  'sire_tracking', 'dam_tracking', 'owner_tracking'
+  'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform'
 ];
+
+
+
+// GET: Fetch all predicted timeform ratings
+app.get('/api/predicted_timeform', (req, res) => {
+  const sql = `
+    SELECT 
+      horseName, 
+      DATE_FORMAT(meetingDate, '%Y-%m-%d') AS meetingDate,
+      Predicted_timefigure 
+    FROM predicted_timeform 
+    ORDER BY meetingDate DESC
+  `;
+
+  console.log('[API] GET /api/predicted_timeform → running SQL:', sql);
+
+  db.query(sql, (err, results) => {
+    if (err) {
+      console.error('[ERROR] fetching predicted_timeform:', err);
+      return res.status(500).json({ error: 'Database query failed' });
+    }
+
+    console.log(`[✅ SUCCESS] Rows fetched from predicted_timeform: ${results.length}`);
+    console.table(results.slice(0, 5));
+    res.json(results);
+  });
+});
 
 
 
@@ -2246,9 +2273,6 @@ app.patch('/api/race_watchlist/:id/notes', (req, res) => {
     res.json({ message: 'Notes updated successfully' });
   });
 });
-
-
-
 
 
 // Start the server
