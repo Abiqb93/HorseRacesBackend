@@ -1,4 +1,4 @@
-// require("./emailNotifier");
+require("./emailNotifier");
 
 // Import required modules
 const express = require('express');
@@ -82,6 +82,20 @@ app.get('/api/predicted_timeform', (req, res) => {
 
     console.log(`[✅ SUCCESS] Rows fetched from predicted_timeform: ${results.length}`);
     console.table(results.slice(0, 5));
+    res.json(results);
+  });
+});
+
+
+// GET: Fetch all review horses
+app.get('/api/review_horses', (req, res) => {
+  const sql = `SELECT * FROM review_horses ORDER BY horseName ASC`;
+
+  db.query(sql, (err, results) => {
+    if (err) {
+      console.error('❌ Error fetching review_horses:', err);
+      return res.status(500).json({ error: 'Database query failed' });
+    }
     res.json(results);
   });
 });
@@ -880,6 +894,38 @@ app.get('/api/APIData_Table2', (req, res) => {
     }
 
     res.json({ data: rows });
+  });
+});
+
+
+app.get('/api/APIData_Table2/previousPerformance', (req, res) => {
+  const { horseName, meetingDate } = req.query;
+
+  if (!horseName || !meetingDate) {
+    return res.status(400).json({ error: "horseName and meetingDate are required" });
+  }
+
+  const query = `
+    SELECT performanceRating
+    FROM APIData_Table2
+    WHERE horseName = ?
+      AND meetingDate < ?
+      AND performanceRating IS NOT NULL
+    ORDER BY meetingDate DESC
+    LIMIT 1;
+  `;
+
+  db.query(query, [horseName, meetingDate], (err, results) => {
+    if (err) {
+      console.error("Database error:", err);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+
+    if (results.length === 0) {
+      return res.status(404).json({ message: "No previous performance rating found" });
+    }
+
+    res.json({ performanceRating: results[0].performanceRating });
   });
 });
 
@@ -2274,6 +2320,34 @@ app.patch('/api/race_watchlist/:id/notes', (req, res) => {
   });
 });
 
+
+// PATCH: Update notes for a review horse
+app.patch('/api/review_horses/:id/notes', (req, res) => {
+  const horseId = parseInt(req.params.id); // ✅ Ensure numeric ID
+  const { notes } = req.body;
+
+  console.log("🔄 PATCH request received:", { horseId, notes });
+
+  // Validation
+  if (!Number.isInteger(horseId)) {
+    return res.status(400).json({ error: 'Invalid horse ID' });
+  }
+
+  const sql = `UPDATE review_horses SET notes = ? WHERE id = ?`;
+
+  db.query(sql, [notes, horseId], (err, result) => {
+    if (err) {
+      console.error('❌ Error updating notes:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Review horse not found' });
+    }
+
+    res.json({ message: '✅ Notes updated successfully' });
+  });
+});
 
 // Start the server
 app.listen(port, () => {
