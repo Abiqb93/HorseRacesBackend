@@ -325,7 +325,10 @@ app.post('/api/horseTracking', (req, res) => {
     sireName,
     damName,
     ownerFullName,
-    trainerFullName
+    trainerFullName,
+    horseAge,
+    horseGender,
+    horseColour
   } = req.body;
 
   const finalTrackingType = trackingType || TrackingType || null;
@@ -346,8 +349,11 @@ app.post('/api/horseTracking', (req, res) => {
       sireName,
       damName,
       ownerFullName,
-      trainerFullName
-    ) VALUES (?, ?, COALESCE(?, NOW()), ?, ?, ?, ?, ?, ?, ?)
+      trainerFullName,
+      horseAge,
+      horseGender,
+      horseColour
+    ) VALUES (?, ?, COALESCE(?, NOW()), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   const values = [
@@ -360,7 +366,10 @@ app.post('/api/horseTracking', (req, res) => {
     sireName || null,
     damName || null,
     ownerFullName || null,
-    trainerFullName || null
+    trainerFullName || null,
+    horseAge || null,
+    horseGender || null,
+    horseColour || null
   ];
 
   db.query(query, values, (err, result) => {
@@ -372,6 +381,7 @@ app.post('/api/horseTracking', (req, res) => {
     res.status(201).json({ message: "Horse tracking entry added.", id: result.insertId });
   });
 });
+
 
 // ✅ DELETE: Remove tracking entry for a horse and specific user
 app.delete('/api/horseTracking/:horseName', (req, res) => {
