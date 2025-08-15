@@ -1,4 +1,4 @@
-require("./emailNotifier");
+// require("./emailNotifier");
 
 // Import required modules
 const express = require('express');
@@ -56,7 +56,7 @@ const validTables = [
   'sire_age_reports', 'sire_country_reports', 'sire_sex_reports', 'sire_worldwide_reports', 'sire_crop_reports', 'sire_distance_reports', 
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
   'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
-  'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform'
+  'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses'
 ];
 
 
@@ -89,18 +89,54 @@ app.get('/api/predicted_timeform', (req, res) => {
 
 // GET: Fetch all review horses
 app.get('/api/review_horses', (req, res) => {
-  const sql = `SELECT * FROM review_horses ORDER BY horseName ASC`;
+  const userId = (req.query.user || '').trim();
 
-  db.query(sql, (err, results) => {
-    if (err) {
-      console.error('❌ Error fetching review_horses:', err);
-      return res.status(500).json({ error: 'Database query failed' });
-    }
-    res.json(results);
+  // If no userId, fall back to all rows (or block — your choice)
+  const sql = userId
+    ? `
+      SELECT *
+      FROM review_horses
+      WHERE JSON_SEARCH(reviewStatus, 'one', ?) IS NULL
+      ORDER BY id DESC;
+    `
+    : `SELECT * FROM review_horses ORDER BY id DESC;`;
+
+  const params = userId ? [userId] : [];
+
+  db.query(sql, params, (err, rows) => {
+    if (err) return res.status(500).json({ error: 'Database query failed' });
+    res.json(rows);
   });
 });
 
 
+function required(body, fields) {
+  for (const f of fields) {
+    if (body[f] === undefined || body[f] === null || body[f] === "") return f;
+  }
+  return null;
+}
+
+
+// DELETE /api/notify_horses/by-keys
+// Body: { user_id, rec_date, rec_time, track, horse, race }
+app.delete("/api/notify_horses/by-keys", (req, res) => {
+  const need = required(req.body, ["user_id", "rec_date", "rec_time", "track", "horse", "race"]);
+  if (need) return res.status(400).json({ message: `Missing field: ${need}` });
+
+  const { user_id, rec_date, rec_time, track, horse, race } = req.body;
+  const sql = `
+    DELETE FROM notify_horses
+    WHERE user_id = ? AND rec_date = ? AND rec_time = ? AND track = ? AND horse = ? AND race = ?
+  `;
+  db.query(sql, [user_id, rec_date, rec_time, track, horse, race], (err, r) => {
+    if (err) {
+      console.error("DELETE /api/notify_horses/by-keys error:", err);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+    return res.status(200).json({ ok: true, affectedRows: r.affectedRows });
+  });
+});
 
 
 app.get('/api/sire_age_reports', (req, res) => {
@@ -229,6 +265,19 @@ app.get('/api/RacesAndEntries', (req, res) => {
   });
 });
 
+
+app.get('/api/racingpost', (req, res) => {
+  const query = `SELECT * FROM racingpost`;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching ClosingEntries:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
 
 app.get('/api/EntriesTracking', (req, res) => {
   const query = `SELECT * FROM EntriesTracking`;
@@ -381,6 +430,7 @@ app.post('/api/horseTracking', (req, res) => {
     res.status(201).json({ message: "Horse tracking entry added.", id: result.insertId });
   });
 });
+
 
 
 // ✅ DELETE: Remove tracking entry for a horse and specific user
@@ -2080,6 +2130,68 @@ app.post('/api/change-password', async (req, res) => {
   }
 });
 
+app.post('/api/update-mobile', (req, res) => {
+  const { email, user_id, mobile_number } = req.body;
+
+  if (!mobile_number || (!email && !user_id)) {
+    return res.status(400).json({ message: 'Missing required fields.' });
+  }
+
+  // Normalize and validate
+  const normalized = normalizeToE164(mobile_number);
+  const E164_REGEX = /^\+[1-9]\d{7,14}$/;
+  if (!E164_REGEX.test(normalized)) {
+    return res.status(400).json({
+      message: 'Invalid mobile number format. Use +447900123456 format.',
+    });
+  }
+
+  const whereClause = email ? 'email = ?' : 'user_id = ?';
+  const whereValue = email || user_id;
+
+  // Check if user exists
+  const selectQuery = `SELECT * FROM UserAccounts WHERE ${whereClause} LIMIT 1`;
+  db.query(selectQuery, [whereValue], (err, results) => {
+    if (err) {
+      console.error('Error fetching user:', err);
+      return res.status(500).json({ message: 'Internal server error.' });
+    }
+
+    if (results.length === 0) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    // Update mobile number
+    const updateQuery = `UPDATE UserAccounts SET mobile_number = ? WHERE ${whereClause}`;
+    db.query(updateQuery, [normalized, whereValue], (updateErr) => {
+      if (updateErr) {
+        console.error('Error updating mobile number:', updateErr);
+        return res.status(500).json({ message: 'Failed to update mobile number.' });
+      }
+
+      return res.status(200).json({
+        message: 'Mobile number updated successfully.',
+        mobile_number: normalized
+      });
+    });
+  });
+});
+
+// Helper function
+function normalizeToE164(input) {
+  let cleaned = String(input).trim().replace(/[()\s.-]/g, '');
+  if (cleaned.startsWith('+')) {
+    cleaned = '+' + cleaned.slice(1).replace(/\D/g, '');
+  } else if (cleaned.startsWith('00')) {
+    cleaned = '+' + cleaned.slice(2).replace(/\D/g, '');
+  } else {
+    cleaned = '+' + cleaned.replace(/\D/g, '');
+  }
+  return cleaned;
+}
+
+
+
 app.post('/api/forgot-password', async (req, res) => {
   const { email } = req.body;
 
@@ -2193,7 +2305,6 @@ app.post('/api/reviewed_results', (req, res) => {
 });
 
 
-// POST: Add race to watchlist (with optional notify, bookmark, notes)
 app.post('/api/race_watchlist', (req, res) => {
   const {
     user_id,
@@ -2201,23 +2312,35 @@ app.post('/api/race_watchlist', (req, res) => {
     race_date,
     race_time,
     source_table,
+    track = null,        // NEW
     notify = false,
     bookmark = false,
     notes = ''
   } = req.body;
 
+  // (optional) basic required fields check
+  if (!user_id || !race_title || !race_date || !race_time || !source_table) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
   const sql = `
-    INSERT INTO race_watchlist (user_id, race_title, race_date, race_time, source_table, notify, bookmark, notes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO race_watchlist
+      (user_id, race_title, race_date, race_time, track, source_table, notify, bookmark, notes)
+    VALUES
+      (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
-  db.query(sql, [user_id, race_title, race_date, race_time, source_table, notify, bookmark, notes], (err, result) => {
-    if (err) {
-      console.error('Error inserting race_watchlist entry:', err);
-      return res.status(500).json({ error: 'Database insert failed' });
+  db.query(
+    sql,
+    [user_id, race_title, race_date, race_time, track, source_table, notify, bookmark, notes],
+    (err, result) => {
+      if (err) {
+        console.error('Error inserting race_watchlist entry:', err);
+        return res.status(500).json({ error: 'Database insert failed' });
+      }
+      res.status(201).json({ message: 'Watchlist entry added', id: result.insertId });
     }
-    res.status(201).json({ message: 'Watchlist entry added', id: result.insertId });
-  });
+  );
 });
 
 // GET: Fetch all races for a user
@@ -2358,6 +2481,177 @@ app.patch('/api/review_horses/:id/notes', (req, res) => {
     res.json({ message: '✅ Notes updated successfully' });
   });
 });
+
+
+// PATCH: per-user review status using JSON array (reviewStatus holds userIds)
+app.patch('/api/review_horses/:id/reviewStatus', (req, res) => {
+  const horseId = Number(req.params.id);
+  const { userId, reviewed, reviewStatus } = req.body || {};
+
+  if (!Number.isInteger(horseId)) {
+    return res.status(400).json({ error: 'Invalid horse ID' });
+  }
+  if (!userId || typeof userId !== 'string' || !userId.trim()) {
+    return res.status(400).json({ error: 'userId is required' });
+  }
+
+  // Determine desired state: reviewed (true) or unreviewed (false)
+  // Support both `reviewed: true/false` and legacy `reviewStatus: 1/0`
+  const wantReviewed =
+    typeof reviewed === 'boolean'
+      ? reviewed
+      : (reviewStatus === 1 || reviewStatus === '1');
+
+  if (wantReviewed) {
+    // ADD userId to JSON array if not already present
+    const sql = `
+      UPDATE review_horses
+      SET reviewStatus = IF(
+        JSON_CONTAINS(reviewStatus, JSON_QUOTE(?), '$'),
+        reviewStatus,                                  -- already present, keep as-is
+        JSON_ARRAY_APPEND(reviewStatus, '$', ?)        -- append userId
+      )
+      WHERE id = ?;
+    `;
+    db.query(sql, [userId, userId, horseId], (err, result) => {
+      if (err) {
+        console.error('❌ Error updating reviewStatus (add):', err);
+        return res.status(500).json({ error: 'Database update failed' });
+      }
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: 'Review horse not found' });
+      }
+      return res.json({ message: '✅ Marked reviewed', id: horseId, userId, reviewed: true });
+    });
+  } else {
+    // REMOVE userId from JSON array if present
+    const sql = `
+      UPDATE review_horses
+      SET reviewStatus = CASE
+        WHEN JSON_SEARCH(reviewStatus, 'one', ?) IS NULL THEN reviewStatus
+        ELSE JSON_REMOVE(reviewStatus, JSON_UNQUOTE(JSON_SEARCH(reviewStatus, 'one', ?)))
+      END
+      WHERE id = ?;
+    `;
+    db.query(sql, [userId, userId, horseId], (err, result) => {
+      if (err) {
+        console.error('❌ Error updating reviewStatus (remove):', err);
+        return res.status(500).json({ error: 'Database update failed' });
+      }
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: 'Review horse not found' });
+      }
+      return res.json({ message: '✅ Marked unreviewed', id: horseId, userId, reviewed: false });
+    });
+  }
+});
+
+
+app.patch('/api/horseTracking/:horseName/flags', (req, res) => {
+  try {
+    const { horseName } = req.params;
+    const user = req.query.user || req.body.user || req.body.User;
+    let { bookmark, notify, done } = req.body || {};
+
+    if (!horseName || !user) {
+      return res.status(400).json({ error: "horseName and user are required." });
+    }
+
+    const sets = [];
+    const values = [];
+
+    if (bookmark !== undefined) {
+      bookmark = (bookmark === true || bookmark === 1 || bookmark === "1") ? 1 : 0;
+      sets.push('bookmark = ?');
+      values.push(bookmark);
+    }
+    if (notify !== undefined) {
+      notify = (notify === true || notify === 1 || notify === "1") ? 1 : 0;
+      sets.push('notify = ?');
+      values.push(notify);
+    }
+    if (done !== undefined) {
+      done = (done === true || done === 1 || done === "1") ? 1 : 0;
+      sets.push('done = ?');
+      values.push(done);
+    }
+
+    if (sets.length === 0) {
+      return res.status(400).json({ error: "Provide at least one of bookmark, notify, done." });
+    }
+
+    // Case-insensitive match on horseName; backtick `User`
+    const sql = `
+      UPDATE horse_tracking
+      SET ${sets.join(', ')}
+      WHERE LOWER(horseName) = LOWER(?) AND \`User\` = ?
+    `;
+    values.push(horseName, user);
+
+    db.query(sql, values, (err, result) => {
+      if (err) {
+        console.error("[horseTracking flags] SQL ERROR:", err.code, err.sqlMessage);
+        return res.status(500).json({ error: "Database error", code: err.code, message: err.sqlMessage });
+      }
+      return res.json({ message: "Flags updated", affectedRows: result.affectedRows });
+    });
+  } catch (e) {
+    console.error("[horseTracking flags] Handler error:", e);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// POST /api/notify_horses  -> insert (or touch updated_at if duplicate)
+app.post("/api/notify_horses", (req, res) => {
+  const need = required(req.body, ["user_id", "rec_date", "rec_time", "track", "horse", "type", "race"]);
+  if (need) return res.status(400).json({ message: `Missing field: ${need}` });
+
+  const { user_id, rec_date, rec_time, track, horse, type, race, source = null } = req.body;
+
+  const sql = `
+    INSERT INTO notify_horses (user_id, rec_date, rec_time, track, horse, type, race, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP
+  `;
+  db.query(sql, [user_id, rec_date, rec_time, track, horse, type, race, source], (err, result) => {
+    if (err) {
+      console.error("POST /api/notify_horses error:", err);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+    return res.status(200).json({ ok: true, id: result.insertId || null });
+  });
+});
+
+// GET /api/notify_horses?user=<user_id>&date=YYYY-MM-DD
+app.get("/api/notify_horses", (req, res) => {
+  const { user: user_id, date } = req.query;
+  let sql = "SELECT * FROM notify_horses WHERE 1=1";
+  const params = [];
+  if (user_id) { sql += " AND user_id = ?"; params.push(user_id); }
+  if (date)    { sql += " AND rec_date = ?"; params.push(date);   }
+  sql += " ORDER BY rec_date ASC, rec_time ASC";
+
+  db.query(sql, params, (err, rows) => {
+    if (err) {
+      console.error("GET /api/notify_horses error:", err);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+    return res.status(200).json({ ok: true, data: rows });
+  });
+});
+
+// DELETE /api/notify_horses/:id
+app.delete("/api/notify_horses/:id", (req, res) => {
+  const { id } = req.params;
+  db.query("DELETE FROM notify_horses WHERE id = ?", [id], (err, r) => {
+    if (err) {
+      console.error("DELETE /api/notify_horses/:id error:", err);
+      return res.status(500).json({ message: "Internal server error" });
+    }
+    return res.status(200).json({ ok: true, affectedRows: r.affectedRows });
+  });
+});
+
 
 // Start the server
 app.listen(port, () => {
