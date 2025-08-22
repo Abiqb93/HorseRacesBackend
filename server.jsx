@@ -229,6 +229,31 @@ app.get("/api/attheraces/:horseName", (req, res) => {
   });
 });
 
+app.get("/api/attheraces/:time/:racename/:date", (req, res) => {
+  const raceTime = req.params.time;       // e.g., "14:40"
+  const raceName = req.params.racename;   // e.g., "Southwell"
+  const raceDate = req.params.date;       // e.g., "09-06-2025"
+
+  const query = `
+    SELECT * FROM attheraces
+    WHERE Time = ? AND Racename = ? AND Date = ?
+  `;
+
+  db.query(query, [raceTime, raceName, raceDate], (err, results) => {
+    if (err) {
+      console.error("Error fetching race data:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (results.length === 0) {
+      return res.status(200).json({ data: [], message: "No Race Found" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
 app.get("/api/racingtv/:horseName", (req, res) => {
   const horseName = req.params.horseName;
 
@@ -251,6 +276,27 @@ app.get("/api/racingtv/:horseName", (req, res) => {
   });
 });
 
+app.get("/api/racingtv/url/:raceUrl", (req, res) => {
+  const raceUrl = req.params.raceUrl;
+
+  const query = `
+    SELECT * FROM racingtv
+    WHERE RaceURL = ?
+  `;
+
+  db.query(query, [raceUrl], (err, results) => {
+    if (err) {
+      console.error("❌ Error fetching RacingTV (by RaceURL):", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (results.length === 0) {
+      return res.status(200).json({ data: [], message: "No RacingTV Data Found" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
 
 app.get('/api/RacesAndEntries', (req, res) => {
   const query = `SELECT * FROM RacesAndEntries`;
