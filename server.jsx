@@ -56,7 +56,7 @@ const validTables = [
   'sire_age_reports', 'sire_country_reports', 'sire_sex_reports', 'sire_worldwide_reports', 'sire_crop_reports', 'sire_distance_reports', 
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
   'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
-  'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses'
+  'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data'
 ];
 
 
@@ -252,6 +252,33 @@ app.get("/api/attheraces/:time/:racename/:date", (req, res) => {
     res.status(200).json({ data: results });
   });
 });
+
+// fetch pars_data for a given race
+app.get("/api/pars/:time/:racename/:date", (req, res) => {
+  const raceTime = req.params.time;       // e.g., "14:40"
+  const raceName = req.params.racename;   // e.g., "Ascot"
+  const raceDate = req.params.date;       // e.g., "09-06-2025"
+
+  const query = `
+    SELECT *
+    FROM pars_data
+    WHERE Time = ? AND Racename = ? AND Date = ?
+  `;
+
+  db.query(query, [raceTime, raceName, raceDate], (err, results) => {
+    if (err) {
+      console.error("Error fetching pars data:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (results.length === 0) {
+      return res.status(200).json({ data: [], message: "No Pars Found" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
 
 
 app.get("/api/racingtv/:horseName", (req, res) => {
