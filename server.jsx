@@ -253,31 +253,102 @@ app.get("/api/attheraces/:time/:racename/:date", (req, res) => {
   });
 });
 
-// fetch pars_data for a given race
-app.get("/api/pars/:time/:racename/:date", (req, res) => {
-  const raceTime = req.params.time;       // e.g., "14:40"
-  const raceName = req.params.racename;   // e.g., "Ascot"
-  const raceDate = req.params.date;       // e.g., "09-06-2025"
+// GET /api/pars/:racename
+app.get("/api/pars/:racename", (req, res) => {
+  const raceName = (req.params.racename || "").trim(); // don't wrap column in functions => keep index usable
+  if (!raceName) {
+    return res.status(400).json({ error: "racename is required" });
+  }
 
-  const query = `
+  const sql = `
     SELECT *
     FROM pars_data
-    WHERE Time = ? AND Racename = ? AND Date = ?
+    WHERE Racename = ?
+    ORDER BY Dist_f ASC
   `;
 
-  db.query(query, [raceTime, raceName, raceDate], (err, results) => {
+  db.query(sql, [raceName], (err, results) => {
     if (err) {
       console.error("Error fetching pars data:", err);
       return res.status(500).json({ error: "Database error" });
     }
-
-    if (results.length === 0) {
+    if (!results || results.length === 0) {
       return res.status(200).json({ data: [], message: "No Pars Found" });
     }
-
     res.status(200).json({ data: results });
   });
 });
+
+// GET /api/pars-ga/:racename/:date/:time
+// Example: /api/pars-ga/Ascot/26-07-2025/17:15
+app.get("/api/pars-ga/:racename/:date/:time", (req, res) => {
+  const raceName = decodeURIComponent((req.params.racename || "").trim());
+  const dateUK   = (req.params.date || "").trim();   // dd-mm-YYYY expected
+  const timeIn   = (req.params.time || "").trim();   // HH:MM or HH:MM:SS (24h) or h:mm AM/PM
+
+  if (!raceName || !dateUK || !timeIn) {
+    return res.status(400).json({ error: "racename, date and time are required" });
+  }
+
+  // --- helpers ---
+  const toISODate = (uk) => {
+    // dd-mm-YYYY or dd/mm/YYYY
+    const m = uk.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+    if (!m) return null;
+    const dd = m[1].padStart(2, "0");
+    const mm = m[2].padStart(2, "0");
+    const yyyy = m[3];
+    return `${yyyy}-${mm}-${dd}`; // MySQL DATE
+  };
+
+  const toHHMMSS = (t) => {
+    // 24h: H:MM or HH:MM[:SS]
+    let m = t.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (m) {
+      let hh = m[1].padStart(2, "0");
+      const mm = m[2];
+      const ss = (m[3] || "00").padStart(2, "0");
+      return `${hh}:${mm}:${ss}`;
+    }
+    // 12h: H:MM AM/PM
+    m = t.match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$/);
+    if (m) {
+      let hh = parseInt(m[1], 10);
+      const mm = m[2];
+      const ap = m[3].toUpperCase();
+      if (ap === "PM" && hh < 12) hh += 12;
+      if (ap === "AM" && hh === 12) hh = 0;
+      return `${String(hh).padStart(2, "0")}:${mm}:00`;
+    }
+    return null;
+  };
+
+  const dateISO = toISODate(dateUK);
+  const timeSQL = toHHMMSS(timeIn);
+
+  if (!dateISO || !timeSQL) {
+    return res.status(400).json({ error: "Invalid date or time format" });
+  }
+
+  const sql = `
+    SELECT *
+    FROM pars_data_ga
+    WHERE Racename = ? AND Date = ? AND Time = ?
+    ORDER BY Dist_f ASC
+  `;
+
+  db.query(sql, [raceName, dateISO, timeSQL], (err, results) => {
+    if (err) {
+      console.error("Error fetching pars_data_ga:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    if (!results || results.length === 0) {
+      return res.status(200).json({ data: [], message: "No rows found" });
+    }
+    res.status(200).json({ data: results });
+  });
+});
+
 
 
 
