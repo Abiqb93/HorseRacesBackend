@@ -56,7 +56,7 @@ const validTables = [
   'sire_age_reports', 'sire_country_reports', 'sire_sex_reports', 'sire_worldwide_reports', 'sire_crop_reports', 'sire_distance_reports', 
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
   'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
-  'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data'
+  'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion'
 ];
 
 
@@ -105,6 +105,39 @@ app.get('/api/review_horses', (req, res) => {
 
   db.query(sql, params, (err, rows) => {
     if (err) return res.status(500).json({ error: 'Database query failed' });
+    res.json(rows);
+  });
+});
+
+
+app.get('/api/potential_stallion', (req, res) => {
+  const sql = `
+    SELECT 
+      id,
+      DATE_FORMAT(meetingDate, '%Y-%m-%d') AS meetingDate,
+      horseName,
+      performanceRating,
+      performanceRatingNum,
+      raceTitle,
+      courseName,
+      DATE_FORMAT(scheduledTimeOfRaceLocal, '%Y-%m-%d %H:%i:%s') AS scheduledTimeOfRaceLocal,
+      horseAge,
+      sireName,
+      damName,
+      ownerFullName,
+      trainerFullName,
+      horseGender,
+      horseGenderFull,
+      raceType,
+      created_at
+    FROM potential_stallion
+  `;
+
+  db.query(sql, (err, rows) => {
+    if (err) {
+      console.error('[ERROR] DB query failed:', err);
+      return res.status(500).json({ error: 'Database query failed' });
+    }
     res.json(rows);
   });
 });
