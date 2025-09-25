@@ -56,7 +56,8 @@ const validTables = [
   'sire_age_reports', 'sire_country_reports', 'sire_sex_reports', 'sire_worldwide_reports', 'sire_crop_reports', 'sire_distance_reports', 
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
   'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
-  'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion'
+  'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion', 'StrideParsPercentilesPerTrack', 
+  'StrideParsPerMeeting',
 ];
 
 
@@ -211,6 +212,21 @@ app.get('/api/ClosingEntries', (req, res) => {
   });
 });
 
+// ✅ Route to fetch all rows from hit_sales1
+app.get('/api/hit_sales1', (req, res) => {
+  const query = `SELECT * FROM hit_sales1`;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("❌ Error fetching hit_sales1:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
 
 app.get('/api/IrelandRaceRecords', (req, res) => {
   const query = `SELECT * FROM IrelandRaceRecords`;
@@ -356,6 +372,7 @@ app.get("/api/pars-ga/:racename/:date/:time", (req, res) => {
     return null;
   };
 
+
   const dateISO = toISODate(dateUK);
   const timeSQL = toHHMMSS(timeIn);
 
@@ -383,6 +400,75 @@ app.get("/api/pars-ga/:racename/:date/:time", (req, res) => {
 });
 
 
+// GET /api/stride/percentiles/:course
+app.get("/api/stride/percentiles/:course", (req, res) => {
+  const course = decodeURIComponent((req.params.course || "").trim()); // e.g., "ascot"
+  if (!course) {
+    return res.status(400).json({ error: "course is required" });
+  }
+
+  const sql = `
+    SELECT *
+    FROM StrideParsPercentilesPerTrack
+    WHERE CourseSlug = ?
+  `;
+
+  db.query(sql, [course], (err, results) => {
+    if (err) {
+      console.error("Error fetching stride percentiles:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    if (!results || results.length === 0) {
+      return res.status(200).json({ data: [], message: "No Percentiles Found" });
+    }
+    // return as an array (in case you ever store multiple rows per course)
+    res.status(200).json({ data: results });
+  });
+});
+
+// GET /api/stride/meeting/:course/:dateUK
+// Example: /api/stride/meeting/aintree/13-04-2023
+app.get("/api/stride/meeting/:course/:dateUK", (req, res) => {
+  const course = decodeURIComponent((req.params.course || "").trim());
+  const dateUK = (req.params.dateUK || "").trim(); // dd-mm-YYYY or dd/mm/YYYY
+
+  if (!course || !dateUK) {
+    return res.status(400).json({ error: "course and date are required" });
+  }
+
+  // dd-mm-YYYY or dd/mm/YYYY -> YYYY-mm-dd
+  const toISODate = (uk) => {
+    const m = uk.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+    if (!m) return null;
+    const dd = m[1].padStart(2, "0");
+    const mm = m[2].padStart(2, "0");
+    const yyyy = m[3];
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  const dateISO = toISODate(dateUK);
+  if (!dateISO) {
+    return res.status(400).json({ error: "Invalid date format (use dd-mm-YYYY)" });
+  }
+
+  const sql = `
+    SELECT *
+    FROM StrideParsPerMeeting
+    WHERE CourseSlug = ?
+      AND RaceDate = ?
+  `;
+
+  db.query(sql, [course, dateISO], (err, results) => {
+    if (err) {
+      console.error("Error fetching stride meeting pars:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    if (!results || results.length === 0) {
+      return res.status(200).json({ data: [], message: "No Meeting Pars Found" });
+    }
+    res.status(200).json({ data: results });
+  });
+});
 
 
 app.get("/api/racingtv/:horseName", (req, res) => {
