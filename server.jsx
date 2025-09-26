@@ -57,7 +57,7 @@ const validTables = [
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
   'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
   'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion', 'StrideParsPercentilesPerTrack', 
-  'StrideParsPerMeeting',
+  'StrideParsPerMeeting', 'RaceNet_Data'
 ];
 
 
@@ -277,6 +277,30 @@ app.get("/api/attheraces/:horseName", (req, res) => {
     res.status(200).json({ data: results });
   });
 });
+
+
+app.get("/api/RaceNet_Data/:horseName", (req, res) => {
+  const horseName = req.params.horseName;
+
+  const query = `
+    SELECT * FROM RaceNet_Data
+    WHERE horseName = ?
+  `;
+
+  db.query(query, [horseName], (err, results) => {
+    if (err) {
+      console.error("Error fetching RaceNet_Data data:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (results.length === 0) {
+      return res.status(200).json({ data: [], message: "No Data Found" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
 
 app.get("/api/attheraces/:time/:racename/:date", (req, res) => {
   const raceTime = req.params.time;       // e.g., "14:40"
