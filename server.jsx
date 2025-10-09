@@ -226,6 +226,39 @@ app.get('/api/hit_sales1', (req, res) => {
   });
 });
 
+app.get('/api/ahit_sales', (req, res) => {
+  const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 20, 100));
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+
+  const dataSql  = `SELECT * FROM ahit_sales LIMIT ? OFFSET ?`;
+  const countSql = `SELECT COUNT(*) AS total FROM ahit_sales`;
+
+  db.query(dataSql, [limit, offset], (err, results) => {
+    if (err) {
+      console.error("❌ Error fetching ahit_sales:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    db.query(countSql, (err2, countRows) => {
+      if (err2) {
+        console.error("❌ Error counting ahit_sales:", err2);
+        // Fall back to data only if count fails
+        return res.status(200).json({ data: results });
+      }
+
+      const total = countRows?.[0]?.total ?? 0;
+      const nextOffset = offset + results.length;
+      const hasMore = nextOffset < total;
+
+      res.status(200).json({
+        data: results,
+        page: { limit, offset, total, hasMore, nextOffset }
+      });
+    });
+  });
+});
+
+
 
 
 app.get('/api/IrelandRaceRecords', (req, res) => {
