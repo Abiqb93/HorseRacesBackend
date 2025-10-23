@@ -259,20 +259,61 @@ app.get('/api/ahit_sales', (req, res) => {
 });
 
 
+// GET /api/tarrersalls_ahit
+app.get('/api/tarrersalls_ahit', (req, res) => {
+  const rawLimit  = req.query.limit;
+  const rawOffset = req.query.offset;
 
+  // If limit/offset are provided, use paged SQL; otherwise return all rows.
+  const usePaging = rawLimit !== undefined || rawOffset !== undefined;
 
-app.get('/api/IrelandRaceRecords', (req, res) => {
-  const query = `SELECT * FROM IrelandRaceRecords`;
+  if (usePaging) {
+    const limit  = Math.max(1, Math.min(parseInt(rawLimit, 10) || 20, 100));
+    const offset = Math.max(0, parseInt(rawOffset, 10) || 0);
 
-  db.query(query, (err, results) => {
+    const dataSql  = "SELECT * FROM `tarrersalls_ahit` LIMIT ? OFFSET ?";
+    const countSql = "SELECT COUNT(*) AS total FROM `tarrersalls_ahit`";
+
+    db.query(dataSql, [limit, offset], (err, results) => {
+      if (err) {
+        console.error("❌ Error fetching tarrersalls_ahit:", err);
+        return res.status(500).json({ error: "Database error" });
+      }
+
+      db.query(countSql, (err2, countRows) => {
+        if (err2) {
+          console.error("❌ Error counting tarrersalls_ahit:", err2);
+          return res.status(200).json({ data: results });
+        }
+
+        const total = countRows?.[0]?.total ?? 0;
+        const nextOffset = offset + results.length;
+        const hasMore = nextOffset < total;
+
+        res.status(200).json({
+          data: results,
+          page: { limit, offset, total, hasMore, nextOffset }
+        });
+      });
+    });
+    return;
+  }
+
+  // NO PAGING: return all rows
+  const allSql = "SELECT * FROM `tarrersalls_ahit`";
+  db.query(allSql, (err, results) => {
     if (err) {
-      console.error("Error fetching IrelandRaceRecords:", err);
+      console.error("❌ Error fetching tarrersalls_ahit (all):", err);
       return res.status(500).json({ error: "Database error" });
     }
-
-    res.status(200).json({ data: results });
+    // include a simple page metadata for consistency (everything visible client-side)
+    res.status(200).json({
+      data: results,
+      page: { total: results.length, limit: results.length, offset: 0, hasMore: false, nextOffset: results.length }
+    });
   });
 });
+
 
 
 app.get('/api/FranceRaceRecords', (req, res) => {
