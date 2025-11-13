@@ -315,16 +315,21 @@ app.get('/api/tarrersalls_ahit', (req, res) => {
 });
 
 
+// PATCH /api/tarrersalls_ahit/:id/star
 app.patch('/api/tarrersalls_ahit/:id/star', (req, res) => {
   const rawParam = req.params.id;
-  if (!rawParam) return res.status(400).json({ error: "Missing horse name" });
+  if (!rawParam) {
+    return res.status(400).json({ error: "Missing horse name" });
+  }
 
   const horseName = decodeURIComponent(rawParam);
+  console.log("🔁 Toggling Star for horse:", JSON.stringify(horseName));
 
+  // Toggle Star: if 1 -> 0, else -> 1
   const toggleSql = `
     UPDATE \`tarrersalls_ahit\`
     SET \`Star\` = CASE WHEN \`Star\` = 1 THEN 0 ELSE 1 END
-    WHERE \`Horse\` = ?;
+    WHERE TRIM(\`Horse\`) = TRIM(?);
   `;
 
   db.query(toggleSql, [horseName], (err, result) => {
@@ -332,19 +337,42 @@ app.patch('/api/tarrersalls_ahit/:id/star', (req, res) => {
       console.error("❌ Error toggling Star:", err);
       return res.status(500).json({ error: "Database error" });
     }
+
+    console.log("   ➜ affectedRows:", result.affectedRows);
+
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "Horse not found for this name" });
+      // Debug: see what similar horses exist
+      const debugSql = "SELECT `Horse` FROM `tarrersalls_ahit` WHERE `Horse` LIKE CONCAT('%', ?, '%') LIMIT 5";
+      db.query(debugSql, [horseName.replace(/\s*\(.*\)\s*$/, "")], (dbgErr, dbgRows) => {
+        if (dbgErr) {
+          console.error("❌ Debug query error:", dbgErr);
+        } else {
+          console.log("   ⚠️ No exact match. Nearby Horse values:", dbgRows);
+        }
+        return res.status(404).json({ error: "Horse not found for this name" });
+      });
+      return;
     }
-    const fetchSql = "SELECT * FROM `tarrersalls_ahit` WHERE `Horse` = ? LIMIT 1";
+
+    // Fetch the updated row
+    const fetchSql = "SELECT * FROM `tarrersalls_ahit` WHERE TRIM(`Horse`) = TRIM(?) LIMIT 1";
     db.query(fetchSql, [horseName], (err2, rows) => {
       if (err2) {
         console.error("❌ Error fetching updated row:", err2);
         return res.status(500).json({ error: "Database error" });
       }
-      res.status(200).json({ message: "Star toggled successfully", data: rows[0] });
+
+      const row = rows[0];
+      console.log("   ✅ Star toggled. New Star value:", row?.Star);
+
+      return res.status(200).json({
+        message: "Star toggled successfully",
+        data: row,
+      });
     });
   });
 });
+
 
 
 
