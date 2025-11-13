@@ -315,6 +315,49 @@ app.get('/api/tarrersalls_ahit', (req, res) => {
 });
 
 
+// PATCH /api/tarrersalls_ahit/:id/star
+app.patch('/api/tarrersalls_ahit/:id/star', (req, res) => {
+  const { id } = req.params;
+
+  if (!id) {
+    return res.status(400).json({ error: "Missing row id" });
+  }
+
+  // Toggle Star: if 1 -> 0, else -> 1
+  const toggleSql = `
+    UPDATE \`tarrersalls_ahit\`
+    SET \`Star\` = CASE WHEN \`Star\` = 1 THEN 0 ELSE 1 END
+    WHERE \`id\` = ?;
+  `;
+
+  db.query(toggleSql, [id], (err, result) => {
+    if (err) {
+      console.error("❌ Error toggling Star:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Row not found" });
+    }
+
+    // Optional: fetch the updated row to return current Star value
+    const fetchSql = "SELECT * FROM `tarrersalls_ahit` WHERE `id` = ? LIMIT 1";
+    db.query(fetchSql, [id], (err2, rows) => {
+      if (err2) {
+        console.error("❌ Error fetching updated row:", err2);
+        return res.status(500).json({ error: "Database error" });
+      }
+
+      const row = rows[0];
+      return res.status(200).json({
+        message: "Star toggled successfully",
+        data: row
+      });
+    });
+  });
+});
+
+
 
 app.get('/api/FranceRaceRecords', (req, res) => {
   const query = `SELECT * FROM FranceRaceRecords`;
