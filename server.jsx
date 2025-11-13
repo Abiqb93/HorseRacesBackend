@@ -315,18 +315,12 @@ app.get('/api/tarrersalls_ahit', (req, res) => {
 });
 
 
-// PATCH /api/tarrersalls_ahit/:id/star
 app.patch('/api/tarrersalls_ahit/:id/star', (req, res) => {
-  // Treat the :id param as the horse name
   const rawParam = req.params.id;
-  if (!rawParam) {
-    return res.status(400).json({ error: "Missing horse name" });
-  }
+  if (!rawParam) return res.status(400).json({ error: "Missing horse name" });
 
-  // Decode in case there are spaces / special chars in the URL
   const horseName = decodeURIComponent(rawParam);
 
-  // Toggle Star for this horse
   const toggleSql = `
     UPDATE \`tarrersalls_ahit\`
     SET \`Star\` = CASE WHEN \`Star\` = 1 THEN 0 ELSE 1 END
@@ -338,23 +332,16 @@ app.patch('/api/tarrersalls_ahit/:id/star', (req, res) => {
       console.error("❌ Error toggling Star:", err);
       return res.status(500).json({ error: "Database error" });
     }
-
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: "Horse not found for this name" });
     }
-
     const fetchSql = "SELECT * FROM `tarrersalls_ahit` WHERE `Horse` = ? LIMIT 1";
     db.query(fetchSql, [horseName], (err2, rows) => {
       if (err2) {
         console.error("❌ Error fetching updated row:", err2);
         return res.status(500).json({ error: "Database error" });
       }
-
-      const row = rows[0];
-      return res.status(200).json({
-        message: "Star toggled successfully",
-        data: row,
-      });
+      res.status(200).json({ message: "Star toggled successfully", data: rows[0] });
     });
   });
 });
