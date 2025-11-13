@@ -316,33 +316,37 @@ app.get('/api/tarrersalls_ahit', (req, res) => {
 
 
 // PATCH /api/tarrersalls_ahit/:id/star
+// PATCH /api/tarrersalls_ahit/:id/star
 app.patch('/api/tarrersalls_ahit/:id/star', (req, res) => {
   const { id } = req.params;
 
-  if (!id) {
-    return res.status(400).json({ error: "Missing row id" });
+  // We use the :id param as the Lot value
+  const lot = id;
+
+  if (!lot) {
+    return res.status(400).json({ error: "Missing lot value" });
   }
 
   // Toggle Star: if 1 -> 0, else -> 1
   const toggleSql = `
     UPDATE \`tarrersalls_ahit\`
     SET \`Star\` = CASE WHEN \`Star\` = 1 THEN 0 ELSE 1 END
-    WHERE \`id\` = ?;
+    WHERE \`Lot\` = ?;
   `;
 
-  db.query(toggleSql, [id], (err, result) => {
+  db.query(toggleSql, [lot], (err, result) => {
     if (err) {
       console.error("❌ Error toggling Star:", err);
       return res.status(500).json({ error: "Database error" });
     }
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "Row not found" });
+      return res.status(404).json({ error: "Row not found for this Lot" });
     }
 
-    // Optional: fetch the updated row to return current Star value
-    const fetchSql = "SELECT * FROM `tarrersalls_ahit` WHERE `id` = ? LIMIT 1";
-    db.query(fetchSql, [id], (err2, rows) => {
+    // Fetch the updated row to return current Star value
+    const fetchSql = "SELECT * FROM `tarrersalls_ahit` WHERE `Lot` = ? LIMIT 1";
+    db.query(fetchSql, [lot], (err2, rows) => {
       if (err2) {
         console.error("❌ Error fetching updated row:", err2);
         return res.status(500).json({ error: "Database error" });
@@ -351,7 +355,7 @@ app.patch('/api/tarrersalls_ahit/:id/star', (req, res) => {
       const row = rows[0];
       return res.status(200).json({
         message: "Star toggled successfully",
-        data: row
+        data: row,
       });
     });
   });
