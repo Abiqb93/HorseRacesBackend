@@ -57,7 +57,7 @@ const validTables = [
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
   'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
   'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion', 'StrideParsPercentilesPerTrack', 
-  'StrideParsPerMeeting', 'RaceNet_Data'
+  'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift'
 ];
 
 
@@ -434,6 +434,38 @@ app.get("/api/RaceNet_Data/:horseName", (req, res) => {
     res.status(200).json({ data: results });
   });
 });
+
+
+app.get("/api/sire_uplift/sire/:sireName", (req, res) => {
+  const sireName = req.params.sireName;
+
+  if (!sireName) {
+    return res.status(400).json({ error: "sireName parameter is required" });
+  }
+
+  const query = `
+    SELECT *
+    FROM sire_uplift
+    WHERE sireName LIKE ?
+  `;
+
+  // Add wildcards for partial matching
+  db.query(query, [`%${sireName}%`], (err, results) => {
+    if (err) {
+      console.error("Error fetching sire_uplift data by sire:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (!results || results.length === 0) {
+      return res.status(200).json({ data: [], message: "No Data Found" });
+    }
+
+    return res.status(200).json({ data: results });
+  });
+});
+
+
+
 
 
 app.get("/api/attheraces/:time/:racename/:date", (req, res) => {
