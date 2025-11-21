@@ -57,9 +57,8 @@ const validTables = [
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
   'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
   'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion', 'StrideParsPercentilesPerTrack', 
-  'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift'
+  'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift', 'foalSale_Dashboard', 'foalSale_Pedigree', 'foalSale_StallionStats', 'foalSale_Sales', 'foalSale_StudFeeAnalysis',
 ];
-
 
 
 // GET: Fetch all predicted timeform ratings
@@ -372,6 +371,232 @@ app.patch('/api/tarrersalls_ahit/:id/star', (req, res) => {
     });
   });
 });
+
+
+
+// ============================
+// Foal Sale API (all tables)
+// ============================
+
+// Map sheet names → actual MySQL table names
+// Adjust if your sheet/table names differ
+const FOALSALE_TABLES = {
+  Dashboard:       'foalSale_Dashboard',
+  Pedigree:        'foalSale_Pedigree',
+  StallionStats:   'foalSale_StallionStats',
+  Sales:           'foalSale_Sales',
+  StudFeeAnalysis: 'foalSale_StudFeeAnalysis',
+};
+
+// Case-insensitive resolver for :sheet param
+function resolveFoalSaleTable(sheetParam) {
+  if (!sheetParam) return null;
+
+  const key = Object.keys(FOALSALE_TABLES).find(
+    (k) => k.toLowerCase() === String(sheetParam).toLowerCase()
+  );
+
+  return key ? FOALSALE_TABLES[key] : null;
+}
+
+// --------------------------------------------------------
+// GET /api/foalSale/:sheet
+// Example:
+//   /api/foalSale/Dashboard
+//   /api/foalSale/Sales?limit=50&offset=100
+// --------------------------------------------------------
+app.get('/api/foalSale/:sheet', (req, res) => {
+  const sheetParam = req.params.sheet;
+  const tableName  = resolveFoalSaleTable(sheetParam);
+
+  if (!tableName) {
+    return res.status(400).json({ error: `Unknown foalSale sheet: ${sheetParam}` });
+  }
+
+  const rawLimit  = req.query.limit;
+  const rawOffset = req.query.offset;
+
+  const usePaging = rawLimit !== undefined || rawOffset !== undefined;
+
+  if (usePaging) {
+    const limit  = Math.max(1, Math.min(parseInt(rawLimit, 10) || 20, 100));
+    const offset = Math.max(0, parseInt(rawOffset, 10) || 0);
+
+    const dataSql  = `SELECT * FROM \`${tableName}\` LIMIT ? OFFSET ?`;
+    const countSql = `SELECT COUNT(*) AS total FROM \`${tableName}\``;
+
+    db.query(dataSql, [limit, offset], (err, results) => {
+      if (err) {
+        console.error(`❌ Error fetching ${tableName}:`, err);
+        return res.status(500).json({ error: "Database error" });
+      }
+
+      db.query(countSql, (err2, countRows) => {
+        if (err2) {
+          console.error(`❌ Error counting ${tableName}:`, err2);
+          // Return data even if count fails
+          return res.status(200).json({ data: results });
+        }
+
+        const total      = countRows?.[0]?.total ?? 0;
+        const nextOffset = offset + results.length;
+        const hasMore    = nextOffset < total;
+
+        res.status(200).json({
+          data: results,
+          page: { limit, offset, total, hasMore, nextOffset }
+        });
+      });
+    });
+
+    return;
+  }
+
+  // NO PAGING: return all rows
+  const allSql = `SELECT * FROM \`${tableName}\``;
+  db.query(allSql, (err, results) => {
+    if (err) {
+      console.error(`❌ Error fetching ${tableName} (all):`, err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({
+      data: results,
+      page: {
+        total: results.length,
+        limit: results.length,
+        offset: 0,
+        hasMore: false,
+        nextOffset: results.length
+      }
+    });
+  });
+});
+
+// --------------------------------------------------------
+// PATCH /api/foalSale/:sheet/:horseName/star
+//
+// Behavior:
+//  1) Fetch current Star from the triggering sheet's table
+//  2) Toggle it (0 -> 1, 1 -> 0; NULL treated as 0)
+//  3) Apply the SAME new Star value to ALL foalSale tables
+//     where TRIM(Horse) matches
+//  4) Return the updated row from the triggering table
+//
+// Example:
+//   PATCH /api/foalSale/Sales/MY%20FOAL%20NAME/star
+// --------------------------------------------------------
+// PATCH /api/foalSale/:sheet/:sireName/star
+//
+// Behavior:
+//  1) Fetch current Star from the triggering sheet's table, matching on Sire
+//  2) Toggle it (0 -> 1, 1 -> 0; NULL treated as 0)
+//  3) Apply the SAME new Star value to ALL foalSale tables
+//     where TRIM(Sire) matches
+//  4) Return the updated row from the triggering table
+// --------------------------------------------------------
+app.patch('/api/foalSale/:sheet/:sireName/star', (req, res) => {
+  const sheetParam = req.params.sheet;
+  const tableName  = resolveFoalSaleTable(sheetParam);
+
+  if (!tableName) {
+    return res.status(400).json({ error: `Unknown foalSale sheet: ${sheetParam}` });
+  }
+
+  const rawParam = req.params.sireName;
+  if (!rawParam) {
+    return res.status(400).json({ error: "Missing sire name" });
+  }
+
+  const sireName = decodeURIComponent(rawParam);
+  console.log(`🔁 Global Star toggle for SIRE in ${tableName}:`, JSON.stringify(sireName));
+
+  // 1) Fetch current Star from the triggering table (NOTE: Sire column)
+  const fetchCurrentSql = `
+    SELECT \`Star\`
+    FROM \`${tableName}\`
+    WHERE TRIM(\`Sire\`) = TRIM(?)
+    LIMIT 1;
+  `;
+
+  db.query(fetchCurrentSql, [sireName], (err, rows) => {
+    if (err) {
+      console.error(`❌ Error fetching current Star from ${tableName}:`, err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (!rows || rows.length === 0) {
+      console.log(`⚠️ Sire not found in ${tableName}:`, sireName);
+      return res.status(404).json({ error: "Sire not found for this name in this sheet" });
+    }
+
+    const currentStar = rows[0].Star === 1 ? 1 : 0; // treat NULL as 0
+    const newStar     = currentStar === 1 ? 0 : 1;
+
+    console.log(`   Current Star: ${currentStar} → New Star: ${newStar}`);
+
+    const tables       = Object.values(FOALSALE_TABLES);
+    let pending        = tables.length;
+    let totalAffected  = 0;
+    let alreadySentErr = false;
+
+    // 2) Apply newStar across ALL foalSale tables (matching on Sire)
+    tables.forEach((tName) => {
+      const updateSql = `
+        UPDATE \`${tName}\`
+        SET \`Star\` = ?
+        WHERE TRIM(\`Sire\`) = TRIM(?);
+      `;
+
+      db.query(updateSql, [newStar, sireName], (uErr, result) => {
+        if (alreadySentErr) return;
+
+        if (uErr) {
+          alreadySentErr = true;
+          console.error(`❌ Error updating Star in ${tName}:`, uErr);
+          return res.status(500).json({
+            error: "Database error while updating Star across tables"
+          });
+        }
+
+        totalAffected += result.affectedRows;
+        pending -= 1;
+
+        // When all updates are done…
+        if (!alreadySentErr && pending === 0) {
+          console.log(`   ✅ Global Star update done. Total affected rows across tables: ${totalAffected}`);
+
+          if (totalAffected === 0) {
+            return res.status(404).json({ error: "Sire not found in any foalSale table" });
+          }
+
+          // 3) Fetch updated row from the original table
+          const fetchUpdatedSql = `
+            SELECT *
+            FROM \`${tableName}\`
+            WHERE TRIM(\`Sire\`) = TRIM(?)
+            LIMIT 1;
+          `;
+          db.query(fetchUpdatedSql, [sireName], (fErr, updatedRows) => {
+            if (fErr) {
+              console.error(`❌ Error fetching updated row from ${tableName}:`, fErr);
+              return res.status(500).json({ error: "Database error" });
+            }
+
+            const row = updatedRows && updatedRows[0] ? updatedRows[0] : null;
+            console.log("   ✅ Star toggled globally. New Star value in base sheet:", row?.Star);
+
+            return res.status(200).json({
+              message: "Star toggled globally across foalSale tables",
+              data: row,
+            });
+          });
+        }
+      });
+    });
+  });
+});
+
 
 
 
