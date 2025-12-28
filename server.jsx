@@ -20,6 +20,9 @@ const allowedOrigins = [
   'http://www.blandfordbloodstock.tech'  
 ];
 
+const GMAIL_USER = "bloodstockblandford@gmail.com";
+const GMAIL_PASS = "bhnf jsgm gpwd jhjo"; // 🔴 MUST be Gmail App Password (16 chars)
+
 // Updated CORS middleware
 app.use(cors({
   origin: (origin, callback) => {
@@ -59,6 +62,133 @@ const validTables = [
   'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion', 'StrideParsPercentilesPerTrack', 
   'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift', 'foalSale_Dashboard', 'foalSale_Pedigree', 'foalSale_StallionStats', 'foalSale_Sales', 'foalSale_StudFeeAnalysis',
 ];
+
+
+// Minimal iCalendar (ICS) meeting request
+function buildICSInvite({
+  title,
+  description = "",
+  location = "",
+  startUtc,   // "20251224T150000Z"
+  endUtc,     // "20251224T153000Z"
+  organizerEmail,
+  attendeeEmail,
+  attendeeName = "Attendee",
+}) {
+  const uid = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex");
+  const dtstamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+
+  // Escape commas/semicolons/newlines for ICS
+  const esc = (s) =>
+    String(s || "")
+      .replace(/\\/g, "\\\\")
+      .replace(/\n/g, "\\n")
+      .replace(/,/g, "\\,")
+      .replace(/;/g, "\\;");
+
+  return [
+    "BEGIN:VCALENDAR",
+    "PRODID:-//Blandford Bloodstock//Calendar Invite//EN",
+    "VERSION:2.0",
+    "CALSCALE:GREGORIAN",
+    "METHOD:REQUEST",
+    "BEGIN:VEVENT",
+    `UID:${uid}`,
+    `DTSTAMP:${dtstamp}`,
+    `DTSTART:${startUtc}`,
+    `DTEND:${endUtc}`,
+    `SUMMARY:${esc(title)}`,
+    `DESCRIPTION:${esc(description)}`,
+    `LOCATION:${esc(location)}`,
+    `ORGANIZER;CN=${esc("Blandford Bloodstock")}:MAILTO:${organizerEmail}`,
+    `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${esc(attendeeName)}:MAILTO:${attendeeEmail}`,
+    "TRANSP:OPAQUE",
+    "STATUS:CONFIRMED",
+    "SEQUENCE:0",
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
+}
+
+// ---------- Calendar "Add to" link builders ----------
+function buildGoogleCalendarLink({ title, description, location, startUtc, endUtc }) {
+  // startUtc/endUtc example: "20251224T150000Z"
+  const dates = `${startUtc}/${endUtc}`;
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: title || "",
+    details: description || "",
+    location: location || "",
+    dates,
+  });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
+function buildOutlookCalendarLink({ title, description, location, startUtc, endUtc }) {
+  // Convert "20251224T150000Z" -> "2025-12-24T15:00:00Z"
+  const toIso = (s) =>
+    `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(9, 11)}:${s.slice(11, 13)}:${s.slice(13, 15)}Z`;
+
+  const params = new URLSearchParams({
+    path: "/calendar/action/compose",
+    rru: "addevent",
+    subject: title || "",
+    body: description || "",
+    location: location || "",
+    startdt: toIso(startUtc),
+    enddt: toIso(endUtc),
+  });
+
+  return `https://outlook.office.com/calendar/0/deeplink/compose?${params.toString()}`;
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (m) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#039;",
+  }[m]));
+}
+
+
+// Convert "YYYY-MM-DDTHH:mm" + timezone offset if you prefer.
+// Easiest: send UTC from frontend. If not, convert here carefully.
+function toUtcIcsStamp(date) {
+  // date: JS Date
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+    date.getUTCFullYear() +
+    pad(date.getUTCMonth() + 1) +
+    pad(date.getUTCDate()) +
+    "T" +
+    pad(date.getUTCHours()) +
+    pad(date.getUTCMinutes()) +
+    pad(date.getUTCSeconds()) +
+    "Z"
+  );
+}
+
+const transporter = nodemailer.createTransport({
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true, // SSL
+  auth: {
+    user: GMAIL_USER,
+    pass: GMAIL_PASS,
+  },
+});
+
+transporter.verify((err, success) => {
+  if (err) {
+    console.error("[mailer] ❌ SMTP verification failed:", err);
+  } else {
+    console.log("[mailer] ✅ SMTP server is ready to send emails");
+  }
+});
+
+
 
 
 // GET: Fetch all predicted timeform ratings
@@ -1000,6 +1130,189 @@ app.get('/api/ConfirmationsTracking', (req, res) => {
 
 
 app.use(express.json()); 
+
+
+app.post("/api/calendar/invite", (req, res) => {
+  // ✅ DEBUG LOGS: show exactly what the backend receives
+  console.log("====== /api/calendar/invite ======");
+  console.log("method:", req.method);
+  console.log("url:", req.originalUrl);
+  console.log("content-type:", req.headers["content-type"]);
+  console.log("body (parsed):", req.body);
+  console.log("body keys:", req.body ? Object.keys(req.body) : null);
+  console.log("==================================");
+
+  const {
+    user_id,         // optional if toEmail provided
+    toEmail,         // optional if user_id provided
+    title,
+    description,
+    location,
+    startUtc,        // "20251224T150000Z"
+    endUtc,          // "20251224T153000Z"
+    attendeeName,    // optional
+  } = req.body || {};
+
+  // ✅ Extra logs for missing fields
+  if (!title || !startUtc || !endUtc) {
+    console.log("[calendar invite] ❌ Missing required fields:", {
+      title,
+      startUtc,
+      endUtc,
+    });
+    return res.status(400).json({ error: "title, startUtc, endUtc are required" });
+  }
+
+  if (!user_id && !toEmail) {
+    console.log("[calendar invite] ❌ Missing recipient:", { user_id, toEmail });
+    return res.status(400).json({ error: "Provide user_id or toEmail" });
+  }
+
+  const sendInvite = (email) => {
+  const organizerEmail = GMAIL_USER; // or process.env.GMAIL_USER
+
+  const ics = buildICSInvite({
+    title,
+    description,
+    location,
+    startUtc,
+    endUtc,
+    organizerEmail,
+    attendeeEmail: email,
+    attendeeName: attendeeName || email,
+  });
+
+  const googleUrl = buildGoogleCalendarLink({ title, description, location, startUtc, endUtc });
+const outlookUrl = buildOutlookCalendarLink({ title, description, location, startUtc, endUtc });
+
+const mailOptions = {
+  from: `"Blandford Bloodstock" <${organizerEmail}>`,
+  to: email,
+  subject: `Calendar Invite: ${title}`,
+
+  // ✅ Good practice for meeting requests
+  headers: {
+    "Content-Class": "urn:content-classes:calendarmessage",
+  },
+
+  // Plain-text fallback
+  text:
+`You have been invited: ${title}
+
+${description || ""}
+
+Location: ${location || ""}
+
+Add to Google Calendar: ${googleUrl}
+Add to Outlook Calendar: ${outlookUrl}
+`,
+
+  // ✅ Your header card HTML
+  html: `
+    <div style="font-family: Arial, Helvetica, sans-serif; max-width: 640px; margin: 0 auto;">
+      <div style="border: 1px solid #e6e6e6; border-radius: 14px; overflow: hidden; box-shadow: 0 6px 18px rgba(0,0,0,0.06);">
+        <div style="background: #0b5fff; padding: 18px 20px; color: #ffffff;">
+          <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.9;">
+            Calendar Invitation
+          </div>
+          <div style="font-size: 18px; font-weight: 700; line-height: 1.25; margin-top: 6px;">
+            You have been invited
+          </div>
+          <div style="font-size: 14px; line-height: 1.35; margin-top: 8px; opacity: 0.95;">
+            ${escapeHtml(title)}
+          </div>
+        </div>
+
+        <div style="background: #ffffff; padding: 18px 20px;">
+          <table style="width: 100%; border-collapse: collapse;">
+            <tr>
+              <td style="padding: 8px 0; width: 90px; color: #6b7280; font-size: 13px;">Location</td>
+              <td style="padding: 8px 0; color: #111827; font-size: 14px; font-weight: 600;">
+                ${escapeHtml(location || "—")}
+              </td>
+            </tr>
+          </table>
+
+          ${description ? `
+            <div style="margin-top: 14px; padding: 12px 14px; background: #f9fafb; border: 1px solid #eef2f7; border-radius: 12px; color: #111827; font-size: 13px; line-height: 1.45;">
+              ${escapeHtml(description)}
+            </div>
+          ` : ""}
+
+          <div style="margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap;">
+            <a href="${googleUrl}" style="display: inline-block; padding: 10px 14px; background: #0b5fff; color: #ffffff; text-decoration: none; border-radius: 10px; font-size: 14px; font-weight: 700;">
+              Add to Google Calendar
+            </a>
+            <a href="${outlookUrl}" style="display: inline-block; padding: 10px 14px; background: #111827; color: #ffffff; text-decoration: none; border-radius: 10px; font-size: 14px; font-weight: 700;">
+              Add to Outlook Calendar
+            </a>
+          </div>
+
+          <div style="margin-top: 14px; color: #6b7280; font-size: 12px; line-height: 1.4;">
+            If your email client supports meeting requests, you can also <b>Accept</b> directly from the email.
+          </div>
+        </div>
+      </div>
+    </div>
+  `,
+
+  // ✅ Most reliable way: include as an attachment, but force INLINE + no “download needed” UX
+  // Many clients will still show “Accept” even if an .ics exists, as long as it’s REQUEST + inline.
+  attachments: [
+    {
+      filename: "invite.ics",
+      content: ics,
+      contentType: "text/calendar; charset=UTF-8; method=REQUEST",
+      contentDisposition: "inline",
+    },
+  ],
+};
+
+
+  transporter.sendMail(mailOptions, (err, info) => {
+    if (err) {
+      console.error("[calendar invite] sendMail error:", err);
+      return res.status(500).json({ error: "Failed to send invite" });
+    }
+    return res.status(200).json({ message: "Invite sent", to: email });
+  });
+};
+
+
+  // If toEmail passed directly, skip DB
+  if (toEmail) {
+    console.log("[calendar invite] using toEmail directly:", toEmail);
+    return sendInvite(String(toEmail).trim());
+  }
+
+  // Otherwise fetch from UserAccounts by user_id
+  console.log("[calendar invite] lookup by user_id:", user_id);
+  db.query(
+    "SELECT email, name FROM UserAccounts WHERE user_id = ? LIMIT 1",
+    [user_id],
+    (err, rows) => {
+      if (err) {
+        console.error("[calendar invite] ❌ DB error:", err);
+        return res.status(500).json({ error: "Database error" });
+      }
+      if (!rows || rows.length === 0 || !rows[0].email) {
+        console.log("[calendar invite] ❌ User email not found for user_id:", user_id);
+        return res.status(404).json({ error: "User email not found" });
+      }
+
+      const dbName = rows[0].name;
+      const finalEmail = String(rows[0].email).trim();
+      const finalName = attendeeName || dbName || finalEmail;
+
+      console.log("[calendar invite] DB result:", { finalEmail, finalName });
+
+      // Optional: if you want attendeeName from DB
+      req.body.attendeeName = finalName;
+
+      return sendInvite(finalEmail);
+    }
+  );
+});
 
 
 // ✅ GET: All tracking entries for a specific user
