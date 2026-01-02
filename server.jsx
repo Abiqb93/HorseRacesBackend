@@ -60,7 +60,7 @@ const validTables = [
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
   'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
   'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion', 'StrideParsPercentilesPerTrack', 
-  'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift', 'foalSale_Dashboard', 'foalSale_Pedigree', 'foalSale_StallionStats', 'foalSale_Sales', 'foalSale_StudFeeAnalysis',
+  'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift', 'foalSale_Dashboard', 'foalSale_Pedigree', 'foalSale_StallionStats', 'foalSale_Sales', 'foalSale_StudFeeAnalysis', 'jockey_tracking'
 ];
 
 
@@ -821,6 +821,78 @@ app.get("/api/sire_uplift/sire/:sireName", (req, res) => {
 
 
 
+// ===============================
+// Blacktype Fillies Reports Routes
+// ===============================
+// Assumes you already have: const db = mysql.createConnection(...) OR mysql pool
+// and app = express()
+
+// 1) GET full Blacktype Fillies report
+app.get("/api/reports/blacktype_fillies", (req, res) => {
+  const query = `
+    SELECT *
+    FROM report_blacktype_fillies
+    ORDER BY Stakes_Wins DESC, Highest_Stakes_Position ASC, WinPercent DESC, Runs DESC
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching report_blacktype_fillies:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (!results || results.length === 0) {
+      return res.status(200).json({ data: [], message: "No Data Found" });
+    }
+
+    return res.status(200).json({ data: results });
+  });
+});
+
+
+// 2) GET full Out-of-Form Blacktype Fillies report
+app.get("/api/reports/blacktype_fillies_out_of_form", (req, res) => {
+  const query = `
+    SELECT *
+    FROM report_blacktype_fillies_out_of_form
+    ORDER BY Stakes_Wins DESC, Highest_Stakes_Position ASC, WinPercent DESC, Runs DESC
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching report_blacktype_fillies_out_of_form:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (!results || results.length === 0) {
+      return res.status(200).json({ data: [], message: "No Data Found" });
+    }
+
+    return res.status(200).json({ data: results });
+  });
+});
+
+
+app.get("/api/reports/female_under80_damvalue", (req, res) => {
+  const query = `
+    SELECT *
+    FROM report_female_under80_damvalue
+    ORDER BY CurrentRating ASC, BestProgenyRating DESC, DamMaxRating_ifHorse DESC, Runs DESC
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching report_female_under80_damvalue:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (!results || results.length === 0) {
+      return res.status(200).json({ data: [], message: "No Data Found" });
+    }
+
+    return res.status(200).json({ data: results });
+  });
+});
 
 
 app.get("/api/attheraces/:time/:racename/:date", (req, res) => {
@@ -1922,6 +1994,37 @@ app.get('/api/APIData_Table2/owner', (req, res) => {
 });
 
 
+app.get('/api/APIData_Table2/jockey', (req, res) => {
+  const { jockeyFullName } = req.query;
+
+  if (!jockeyFullName) {
+    return res.status(400).json({
+      error: "Missing required query parameter: jockeyFullName"
+    });
+  }
+
+  const startTime = Date.now();
+
+  const query = `
+    SELECT horseName
+    FROM APIData_Table2
+    WHERE jockeyFullName = ?;
+  `;
+
+  db.query(query, [jockeyFullName], (err, rows) => {
+    const elapsed = (Date.now() - startTime) / 1000;
+    console.log(`Query for jockey "${jockeyFullName}" took ${elapsed.toFixed(2)} seconds`);
+
+    if (err) {
+      console.error("Error fetching jockey records:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: rows });
+  });
+});
+
+
 app.get('/api/APIData_Table2', (req, res) => {
   let { meetingDate } = req.query;
 
@@ -2237,6 +2340,79 @@ app.delete("/api/owner_tracking/:id", (req, res) => {
 });
 
 
+// ==============================
+// JOCKEY TRACKING ROUTES
+// ==============================
+
+// ✅ SAVE jockey tracking
+app.post("/api/jockey_tracking", (req, res) => {
+  const { jockeyFullName, correspondingHorses, user_id } = req.body;
+
+  if (!jockeyFullName || !correspondingHorses || !user_id) {
+    return res.status(400).json({ error: "Missing required fields." });
+  }
+
+  const query = `
+    INSERT INTO jockey_tracking (jockeyFullName, correspondingHorses, user_id)
+    VALUES (?, ?, ?);
+  `;
+
+  db.query(
+    query,
+    [jockeyFullName, JSON.stringify(correspondingHorses), user_id],
+    (err, results) => {
+      if (err) {
+        console.error("Error saving Jockey tracking:", err);
+        return res.status(500).json({ error: "Database error." });
+      }
+      res.status(200).json({ message: "Jockey tracking saved successfully!" });
+    }
+  );
+});
+
+
+// ✅ FETCH jockey tracking for a user
+app.get("/api/jockey_tracking", (req, res) => {
+  const { user } = req.query;
+
+  if (!user) {
+    return res.status(400).json({ error: "User is required" });
+  }
+
+  const query = `
+    SELECT * FROM jockey_tracking
+    WHERE user_id = ?
+    ORDER BY created_at DESC
+  `;
+
+  db.query(query, [user], (err, results) => {
+    if (err) {
+      console.error("Error fetching jockey tracking:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    res.status(200).json({ data: results });
+  });
+});
+
+
+// ✅ DELETE a jockey tracking record by id
+app.delete("/api/jockey_tracking/:id", (req, res) => {
+  const id = req.params.id;
+  if (!id) return res.status(400).json({ error: "ID is required" });
+
+  const query = `DELETE FROM jockey_tracking WHERE id = ?`;
+
+  db.query(query, [id], (err, result) => {
+    if (err) {
+      console.error("Error deleting jockey tracking:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Record not found" });
+    }
+    res.status(200).json({ message: "Jockey tracking deleted successfully." });
+  });
+});
 
 
 
