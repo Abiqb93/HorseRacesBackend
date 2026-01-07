@@ -893,9 +893,15 @@ app.get("/api/reports/blacktype_fillies_out_of_form", (req, res) => {
 
 app.get("/api/reports/female_under80_damvalue", (req, res) => {
   const query = `
-    SELECT *
+    SELECT
+      *,
+      DATE_FORMAT(CurrentRatingDate, '%Y-%m-%d') AS CurrentRatingDate
     FROM report_female_under80_damvalue
-    ORDER BY CurrentRating ASC, BestProgenyRating DESC, DamMaxRating_ifHorse DESC, Runs DESC
+    ORDER BY
+      CurrentRating ASC,
+      BestProgenyRating DESC,
+      DamMaxRating_ifHorse DESC,
+      Runs DESC
   `;
 
   db.query(query, (err, results) => {
