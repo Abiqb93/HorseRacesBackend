@@ -827,13 +827,19 @@ app.get("/api/sire_uplift/sire/:sireName", (req, res) => {
 // Assumes you already have: const db = mysql.createConnection(...) OR mysql pool
 // and app = express()
 
+// Utility: wraps a table and formats date columns, then orders.
+const buildReportQuery = (tableName) => `
+  SELECT
+    r.*,
+    DATE_FORMAT(r.Last_Stakes_Win_Date, '%d-%m-%Y') AS Last_Stakes_Win_Date,
+    DATE_FORMAT(r.Last_Run_Date, '%d-%m-%Y')        AS Last_Run_Date
+  FROM ${tableName} r
+  ORDER BY Stakes_Wins DESC, Highest_Stakes_Position ASC, WinPercent DESC, Runs DESC
+`;
+
 // 1) GET full Blacktype Fillies report
 app.get("/api/reports/blacktype_fillies", (req, res) => {
-  const query = `
-    SELECT *
-    FROM report_blacktype_fillies
-    ORDER BY Stakes_Wins DESC, Highest_Stakes_Position ASC, WinPercent DESC, Runs DESC
-  `;
+  const query = buildReportQuery("report_blacktype_fillies");
 
   db.query(query, (err, results) => {
     if (err) {
@@ -845,18 +851,24 @@ app.get("/api/reports/blacktype_fillies", (req, res) => {
       return res.status(200).json({ data: [], message: "No Data Found" });
     }
 
-    return res.status(200).json({ data: results });
+    // Ensure we only return the formatted date columns (avoid duplicates)
+    const cleaned = results.map((row) => {
+      // If duplicates exist, keep the formatted string (it will be the latter key in most drivers)
+      // Nothing else needed unless your driver returns both; if it does, we normalize here:
+      return {
+        ...row,
+        Last_Stakes_Win_Date: row.Last_Stakes_Win_Date ?? null,
+        Last_Run_Date: row.Last_Run_Date ?? null,
+      };
+    });
+
+    return res.status(200).json({ data: cleaned });
   });
 });
 
-
 // 2) GET full Out-of-Form Blacktype Fillies report
 app.get("/api/reports/blacktype_fillies_out_of_form", (req, res) => {
-  const query = `
-    SELECT *
-    FROM report_blacktype_fillies_out_of_form
-    ORDER BY Stakes_Wins DESC, Highest_Stakes_Position ASC, WinPercent DESC, Runs DESC
-  `;
+  const query = buildReportQuery("report_blacktype_fillies_out_of_form");
 
   db.query(query, (err, results) => {
     if (err) {
@@ -868,7 +880,13 @@ app.get("/api/reports/blacktype_fillies_out_of_form", (req, res) => {
       return res.status(200).json({ data: [], message: "No Data Found" });
     }
 
-    return res.status(200).json({ data: results });
+    const cleaned = results.map((row) => ({
+      ...row,
+      Last_Stakes_Win_Date: row.Last_Stakes_Win_Date ?? null,
+      Last_Run_Date: row.Last_Run_Date ?? null,
+    }));
+
+    return res.status(200).json({ data: cleaned });
   });
 });
 
