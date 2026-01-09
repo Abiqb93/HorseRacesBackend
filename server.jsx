@@ -914,13 +914,15 @@ app.get("/api/reports/female_under80_damvalue", (req, res) => {
 
       r.TFCurrentRating,
 
-      -- ✅ robust date formatting (handles DATE/DATETIME or VARCHAR)
-      CASE
-        WHEN r.CurrentRatingDate IS NULL OR r.CurrentRatingDate = '' THEN NULL
-        WHEN r.CurrentRatingDate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-          THEN DATE_FORMAT(STR_TO_DATE(r.CurrentRatingDate, '%Y-%m-%d'), '%Y-%m-%d')
-        ELSE DATE_FORMAT(r.CurrentRatingDate, '%Y-%m-%d')
-      END AS CurrentRatingDate,
+      -- ✅ SAFE: handles '' and multiple date shapes without throwing
+      DATE_FORMAT(
+        COALESCE(
+          STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d'),
+          STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d %H:%i:%s'),
+          STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%d-%m-%Y')
+        ),
+        '%Y-%m-%d'
+      ) AS CurrentRatingDate,
 
       r.TFDamMaxRating_ifHorse,
       r.TFBestProgenyRating,
