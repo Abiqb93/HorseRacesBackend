@@ -897,7 +897,6 @@ app.get("/api/reports/blacktype_fillies_out_of_form", (req, res) => {
   });
 });
 
-
 app.get("/api/reports/female_under80_damvalue", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
 
@@ -912,9 +911,10 @@ app.get("/api/reports/female_under80_damvalue", (req, res) => {
       r.Country,
       r.Runs,
 
-      r.TFCurrentRating,
+      -- ✅ rename in output
+      r.TFCurrentRating AS \`TF Rating Last Run\`,
 
-      -- ✅ SAFE: handles '' and multiple date shapes without throwing
+      -- ✅ SAFE parse to a real DATE (for filtering & formatting)
       DATE_FORMAT(
         COALESCE(
           STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d'),
@@ -929,9 +929,19 @@ app.get("/api/reports/female_under80_damvalue", (req, res) => {
       r.DamRatedOver105,
       r.ProducedOver105
     FROM report_female_under80_damvalue r
-    WHERE r.ownerFullName IS NOT NULL AND TRIM(r.ownerFullName) <> ''
+    WHERE
+      r.ownerFullName IS NOT NULL
+      AND TRIM(r.ownerFullName) <> ''
+
+      -- ✅ keep only last 365 days (inclusive)
+      AND COALESCE(
+        STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d'),
+        STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d %H:%i:%s'),
+        STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%d-%m-%Y')
+      ) >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)
+
     ORDER BY
-      r.TFCurrentRating ASC,
+      \`TF Rating Last Run\` DESC,
       r.TFBestProgenyRating DESC,
       r.TFDamMaxRating_ifHorse DESC,
       r.Runs DESC
@@ -950,7 +960,6 @@ app.get("/api/reports/female_under80_damvalue", (req, res) => {
     return res.status(200).json({ data: results });
   });
 });
-
 
 app.get("/api/attheraces/:time/:racename/:date", (req, res) => {
   const raceTime = req.params.time;       // e.g., "14:40"
