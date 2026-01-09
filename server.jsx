@@ -824,21 +824,42 @@ app.get("/api/sire_uplift/sire/:sireName", (req, res) => {
 // ===============================
 // Blacktype Fillies Reports Routes
 // ===============================
-// Assumes you already have: const db = mysql.createConnection(...) OR mysql pool
-// and app = express()
 
-// Utility: wraps a table and formats date columns, then orders.
+// Utility: wraps a table and formats date columns stored as dd-mm-yyyy strings (VARCHAR)
+// IMPORTANT: Last_Stakes_Win_Date and Last_Run_Date are stored like "07-04-2024"
 const buildReportQuery = (tableName) => `
   SELECT
-    r.*,
-    DATE_FORMAT(r.Last_Stakes_Win_Date, '%d-%m-%Y') AS Last_Stakes_Win_Date,
-    DATE_FORMAT(r.Last_Run_Date, '%d-%m-%Y')        AS Last_Run_Date
-  FROM ${tableName} r
-  ORDER BY Stakes_Wins DESC, Highest_Stakes_Position ASC, WinPercent DESC, Runs DESC
+    r.horseName,
+    r.sireName,
+    r.damName,
+    r.ownerFullName,
+    r.trainerFullName,
+    r.Country_of_Origin,
+    r.Runs,
+    r.Wins,
+    r.WinPercent,
+    r.Stakes_Wins,
+    r.Highest_Stakes_Position,
+
+    -- ✅ FIX: parse dd-mm-yyyy string then format (prevents NULL)
+    DATE_FORMAT(STR_TO_DATE(r.Last_Stakes_Win_Date, '%d-%m-%Y'), '%d-%m-%Y') AS Last_Stakes_Win_Date,
+    DATE_FORMAT(STR_TO_DATE(r.Last_Run_Date, '%d-%m-%Y'), '%d-%m-%Y')        AS Last_Run_Date,
+
+    r.TF_Rating_Max,
+    r.TF_Rating_Current
+  FROM \`${tableName}\` r
+  ORDER BY
+    r.Stakes_Wins DESC,
+    r.Highest_Stakes_Position ASC,
+    r.WinPercent DESC,
+    r.Runs DESC
 `;
 
 // 1) GET full Blacktype Fillies report
 app.get("/api/reports/blacktype_fillies", (req, res) => {
+  // Optional but recommended: avoid stale cached responses
+  res.setHeader("Cache-Control", "no-store");
+
   const query = buildReportQuery("report_blacktype_fillies");
 
   db.query(query, (err, results) => {
@@ -851,23 +872,15 @@ app.get("/api/reports/blacktype_fillies", (req, res) => {
       return res.status(200).json({ data: [], message: "No Data Found" });
     }
 
-    // Ensure we only return the formatted date columns (avoid duplicates)
-    const cleaned = results.map((row) => {
-      // If duplicates exist, keep the formatted string (it will be the latter key in most drivers)
-      // Nothing else needed unless your driver returns both; if it does, we normalize here:
-      return {
-        ...row,
-        Last_Stakes_Win_Date: row.Last_Stakes_Win_Date ?? null,
-        Last_Run_Date: row.Last_Run_Date ?? null,
-      };
-    });
-
-    return res.status(200).json({ data: cleaned });
+    // Dates are already clean; just return as-is
+    return res.status(200).json({ data: results });
   });
 });
 
 // 2) GET full Out-of-Form Blacktype Fillies report
 app.get("/api/reports/blacktype_fillies_out_of_form", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+
   const query = buildReportQuery("report_blacktype_fillies_out_of_form");
 
   db.query(query, (err, results) => {
@@ -880,13 +893,7 @@ app.get("/api/reports/blacktype_fillies_out_of_form", (req, res) => {
       return res.status(200).json({ data: [], message: "No Data Found" });
     }
 
-    const cleaned = results.map((row) => ({
-      ...row,
-      Last_Stakes_Win_Date: row.Last_Stakes_Win_Date ?? null,
-      Last_Run_Date: row.Last_Run_Date ?? null,
-    }));
-
-    return res.status(200).json({ data: cleaned });
+    return res.status(200).json({ data: results });
   });
 });
 
