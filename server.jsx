@@ -2398,35 +2398,41 @@ app.delete("/api/owner_tracking/:id", (req, res) => {
 
 
 // ==============================
-// JOCKEY TRACKING ROUTES
+// JOCKEY TRACKING ROUTES (UPDATED: NO HORSES)
+// Table columns now assumed as:
+// id, jockeyFullName, user_id, trackingDate, notes, created_at
 // ==============================
 
-// ✅ SAVE jockey tracking
+// ✅ SAVE jockey tracking (NO correspondingHorses)
 app.post("/api/jockey_tracking", (req, res) => {
-  const { jockeyFullName, correspondingHorses, user_id } = req.body;
+  const { jockeyFullName, user_id, trackingDate, notes } = req.body;
 
-  if (!jockeyFullName || !correspondingHorses || !user_id) {
-    return res.status(400).json({ error: "Missing required fields." });
+  // ✅ Required fields
+  if (!jockeyFullName || !user_id) {
+    return res.status(400).json({ error: "Missing required fields: jockeyFullName, user_id" });
   }
 
   const query = `
-    INSERT INTO jockey_tracking (jockeyFullName, correspondingHorses, user_id)
-    VALUES (?, ?, ?);
+    INSERT INTO jockey_tracking (jockeyFullName, user_id, trackingDate, notes)
+    VALUES (?, ?, ?, ?);
   `;
 
-  db.query(
-    query,
-    [jockeyFullName, JSON.stringify(correspondingHorses), user_id],
-    (err, results) => {
-      if (err) {
-        console.error("Error saving Jockey tracking:", err);
-        return res.status(500).json({ error: "Database error." });
-      }
-      res.status(200).json({ message: "Jockey tracking saved successfully!" });
-    }
-  );
-});
+  // If trackingDate not provided, store NULL (or you can default to NOW() in SQL)
+  const trackingDateValue = trackingDate ? new Date(trackingDate) : null;
+  const notesValue = notes ?? null;
 
+  db.query(query, [jockeyFullName, user_id, trackingDateValue, notesValue], (err, results) => {
+    if (err) {
+      console.error("Error saving Jockey tracking:", err);
+      return res.status(500).json({ error: "Database error." });
+    }
+
+    res.status(200).json({
+      message: "Jockey tracking saved successfully!",
+      id: results.insertId,
+    });
+  });
+});
 
 // ✅ FETCH jockey tracking for a user
 app.get("/api/jockey_tracking", (req, res) => {
@@ -2437,7 +2443,8 @@ app.get("/api/jockey_tracking", (req, res) => {
   }
 
   const query = `
-    SELECT * FROM jockey_tracking
+    SELECT *
+    FROM jockey_tracking
     WHERE user_id = ?
     ORDER BY created_at DESC
   `;
@@ -2451,10 +2458,9 @@ app.get("/api/jockey_tracking", (req, res) => {
   });
 });
 
-
 // ✅ DELETE a jockey tracking record by id
 app.delete("/api/jockey_tracking/:id", (req, res) => {
-  const id = req.params.id;
+  const { id } = req.params;
   if (!id) return res.status(400).json({ error: "ID is required" });
 
   const query = `DELETE FROM jockey_tracking WHERE id = ?`;
