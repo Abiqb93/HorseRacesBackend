@@ -911,10 +911,9 @@ app.get("/api/reports/female_under80_damvalue", (req, res) => {
       r.Country,
       r.Runs,
 
-      -- ✅ rename in output
-      r.TFCurrentRating AS \`TF Rating Last Run\`,
+      -- ✅ actual DB column (likely cleaned) -> nice output name
+      r.TF_Rating_Last_Run AS \`TF Rating Last Run\`,
 
-      -- ✅ SAFE parse to a real DATE (for filtering & formatting)
       DATE_FORMAT(
         COALESCE(
           STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d'),
@@ -932,16 +931,13 @@ app.get("/api/reports/female_under80_damvalue", (req, res) => {
     WHERE
       r.ownerFullName IS NOT NULL
       AND TRIM(r.ownerFullName) <> ''
-
-      -- ✅ keep only last 365 days (inclusive)
       AND COALESCE(
         STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d'),
         STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d %H:%i:%s'),
         STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%d-%m-%Y')
       ) >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)
-
     ORDER BY
-      \`TF Rating Last Run\` DESC,
+      r.TF_Rating_Last_Run DESC,
       r.TFBestProgenyRating DESC,
       r.TFDamMaxRating_ifHorse DESC,
       r.Runs DESC
