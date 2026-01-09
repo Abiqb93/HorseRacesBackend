@@ -899,22 +899,46 @@ app.get("/api/reports/blacktype_fillies_out_of_form", (req, res) => {
 
 
 app.get("/api/reports/female_under80_damvalue", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+
   const query = `
     SELECT
-      *,
-      DATE_FORMAT(CurrentRatingDate, '%Y-%m-%d') AS CurrentRatingDate
-    FROM report_female_under80_damvalue
+      r.horseName,
+      r.sireName,
+      r.damName,
+      r.damName_clean,
+      r.ownerFullName,
+      r.trainerFullName,
+      r.Country,
+      r.Runs,
+
+      r.TFCurrentRating,
+
+      -- ✅ robust date formatting (handles DATE/DATETIME or VARCHAR)
+      CASE
+        WHEN r.CurrentRatingDate IS NULL OR r.CurrentRatingDate = '' THEN NULL
+        WHEN r.CurrentRatingDate REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+          THEN DATE_FORMAT(STR_TO_DATE(r.CurrentRatingDate, '%Y-%m-%d'), '%Y-%m-%d')
+        ELSE DATE_FORMAT(r.CurrentRatingDate, '%Y-%m-%d')
+      END AS CurrentRatingDate,
+
+      r.TFDamMaxRating_ifHorse,
+      r.TFBestProgenyRating,
+      r.DamRatedOver105,
+      r.ProducedOver105
+    FROM report_female_under80_damvalue r
+    WHERE r.ownerFullName IS NOT NULL AND TRIM(r.ownerFullName) <> ''
     ORDER BY
-      CurrentRating ASC,
-      BestProgenyRating DESC,
-      DamMaxRating_ifHorse DESC,
-      Runs DESC
+      r.TFCurrentRating ASC,
+      r.TFBestProgenyRating DESC,
+      r.TFDamMaxRating_ifHorse DESC,
+      r.Runs DESC
   `;
 
   db.query(query, (err, results) => {
     if (err) {
       console.error("Error fetching report_female_under80_damvalue:", err);
-      return res.status(500).json({ error: "Database error" });
+      return res.status(500).json({ error: "Database error", details: err.message });
     }
 
     if (!results || results.length === 0) {
