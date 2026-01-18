@@ -1478,9 +1478,8 @@ app.get("/api/horseTracking/:horseName", (req, res) => {
     return res.status(400).json({ error: "Missing user parameter" });
   }
 
-  // ✅ Improved ordering so "latest" is stable (noteDateTime first, then trackingDate)
   const query =
-    "SELECT * FROM horse_tracking WHERE horseName = ? AND User = ? ORDER BY noteDateTime DESC, trackingDate DESC";
+    "SELECT * FROM horse_tracking WHERE horseName = ? AND User = ? ORDER BY noteDateTime DESC";
 
   db.query(query, [horseName, user], (err, results) => {
     if (err) {
@@ -1488,51 +1487,6 @@ app.get("/api/horseTracking/:horseName", (req, res) => {
       return res.status(500).json({ error: "Database error" });
     }
     return res.status(200).json({ data: results });
-  });
-});
-
-// ✅ PATCH: Update DSLR_Review for a horse + user (frontend tick uses this)
-app.patch("/api/horseTracking/:horseName/dslr-review", (req, res) => {
-  const { horseName } = req.params;
-  const { user } = req.query;
-  const { value } = req.body;
-
-  if (!user) return res.status(400).json({ error: "Missing user parameter" });
-  if (!horseName)
-    return res.status(400).json({ error: "Missing horseName param" });
-
-  const v = Number(value);
-  if (![0, 1].includes(v)) {
-    return res.status(400).json({ error: "value must be 0 or 1" });
-  }
-
-  // ✅ IMPORTANT: Update ALL rows for this horse+user
-  // because each note creates a new row and your UI reads the latest row.
-  const query = `
-    UPDATE horse_tracking
-    SET DSLR_Review = ?
-    WHERE horseName = ? AND User = ?
-  `;
-
-  db.query(query, [v, horseName, user], (err, result) => {
-    if (err) {
-      console.error("Error updating DSLR_Review:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
-
-    if (result.affectedRows === 0) {
-      return res
-        .status(404)
-        .json({ error: "No tracking entries found for that horse and user." });
-    }
-
-    return res.status(200).json({
-      message: "DSLR_Review updated",
-      horseName,
-      user,
-      DSLR_Review: v,
-      affectedRows: result.affectedRows,
-    });
   });
 });
 
@@ -1554,9 +1508,6 @@ app.post("/api/horseTracking", (req, res) => {
     horseAge,
     horseGender,
     horseColour,
-
-    // ✅ optional: allow passing DSLR_Review directly (usually frontend won't send it)
-    DSLR_Review,
   } = req.body;
 
   const finalTrackingType = trackingType || TrackingType || null;
@@ -1568,98 +1519,62 @@ app.post("/api/horseTracking", (req, res) => {
     });
   }
 
-  // ✅ DSLR_Review handling:
-  // - If DSLR_Review is provided, use it (coerced to 0/1)
-  // - Otherwise inherit from latest existing row for this horse+user
-  // - If no existing rows, default to 0
-  const provided = DSLR_Review !== undefined && DSLR_Review !== null;
-  const providedVal = provided ? (Number(DSLR_Review) === 1 ? 1 : 0) : null;
-
-  const inheritQuery = `
-    SELECT DSLR_Review
-    FROM horse_tracking
-    WHERE horseName = ? AND User = ?
-    ORDER BY noteDateTime DESC, trackingDate DESC
-    LIMIT 1
+  const query = `
+    INSERT INTO horse_tracking (
+      horseName,
+      note,
+      noteDateTime,
+      trackingDate,
+      TrackingType,
+      User,
+      sireName,
+      damName,
+      ownerFullName,
+      trainerFullName,
+      horseAge,
+      horseGender,
+      horseColour
+    ) VALUES (
+      ?,
+      ?,
+      COALESCE(?, NOW()),
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?
+    )
   `;
 
-  db.query(inheritQuery, [horseName, finalUser], (inheritErr, inheritResults) => {
-    if (inheritErr) {
-      console.error("Error reading existing DSLR_Review:", inheritErr);
+  const values = [
+    horseName,
+    note || null,
+    noteDateTime || null,
+    trackingDate,
+    finalTrackingType,
+    finalUser,
+    sireName || null,
+    damName || null,
+    ownerFullName || null,
+    trainerFullName || null,
+    horseAge || null,
+    horseGender || null,
+    horseColour || null,
+  ];
+
+  db.query(query, values, (err, result) => {
+    if (err) {
+      console.error("Error inserting horseTracking:", err);
       return res.status(500).json({ error: "Database error" });
     }
-
-    const inheritedVal =
-      inheritResults?.length && inheritResults[0]?.DSLR_Review !== undefined
-        ? Number(inheritResults[0].DSLR_Review) === 1
-          ? 1
-          : 0
-        : 0;
-
-    const finalDslrReview = provided ? providedVal : inheritedVal;
-
-    const query = `
-      INSERT INTO horse_tracking (
-        horseName,
-        note,
-        noteDateTime,
-        trackingDate,
-        TrackingType,
-        User,
-        sireName,
-        damName,
-        ownerFullName,
-        trainerFullName,
-        horseAge,
-        horseGender,
-        horseColour,
-        DSLR_Review
-      ) VALUES (
-        ?,
-        ?,
-        COALESCE(?, NOW()),
-        ?,
-        ?,
-        ?,
-        ?,
-        ?,
-        ?,
-        ?,
-        ?,
-        ?,
-        ?,
-        ?
-      )
-    `;
-
-    const values = [
-      horseName,
-      note || null,
-      noteDateTime || null,
-      trackingDate,
-      finalTrackingType,
-      finalUser,
-      sireName || null,
-      damName || null,
-      ownerFullName || null,
-      trainerFullName || null,
-      horseAge || null,
-      horseGender || null,
-      horseColour || null,
-      finalDslrReview,
-    ];
-
-    db.query(query, values, (err, result) => {
-      if (err) {
-        console.error("Error inserting horseTracking:", err);
-        return res.status(500).json({ error: "Database error" });
-      }
-      return res.status(201).json({
-        message: "Horse tracking entry added.",
-        id: result.insertId,
-        DSLR_Review: finalDslrReview,
-      });
-    });
+    return res
+      .status(201)
+      .json({ message: "Horse tracking entry added.", id: result.insertId });
   });
 });
 
@@ -1691,6 +1606,7 @@ app.delete("/api/horseTracking/:horseName", (req, res) => {
     });
   });
 });
+
 
 
 
