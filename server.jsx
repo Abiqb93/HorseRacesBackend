@@ -3861,6 +3861,66 @@ app.patch('/api/horseTracking/:horseName/flags', (req, res) => {
   }
 });
 
+
+app.patch("/api/horseTracking/:horseName/dslr-review", (req, res) => {
+  try {
+    const { horseName } = req.params;
+
+    // user can come from query or body (same pattern as your sample)
+    const user = req.query.user || req.body.user || req.body.User;
+
+    // Accept: value: 0/1, true/false, "0"/"1"
+    let { value } = req.body || {};
+
+    if (!horseName || !user) {
+      return res.status(400).json({ error: "horseName and user are required." });
+    }
+
+    if (value === undefined) {
+      return res.status(400).json({ error: "value is required (0 or 1)." });
+    }
+
+    // Normalize to 0/1
+    value = value === true || value === 1 || value === "1" ? 1 : 0;
+
+    const sql = `
+      UPDATE horse_tracking
+      SET DSLR_Review = ?
+      WHERE LOWER(horseName) = LOWER(?) AND \`User\` = ?
+    `;
+
+    db.query(sql, [value, horseName, user], (err, result) => {
+      if (err) {
+        console.error("[dslr-review] SQL ERROR:", err.code, err.sqlMessage);
+        return res.status(500).json({
+          error: "Database error",
+          code: err.code,
+          message: err.sqlMessage,
+        });
+      }
+
+      // If 0 rows affected, likely horse not tracked by this user
+      if (!result.affectedRows) {
+        return res.status(404).json({
+          error: "Not found",
+          message: "No tracking row found for this horse and user.",
+        });
+      }
+
+      return res.json({
+        message: "DSLR_Review updated",
+        affectedRows: result.affectedRows,
+        value,
+      });
+    });
+  } catch (e) {
+    console.error("[dslr-review] Handler error:", e);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+
+
 // POST /api/notify_horses  -> insert (or touch updated_at if duplicate)
 app.post("/api/notify_horses", (req, res) => {
   const need = required(req.body, ["user_id", "rec_date", "rec_time", "track", "horse", "type", "race"]);
