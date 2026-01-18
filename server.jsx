@@ -3884,7 +3884,7 @@ app.patch("/api/horseTracking/:horseName/dslr-review", (req, res) => {
     value = value === true || value === 1 || value === "1" ? 1 : 0;
 
     const sql = `
-      UPDATE horseTracking
+      UPDATE horse_tracking
       SET DSLR_Review = ?
       WHERE LOWER(horseName) = LOWER(?) AND \`User\` = ?
     `;
