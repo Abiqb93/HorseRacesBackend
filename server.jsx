@@ -1450,63 +1450,48 @@ Add to Outlook Calendar: ${outlookUrl}
 
 
 // ✅ GET: All tracking entries for a specific user
-app.get('/api/horseTracking', (req, res) => {
+app.get("/api/horseTracking", (req, res) => {
   const { user } = req.query;
+
   if (!user) {
     return res.status(400).json({ error: "Missing user parameter" });
   }
 
-  // ✅ Explicitly include DSLR_Review
-  const query = `
-    SELECT
-      id, horseName, note, noteDateTime, trackingDate, TrackingType, User,
-      sireName, damName, ownerFullName, trainerFullName, horseAge, horseGender, horseColour,
-      DSLR_Review
-    FROM horse_tracking
-    WHERE User = ?
-    ORDER BY trackingDate DESC
-  `;
+  const query =
+    "SELECT * FROM horse_tracking WHERE User = ? ORDER BY trackingDate DESC";
 
   db.query(query, [user], (err, results) => {
     if (err) {
       console.error("Error fetching tracking:", err);
       return res.status(500).json({ error: "Database error" });
     }
-    res.status(200).json({ data: results });
+    return res.status(200).json({ data: results });
   });
 });
 
 // ✅ GET: All tracking entries for a specific horse and user
-app.get('/api/horseTracking/:horseName', (req, res) => {
-  const horseName = req.params.horseName;
+app.get("/api/horseTracking/:horseName", (req, res) => {
+  const { horseName } = req.params;
   const { user } = req.query;
 
   if (!user) {
     return res.status(400).json({ error: "Missing user parameter" });
   }
 
-  // ✅ Explicitly include DSLR_Review
-  const query = `
-    SELECT
-      id, horseName, note, noteDateTime, trackingDate, TrackingType, User,
-      sireName, damName, ownerFullName, trainerFullName, horseAge, horseGender, horseColour,
-      DSLR_Review
-    FROM horse_tracking
-    WHERE horseName = ? AND User = ?
-    ORDER BY noteDateTime DESC
-  `;
+  const query =
+    "SELECT * FROM horse_tracking WHERE horseName = ? AND User = ? ORDER BY noteDateTime DESC";
 
   db.query(query, [horseName, user], (err, results) => {
     if (err) {
       console.error("Error fetching horseTracking:", err);
       return res.status(500).json({ error: "Database error" });
     }
-
-    res.status(200).json({ data: results });
+    return res.status(200).json({ data: results });
   });
 });
 
-app.post('/api/horseTracking', (req, res) => {
+// ✅ POST: Add a tracking entry
+app.post("/api/horseTracking", (req, res) => {
   const {
     horseName,
     note,
@@ -1523,20 +1508,15 @@ app.post('/api/horseTracking', (req, res) => {
     horseAge,
     horseGender,
     horseColour,
-    DSLR_Review // ✅ NEW (optional from frontend)
   } = req.body;
 
   const finalTrackingType = trackingType || TrackingType || null;
   const finalUser = user || User;
 
-  // ✅ If frontend doesn't send it, default to 0
-  const finalDslrReview =
-    DSLR_Review === true || DSLR_Review === 1 || DSLR_Review === "1" ? 1 :
-    DSLR_Review === false || DSLR_Review === 0 || DSLR_Review === "0" ? 0 :
-    0;
-
   if (!horseName || !trackingDate || !finalUser) {
-    return res.status(400).json({ error: "horseName, trackingDate, and user are required." });
+    return res.status(400).json({
+      error: "horseName, trackingDate, and user are required.",
+    });
   }
 
   const query = `
@@ -1553,15 +1533,28 @@ app.post('/api/horseTracking', (req, res) => {
       trainerFullName,
       horseAge,
       horseGender,
-      horseColour,
-      DSLR_Review
-    ) VALUES (?, ?, COALESCE(?, NOW()), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      horseColour
+    ) VALUES (
+      ?,
+      ?,
+      COALESCE(?, NOW()),
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?
+    )
   `;
 
   const values = [
     horseName,
     note || null,
-    noteDateTime,
+    noteDateTime || null,
     trackingDate,
     finalTrackingType,
     finalUser,
@@ -1572,7 +1565,6 @@ app.post('/api/horseTracking', (req, res) => {
     horseAge || null,
     horseGender || null,
     horseColour || null,
-    finalDslrReview
   ];
 
   db.query(query, values, (err, result) => {
@@ -1580,100 +1572,23 @@ app.post('/api/horseTracking', (req, res) => {
       console.error("Error inserting horseTracking:", err);
       return res.status(500).json({ error: "Database error" });
     }
-
-    res.status(201).json({ message: "Horse tracking entry added.", id: result.insertId });
-  });
-});
-
-// ✅ PATCH: Set DSLR_Review (0/1) for a horse and specific user
-app.patch('/api/horseTracking/:horseName/dslr-review', (req, res) => {
-  const horseName = req.params.horseName;
-  const { user } = req.query;
-  const { value } = req.body; // expected 0/1 or true/false
-
-  if (!user) {
-    return res.status(400).json({ error: "Missing user parameter" });
-  }
-
-  const v =
-    value === true || value === 1 || value === "1" ? 1 :
-    value === false || value === 0 || value === "0" ? 0 :
-    null;
-
-  if (v === null) {
-    return res.status(400).json({ error: "Body must include value as 0/1 (or true/false)." });
-  }
-
-  const query = `
-    UPDATE horse_tracking
-    SET DSLR_Review = ?
-    WHERE horseName = ? AND User = ?
-  `;
-
-  db.query(query, [v, horseName, user], (err, result) => {
-    if (err) {
-      console.error("Error updating DSLR_Review:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "No tracking entries found for that horse and user." });
-    }
-
-    res.status(200).json({
-      message: "DSLR_Review updated.",
-      horseName,
-      user,
-      DSLR_Review: v,
-      affectedRows: result.affectedRows,
-    });
-  });
-});
-
-// ✅ PATCH: Toggle DSLR_Review (flip 0 <-> 1) for a horse and specific user
-app.patch('/api/horseTracking/:horseName/dslr-review/toggle', (req, res) => {
-  const horseName = req.params.horseName;
-  const { user } = req.query;
-
-  if (!user) {
-    return res.status(400).json({ error: "Missing user parameter" });
-  }
-
-  const query = `
-    UPDATE horse_tracking
-    SET DSLR_Review = CASE WHEN DSLR_Review = 1 THEN 0 ELSE 1 END
-    WHERE horseName = ? AND User = ?
-  `;
-
-  db.query(query, [horseName, user], (err, result) => {
-    if (err) {
-      console.error("Error toggling DSLR_Review:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "No tracking entries found for that horse and user." });
-    }
-
-    res.status(200).json({
-      message: "DSLR_Review toggled.",
-      horseName,
-      user,
-      affectedRows: result.affectedRows,
-    });
+    return res
+      .status(201)
+      .json({ message: "Horse tracking entry added.", id: result.insertId });
   });
 });
 
 // ✅ DELETE: Remove tracking entry for a horse and specific user
-app.delete('/api/horseTracking/:horseName', (req, res) => {
-  const horseName = req.params.horseName;
+app.delete("/api/horseTracking/:horseName", (req, res) => {
+  const { horseName } = req.params;
   const { user } = req.query;
 
   if (!user) {
     return res.status(400).json({ error: "Missing user parameter" });
   }
 
-  const query = `DELETE FROM horse_tracking WHERE horseName = ? AND User = ?`;
+  const query = "DELETE FROM horse_tracking WHERE horseName = ? AND User = ?";
+
   db.query(query, [horseName, user], (err, result) => {
     if (err) {
       console.error("Error deleting horseTracking:", err);
@@ -1681,13 +1596,16 @@ app.delete('/api/horseTracking/:horseName', (req, res) => {
     }
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "No tracking entries found for that horse and user." });
+      return res
+        .status(404)
+        .json({ error: "No tracking entries found for that horse and user." });
     }
 
-    res.status(200).json({ message: `Deleted ${result.affectedRows} tracking entries.` });
+    return res.status(200).json({
+      message: `Deleted ${result.affectedRows} tracking entries.`,
+    });
   });
 });
-
 
 
 // 1. sire_birthyear_reports
