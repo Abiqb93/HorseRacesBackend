@@ -1508,6 +1508,7 @@ app.post("/api/horseTracking", (req, res) => {
     horseAge,
     horseGender,
     horseColour,
+    silkCode,
   } = req.body;
 
   const finalTrackingType = trackingType || TrackingType || null;
@@ -1533,11 +1534,13 @@ app.post("/api/horseTracking", (req, res) => {
       trainerFullName,
       horseAge,
       horseGender,
-      horseColour
+      horseColour,
+      silkCode
     ) VALUES (
       ?,
       ?,
       COALESCE(?, NOW()),
+      ?,
       ?,
       ?,
       ?,
@@ -1565,6 +1568,7 @@ app.post("/api/horseTracking", (req, res) => {
     horseAge || null,
     horseGender || null,
     horseColour || null,
+    silkCode || null,
   ];
 
   db.query(query, values, (err, result) => {
