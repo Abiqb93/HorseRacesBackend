@@ -355,6 +355,21 @@ app.get('/api/hit_sales1', (req, res) => {
   });
 });
 
+
+// ✅ Route to fetch all rows from billapex
+app.get('/api/billapex', (req, res) => {
+  const query = `SELECT * FROM billapex`;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("❌ Error fetching billapex:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
 app.get('/api/ahit_sales', (req, res) => {
   const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 20, 100));
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
