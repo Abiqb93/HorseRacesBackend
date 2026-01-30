@@ -403,6 +403,66 @@ app.get('/api/ahit_sales', (req, res) => {
 });
 
 
+// =======================================================
+// GET performance predictions by horseName (paginated)
+// =======================================================
+app.get('/api/performance_predictions/horse', (req, res) => {
+
+  const horseName = req.query.horseName;
+
+  if (!horseName) {
+    return res.status(400).json({ error: "horseName parameter is required" });
+  }
+
+  const limit  = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 50, 200));
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+
+  const dataSql = `
+    SELECT *
+    FROM performance_predictions
+    WHERE horseName = ?
+    ORDER BY run_index ASC,
+             FIELD(type,'ACTUAL','PREDICTED')
+    LIMIT ? OFFSET ?
+  `;
+
+  const countSql = `
+    SELECT COUNT(*) AS total
+    FROM performance_predictions
+    WHERE horseName = ?
+  `;
+
+  db.query(dataSql, [horseName, limit, offset], (err, results) => {
+    if (err) {
+      console.error("❌ Error fetching performance_predictions:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    db.query(countSql, [horseName], (err2, countRows) => {
+      if (err2) {
+        console.error("❌ Error counting performance_predictions:", err2);
+        return res.status(200).json({ data: results });
+      }
+
+      const total = countRows?.[0]?.total ?? 0;
+      const nextOffset = offset + results.length;
+      const hasMore = nextOffset < total;
+
+      res.status(200).json({
+        data: results,
+        page: {
+          limit,
+          offset,
+          total,
+          hasMore,
+          nextOffset
+        }
+      });
+    });
+  });
+});
+
+
 // GET /api/tarrersalls_ahit
 app.get('/api/tarrersalls_ahit', (req, res) => {
   const rawLimit  = req.query.limit;
