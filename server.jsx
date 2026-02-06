@@ -1001,6 +1001,85 @@ app.get("/api/reports/female_under80_damvalue", (req, res) => {
   });
 });
 
+// Potential Stallion Report endpoint
+// Table: report_potential_stallions
+// Columns expected (from our pandas push): horseName, sireName, damName,
+// Runs, Total_Wins, Win_%, Group_Wins, Group1_Wins, Stakes_Wins,
+// Avg_Rating, PrizeMoney, Sire_Horses, Sire_GroupWinners
+
+app.get("/api/reports/potential_stallions", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+
+  // Optional query params:
+  //   ?limit=500
+  //   ?minGroupWins=1
+  //   ?minRating=105
+  //   ?minWinPct=20
+  const limit = Math.min(parseInt(req.query.limit || "2000", 10), 10000);
+  const minGroupWins = parseInt(req.query.minGroupWins || "1", 10);
+  const minRating = parseFloat(req.query.minRating || "0");
+  const minWinPct = parseFloat(req.query.minWinPct || "0");
+
+  // NOTE:
+  // - Your SQL table column for Win_% will be cleaned by clean_sql_column_names -> Win_
+  // - PrizeMoney might be PrizeMoney or PrizeMoneyWon depending on what you stored.
+  // Adjust aliases below if your column names differ.
+  //
+  // If you used clean_sql_column_names, Win_% becomes Win_ (or Win__ depending on cleaning).
+  // In our cleaning function: "%" -> "Percent", so Win_% becomes Win_Percent if the column is literally "Win_%".
+  // In the code we built, the column is "Win_%", so it becomes "Win_Percent".
+
+  const query = `
+    SELECT
+      r.horseName,
+      r.sireName,
+      r.damName,
+
+      r.Runs,
+      r.Total_Wins AS \`Total Wins\`,
+      r.Win_Percent AS \`Win %\`,
+
+      r.Group_Wins AS \`Group Wins\`,
+      r.Group1_Wins AS \`Group 1 Wins\`,
+      r.Stakes_Wins AS \`Stakes Wins\`,
+
+      r.Avg_Rating AS \`Avg Rating\`,
+      r.PrizeMoney AS \`Prize Money\`,
+
+      r.Sire_Horses AS \`Sire Horses\`,
+      r.Sire_GroupWinners AS \`Sire Group Winners\`
+
+    FROM report_potential_stallions r
+    WHERE
+      r.horseName IS NOT NULL
+      AND TRIM(r.horseName) <> ''
+      AND r.Group_Wins >= ?
+      AND COALESCE(r.Avg_Rating, 0) >= ?
+      AND COALESCE(r.Win_Percent, 0) >= ?
+    ORDER BY
+      r.Group_Wins DESC,
+      r.Group1_Wins DESC,
+      r.Avg_Rating DESC,
+      r.PrizeMoney DESC,
+      r.Runs DESC
+    LIMIT ?
+  `;
+
+  db.query(query, [minGroupWins, minRating, minWinPct, limit], (err, results) => {
+    if (err) {
+      console.error("Error fetching report_potential_stallions:", err);
+      return res.status(500).json({ error: "Database error", details: err.message });
+    }
+
+    if (!results || results.length === 0) {
+      return res.status(200).json({ data: [], message: "No Data Found" });
+    }
+
+    return res.status(200).json({ data: results });
+  });
+});
+
+
 app.get("/api/attheraces/:time/:racename/:date", (req, res) => {
   const raceTime = req.params.time;       // e.g., "14:40"
   const raceName = req.params.racename;   // e.g., "Southwell"
