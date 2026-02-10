@@ -2179,33 +2179,33 @@ app.get('/api/APIData_Table2/dam', (req, res) => {
 });
 
 
-app.get('/api/APIData_Table2/owner', (req, res) => {
-  const { ownerFullName } = req.query;
+// app.get('/api/APIData_Table2/owner', (req, res) => {
+//   const { ownerFullName } = req.query;
 
-  if (!ownerFullName) {
-    return res.status(400).json({ error: "Missing required query parameter: ownerFullName" });
-  }
+//   if (!ownerFullName) {
+//     return res.status(400).json({ error: "Missing required query parameter: ownerFullName" });
+//   }
 
-  const startTime = Date.now();
+//   const startTime = Date.now();
 
-  const query = `
-    SELECT horseName 
-    FROM APIData_Table2
-    WHERE ownerFullName = ?;
-  `;
+//   const query = `
+//     SELECT horseName 
+//     FROM APIData_Table2
+//     WHERE ownerFullName = ?;
+//   `;
 
-  db.query(query, [ownerFullName], (err, rows) => {
-    const elapsed = (Date.now() - startTime) / 1000;
-    console.log(`Query for sire "${ownerFullName}" took ${elapsed.toFixed(2)} seconds`);
+//   db.query(query, [ownerFullName], (err, rows) => {
+//     const elapsed = (Date.now() - startTime) / 1000;
+//     console.log(`Query for sire "${ownerFullName}" took ${elapsed.toFixed(2)} seconds`);
 
-    if (err) {
-      console.error("Error fetching records:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
+//     if (err) {
+//       console.error("Error fetching records:", err);
+//       return res.status(500).json({ error: "Database error" });
+//     }
 
-    res.status(200).json({ data: rows });
-  });
-});
+//     res.status(200).json({ data: rows });
+//   });
+// });
 
 
 app.get('/api/APIData_Table2/owner', (req, res) => {
