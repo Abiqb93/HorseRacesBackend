@@ -2208,6 +2208,43 @@ app.get('/api/APIData_Table2/owner', (req, res) => {
 });
 
 
+app.get('/api/APIData_Table2/owner', (req, res) => {
+  const { ownerLatest } = req.query;
+
+  if (!ownerLatest) {
+    return res.status(400).json({
+      error: "Missing required query parameter: ownerLatest"
+    });
+  }
+
+  const startTime = Date.now();
+
+  const query = `
+    SELECT horseName
+    FROM APIData_Table2
+    WHERE ownerLatest = ?;
+  `;
+
+  db.query(query, [ownerLatest], (err, rows) => {
+    const elapsed = (Date.now() - startTime) / 1000;
+    console.log(
+      `Query for ownerLatest "${ownerLatest}" took ${elapsed.toFixed(2)} seconds`
+    );
+
+    if (err) {
+      console.error("Error fetching records:", err);
+      return res.status(500).json({
+        error: "Database error"
+      });
+    }
+
+    res.status(200).json({
+      data: rows
+    });
+  });
+});
+
+
 app.get('/api/APIData_Table2/jockey', (req, res) => {
   const { jockeyFullName } = req.query;
 
