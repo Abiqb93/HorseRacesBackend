@@ -2244,13 +2244,12 @@ app.get('/api/APIData_Table2/owner', (req, res) => {
   });
 });
 
-
 app.get('/api/APIData_Table2/jockey', (req, res) => {
-  const { jockeyFullName } = req.query;
+  const { jockeyLatest } = req.query;
 
-  if (!jockeyFullName) {
+  if (!jockeyLatest) {
     return res.status(400).json({
-      error: "Missing required query parameter: jockeyFullName"
+      error: "Missing required query parameter: jockeyLatest"
     });
   }
 
@@ -2259,21 +2258,58 @@ app.get('/api/APIData_Table2/jockey', (req, res) => {
   const query = `
     SELECT horseName
     FROM APIData_Table2
-    WHERE jockeyFullName = ?;
+    WHERE jockeyLatest = ?;
   `;
 
-  db.query(query, [jockeyFullName], (err, rows) => {
+  db.query(query, [jockeyLatest], (err, rows) => {
     const elapsed = (Date.now() - startTime) / 1000;
-    console.log(`Query for jockey "${jockeyFullName}" took ${elapsed.toFixed(2)} seconds`);
+    console.log(
+      `Query for jockeyLatest "${jockeyLatest}" took ${elapsed.toFixed(2)} seconds`
+    );
 
     if (err) {
-      console.error("Error fetching jockey records:", err);
-      return res.status(500).json({ error: "Database error" });
+      console.error("Error fetching records:", err);
+      return res.status(500).json({
+        error: "Database error"
+      });
     }
 
-    res.status(200).json({ data: rows });
+    res.status(200).json({
+      data: rows
+    });
   });
 });
+
+
+// app.get('/api/APIData_Table2/jockey', (req, res) => {
+//   const { jockeyFullName } = req.query;
+
+//   if (!jockeyFullName) {
+//     return res.status(400).json({
+//       error: "Missing required query parameter: jockeyFullName"
+//     });
+//   }
+
+//   const startTime = Date.now();
+
+//   const query = `
+//     SELECT horseName
+//     FROM APIData_Table2
+//     WHERE jockeyFullName = ?;
+//   `;
+
+//   db.query(query, [jockeyFullName], (err, rows) => {
+//     const elapsed = (Date.now() - startTime) / 1000;
+//     console.log(`Query for jockey "${jockeyFullName}" took ${elapsed.toFixed(2)} seconds`);
+
+//     if (err) {
+//       console.error("Error fetching jockey records:", err);
+//       return res.status(500).json({ error: "Database error" });
+//     }
+
+//     res.status(200).json({ data: rows });
+//   });
+// });
 
 
 app.get('/api/APIData_Table2', (req, res) => {
