@@ -1743,6 +1743,50 @@ app.delete("/api/horseTracking/:horseName", (req, res) => {
 });
 
 
+// ✅ PATCH: Update tracking type for an existing tracked horse (per user)
+app.patch("/api/horseTracking/:horseName/type", (req, res) => {
+  const { horseName } = req.params;
+  const { user } = req.query;
+
+  const { trackingType, TrackingType } = req.body;
+  const finalTrackingType = trackingType || TrackingType || null;
+
+  if (!user) {
+    return res.status(400).json({ error: "Missing user parameter" });
+  }
+
+  // If you want to REQUIRE a type, use: if (!finalTrackingType) { ... }
+  if (finalTrackingType === null) {
+    return res.status(400).json({ error: "Missing trackingType in request body" });
+  }
+
+  const query = `
+    UPDATE horse_tracking
+    SET TrackingType = ?
+    WHERE horseName = ? AND User = ?
+  `;
+
+  db.query(query, [finalTrackingType, horseName, user], (err, result) => {
+    if (err) {
+      console.error("Error updating TrackingType:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        error: "No tracking entry found for that horse and user.",
+      });
+    }
+
+    return res.status(200).json({
+      message: "Tracking type updated.",
+      horseName,
+      user,
+      TrackingType: finalTrackingType,
+      updatedRows: result.affectedRows,
+    });
+  });
+});
 
 
 // 1. sire_birthyear_reports
