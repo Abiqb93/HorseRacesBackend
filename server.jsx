@@ -1332,11 +1332,19 @@ app.get('/api/RacesAndEntries', (req, res) => {
 
 
 app.get('/api/racingpost', (req, res) => {
-  const query = `SELECT * FROM racingpost`;
+  const { horseName } = req.query;
 
-  db.query(query, (err, results) => {
+  let query = `SELECT * FROM racingpost`;
+  let params = [];
+
+  if (horseName) {
+    query += ` WHERE horseName = ?`;
+    params.push(horseName);
+  }
+
+  db.query(query, params, (err, results) => {
     if (err) {
-      console.error("Error fetching ClosingEntries:", err);
+      console.error("Error fetching racingpost:", err);
       return res.status(500).json({ error: "Database error" });
     }
 
