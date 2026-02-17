@@ -2759,6 +2759,63 @@ app.delete("/api/jockey_tracking/:id", (req, res) => {
   });
 });
 
+// ✅ FETCH horses by ownerFullName
+app.get("/api/timeform/owner", (req, res) => {
+  const { ownerFullName } = req.query;
+
+  if (!ownerFullName) {
+    return res.status(400).json({ error: "ownerFullName is required" });
+  }
+
+  const query = `
+    SELECT horseName, silkCode
+    FROM timeform_latest_by_horse
+    WHERE ownerFullName = ?
+    ORDER BY horseName ASC
+  `;
+
+  db.query(query, [ownerFullName], (err, results) => {
+    if (err) {
+      console.error("Error fetching horses by owner:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({
+      count: results.length,
+      data: results
+    });
+  });
+});
+
+
+// ✅ FETCH horses by jockeyFullName
+app.get("/api/timeform/jockey", (req, res) => {
+  const { jockeyFullName } = req.query;
+
+  if (!jockeyFullName) {
+    return res.status(400).json({ error: "jockeyFullName is required" });
+  }
+
+  const query = `
+    SELECT horseName, silkCode
+    FROM timeform_latest_by_horse
+    WHERE jockeyFullName = ?
+    ORDER BY horseName ASC
+  `;
+
+  db.query(query, [jockeyFullName], (err, results) => {
+    if (err) {
+      console.error("Error fetching horses by jockey:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({
+      count: results.length,
+      data: results
+    });
+  });
+});
+
 
 
 // Dynamic field mapping based on table name
