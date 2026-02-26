@@ -788,6 +788,19 @@ app.get('/api/FranceRaceRecords', (req, res) => {
   });
 });
 
+app.get('/api/IrelandRaceRecords', (req, res) => {
+  const query = `SELECT * FROM IrelandRaceRecords`;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching IrelandRaceRecords:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
 
 app.get("/api/attheraces/:horseName", (req, res) => {
   const horseName = req.params.horseName;
