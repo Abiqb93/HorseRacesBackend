@@ -4805,7 +4805,7 @@ app.get('/api/chat/conversations/:userId', (req, res) => {
 
       return {
         ...row,
-        other_user,report_female_under
+        other_user,
       };
     });
 
