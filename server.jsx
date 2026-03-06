@@ -6,7 +6,7 @@ const mysql = require('mysql');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const nodemailer = require('nodemailer');
-const crypto = require('crypto');
+// const crypto = require('crypto');
 
 const app = express();
 const port = process.env.PORT || 8080;
@@ -1003,6 +1003,66 @@ app.get("/api/reports/female_under80_damvalue", (req, res) => {
   db.query(query, (err, results) => {
     if (err) {
       console.error("Error fetching report_female_under80_damvalue:", err);
+      return res.status(500).json({ error: "Database error", details: err.message });
+    }
+
+    if (!results || results.length === 0) {
+      return res.status(200).json({ data: [], message: "No Data Found" });
+    }
+
+    return res.status(200).json({ data: results });
+  });
+});
+
+
+app.get("/api/reports/report_female_under90_damvalue_owners_filtered", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+
+  const query = `
+    SELECT
+      r.horseName,
+      r.sireName,
+      r.damName,
+      r.damName_clean,
+      r.ownerFullName,
+      r.trainerFullName,
+      r.Country,
+      r.Runs,
+
+      r.TF_Rating_Last_Run AS \`TF Rating Last Run\`,
+
+      DATE_FORMAT(
+        COALESCE(
+          STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d'),
+          STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d %H:%i:%s'),
+          STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%d-%m-%Y')
+        ),
+        '%Y-%m-%d'
+      ) AS CurrentRatingDate,
+
+      r.TFDamMaxRating_ifHorse,
+      r.TFBestProgenyRating,
+      r.DamRatedOver105,
+      r.ProducedOver105
+    FROM report_female_under90_damvalue_owners_filtered r
+    WHERE
+      r.ownerFullName IS NOT NULL
+      AND TRIM(r.ownerFullName) <> ''
+      AND COALESCE(
+        STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d'),
+        STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d %H:%i:%s'),
+        STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%d-%m-%Y')
+      ) >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)
+    ORDER BY
+      r.TF_Rating_Last_Run DESC,
+      r.TFBestProgenyRating DESC,
+      r.TFDamMaxRating_ifHorse DESC,
+      r.Runs DESC
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching report_female_under90_damvalue_owners_filtered:", err);
       return res.status(500).json({ error: "Database error", details: err.message });
     }
 
@@ -4036,6 +4096,329 @@ app.patch('/api/race_watchlist/:id/notes', (req, res) => {
 });
 
 
+const crypto = require("crypto");
+
+// Must match your Python HASH_FIELDS exactly
+const HASH_FIELDS = [
+  "user_id",
+  "section",
+  "source",
+  "category",
+  "horseKey",
+  "raceDateStr",
+  "raceTime",
+  "track",
+  "raceTitle",
+];
+
+function makeItemHash(payload) {
+  const parts = HASH_FIELDS.map((k) => {
+    const v = payload?.[k];
+    return v === null || v === undefined ? "" : String(v);
+  });
+  const key = parts.join("|");
+  return crypto.createHash("sha256").update(key, "utf8").digest("hex");
+}
+
+// ------------------------------
+// POST: insert (or upsert) 1 row
+// ------------------------------
+app.post("/api/daily_notifications_all_users", (req, res) => {
+  const p = req.body;
+
+  // Minimal required fields for a stable hash + table constraints
+  if (!p.user_id || !p.section || !p.horseKey || !p.raceDateStr || !p.raceTime || !p.track || !p.raceTitle) {
+    return res.status(400).json({
+      error:
+        "Missing required fields. Required: user_id, section, horseKey, raceDateStr, raceTime, track, raceTitle (and category/source recommended).",
+    });
+  }
+
+  const item_hash = makeItemHash(p);
+
+  // Defaults (match your SQL defaults)
+  const done = p.done ?? 0;
+  const notes = p.notes ?? null;
+  const bookmark = p.bookmark ?? 0;
+  const notifications = p.notifications ?? 0;
+  const invite = p.invite ?? null;
+
+  // Optional: normalize raceSortTime if you want (HH:MM:SS). Otherwise allow null.
+  const raceSortTime = p.raceSortTime ?? null;
+
+  const sql = `
+    INSERT INTO daily_notifications_all_users (
+      user_id, section, source, windowDayDiff,
+      category, categoryLabel, tag,
+      horseName, horseKey, horseProfileUrl,
+      raceDate, raceDateStr, raceTime, raceSortTime,
+      track, raceTitle,
+      TrackingType, note, noteDateTime,
+      silkCode, sireName, damName, ownerFullName, trainerFullName, jockeyFullName, horseColour, horseAge, horseGender,
+      positionOfficial, numberOfRunners, countryCode,
+      done, notes, bookmark, notifications, invite,
+      item_hash
+    )
+    VALUES (
+      ?, ?, ?, ?,
+      ?, ?, ?,
+      ?, ?, ?,
+      ?, ?, ?, ?,
+      ?, ?,
+      ?, ?, ?,
+      ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      ?, ?, ?,
+      ?, ?, ?, ?, ?,
+      ?
+    )
+    ON DUPLICATE KEY UPDATE
+      -- keep row fresh + allow workflow edits on re-send
+      updated_at = CURRENT_TIMESTAMP,
+      done = VALUES(done),
+      notes = VALUES(notes),
+      bookmark = VALUES(bookmark),
+      notifications = VALUES(notifications),
+      invite = VALUES(invite),
+
+      -- optionally update any “content” fields if they changed
+      horseName = COALESCE(VALUES(horseName), horseName),
+      horseProfileUrl = COALESCE(VALUES(horseProfileUrl), horseProfileUrl),
+      categoryLabel = COALESCE(VALUES(categoryLabel), categoryLabel),
+      tag = COALESCE(VALUES(tag), tag),
+      TrackingType = COALESCE(VALUES(TrackingType), TrackingType),
+      note = COALESCE(VALUES(note), note),
+      noteDateTime = COALESCE(VALUES(noteDateTime), noteDateTime),
+      silkCode = COALESCE(VALUES(silkCode), silkCode),
+      sireName = COALESCE(VALUES(sireName), sireName),
+      damName = COALESCE(VALUES(damName), damName),
+      ownerFullName = COALESCE(VALUES(ownerFullName), ownerFullName),
+      trainerFullName = COALESCE(VALUES(trainerFullName), trainerFullName),
+      jockeyFullName = COALESCE(VALUES(jockeyFullName), jockeyFullName),
+      horseColour = COALESCE(VALUES(horseColour), horseColour),
+      horseAge = COALESCE(VALUES(horseAge), horseAge),
+      horseGender = COALESCE(VALUES(horseGender), horseGender),
+      positionOfficial = COALESCE(VALUES(positionOfficial), positionOfficial),
+      numberOfRunners = COALESCE(VALUES(numberOfRunners), numberOfRunners),
+      countryCode = COALESCE(VALUES(countryCode), countryCode),
+      windowDayDiff = COALESCE(VALUES(windowDayDiff), windowDayDiff),
+      raceDate = COALESCE(VALUES(raceDate), raceDate),
+      raceSortTime = COALESCE(VALUES(raceSortTime), raceSortTime)
+  `;
+
+  const params = [
+    p.user_id, p.section, p.source ?? null, p.windowDayDiff ?? null,
+    p.category ?? null, p.categoryLabel ?? null, p.tag ?? null,
+    p.horseName ?? null, p.horseKey, p.horseProfileUrl ?? null,
+    p.raceDate ?? null, p.raceDateStr, p.raceTime, raceSortTime,
+    p.track, p.raceTitle,
+    p.TrackingType ?? null, p.note ?? null, p.noteDateTime ?? null,
+    p.silkCode ?? null, p.sireName ?? null, p.damName ?? null, p.ownerFullName ?? null, p.trainerFullName ?? null, p.jockeyFullName ?? null,
+    p.horseColour ?? null, p.horseAge ?? null, p.horseGender ?? null,
+    p.positionOfficial ?? null, p.numberOfRunners ?? null, p.countryCode ?? null,
+    done, notes, bookmark, notifications, invite,
+    item_hash,
+  ];
+
+  db.query(sql, params, (err, result) => {
+    if (err) {
+      console.error("Error inserting daily_notifications_all_users:", err);
+      return res.status(500).json({ error: "Database insert failed" });
+    }
+
+    // If it inserted new row, insertId will be set; if updated existing, insertId may be 0 depending on driver.
+    res.status(201).json({
+      message: "Notification row upserted",
+      item_hash,
+      affectedRows: result.affectedRows,
+      insertId: result.insertId,
+    });
+  });
+});
+
+// ------------------------------------
+// GET: fetch all notifications for user
+// ------------------------------------
+app.get("/api/daily_notifications_all_users/:userId", (req, res) => {
+  const userId = req.params.userId;
+
+  const sql = `
+    SELECT *
+    FROM daily_notifications_all_users
+    WHERE user_id = ?
+    ORDER BY raceDate ASC, raceSortTime ASC, id ASC
+  `;
+
+  db.query(sql, [userId], (err, results) => {
+    if (err) {
+      console.error("Error fetching daily_notifications_all_users:", err);
+      return res.status(500).json({ error: "Database query failed" });
+    }
+    res.json(results);
+  });
+});
+
+// ----------------------
+// PATCH: mark row as done
+// ----------------------
+app.patch("/api/daily_notifications_all_users/:id/done", (req, res) => {
+  const id = req.params.id;
+  const { done } = req.body; // allow true/false or 0/1
+
+  const sql = `UPDATE daily_notifications_all_users SET done = ? WHERE id = ?`;
+  db.query(sql, [done ? 1 : 0, id], (err, result) => {
+    if (err) {
+      console.error("Error updating done:", err);
+      return res.status(500).json({ error: "Database update failed" });
+    }
+    if (result.affectedRows === 0) return res.status(404).json({ error: "Item not found" });
+    res.json({ message: "Done updated" });
+  });
+});
+
+// -----------------------------
+// PATCH: toggle bookmark flag
+// -----------------------------
+app.patch("/api/daily_notifications_all_users/:id/bookmark", (req, res) => {
+  const id = req.params.id;
+  const { bookmark } = req.body;
+
+  const sql = `UPDATE daily_notifications_all_users SET bookmark = ? WHERE id = ?`;
+  db.query(sql, [bookmark ? 1 : 0, id], (err, result) => {
+    if (err) {
+      console.error("Error updating bookmark:", err);
+      return res.status(500).json({ error: "Database update failed" });
+    }
+    if (result.affectedRows === 0) return res.status(404).json({ error: "Item not found" });
+    res.json({ message: `Bookmark ${bookmark ? "added" : "removed"}` });
+  });
+});
+
+// --------------------------------
+// PATCH: toggle notifications flag
+// --------------------------------
+app.patch("/api/daily_notifications_all_users/:id/notifications", (req, res) => {
+  const id = req.params.id;
+  const { notifications } = req.body;
+
+  const sql = `UPDATE daily_notifications_all_users SET notifications = ? WHERE id = ?`;
+  db.query(sql, [notifications ? 1 : 0, id], (err, result) => {
+    if (err) {
+      console.error("Error updating notifications:", err);
+      return res.status(500).json({ error: "Database update failed" });
+    }
+    if (result.affectedRows === 0) return res.status(404).json({ error: "Item not found" });
+    res.json({ message: `Notifications ${notifications ? "enabled" : "disabled"}` });
+  });
+});
+
+// ----------------------
+// PATCH: update notes
+// ----------------------
+app.patch("/api/daily_notifications_all_users/:id/notes", (req, res) => {
+  const id = req.params.id;
+  const { notes } = req.body;
+
+  const sql = `UPDATE daily_notifications_all_users SET notes = ? WHERE id = ?`;
+  db.query(sql, [notes ?? null, id], (err, result) => {
+    if (err) {
+      console.error("Error updating notes:", err);
+      return res.status(500).json({ error: "Database update failed" });
+    }
+    if (result.affectedRows === 0) return res.status(404).json({ error: "Item not found" });
+    res.json({ message: "Notes updated" });
+  });
+});
+
+// ----------------------
+// PATCH: update invite
+// ----------------------
+app.patch("/api/daily_notifications_all_users/:id/invite", (req, res) => {
+  const id = req.params.id;
+  const { invite } = req.body; // string (json array or comma-separated)
+
+  const sql = `UPDATE daily_notifications_all_users SET invite = ? WHERE id = ?`;
+  db.query(sql, [invite ?? null, id], (err, result) => {
+    if (err) {
+      console.error("Error updating invite:", err);
+      return res.status(500).json({ error: "Database update failed" });
+    }
+    if (result.affectedRows === 0) return res.status(404).json({ error: "Item not found" });
+    res.json({ message: "Invite updated" });
+  });
+});
+
+
+app.post("/api/daily_notifications_all_users", (req, res) => {
+  const data = req.body;
+
+  const sql = `
+    INSERT INTO daily_notifications_all_users (
+      user_id, section, source, windowDayDiff,
+      category, categoryLabel, tag,
+      horseName, horseKey, horseProfileUrl,
+      raceDate, raceDateStr, raceTime, raceSortTime,
+      track, raceTitle,
+      TrackingType, note, noteDateTime,
+      silkCode, sireName, damName, ownerFullName, trainerFullName, jockeyFullName,
+      horseColour, horseAge, horseGender,
+      positionOfficial, numberOfRunners, countryCode,
+      done, notes, bookmark, notifications, invite, item_hash
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE
+      invite = VALUES(invite),
+      updated_at = CURRENT_TIMESTAMP
+  `;
+
+  const values = [
+    data.user_id ?? null,
+    data.section ?? null,
+    data.source ?? null,
+    data.windowDayDiff ?? null,
+    data.category ?? null,
+    data.categoryLabel ?? null,
+    data.tag ?? null,
+    data.horseName ?? null,
+    data.horseKey ?? null,
+    data.horseProfileUrl ?? null,
+    data.raceDate ?? null,
+    data.raceDateStr ?? null,
+    data.raceTime ?? null,
+    data.raceSortTime ?? null,
+    data.track ?? null,
+    data.raceTitle ?? null,
+    data.TrackingType ?? null,
+    data.note ?? null,
+    data.noteDateTime ?? null,
+    data.silkCode ?? null,
+    data.sireName ?? null,
+    data.damName ?? null,
+    data.ownerFullName ?? null,
+    data.trainerFullName ?? null,
+    data.jockeyFullName ?? null,
+    data.horseColour ?? null,
+    data.horseAge ?? null,
+    data.horseGender ?? null,
+    data.positionOfficial ?? null,
+    data.numberOfRunners ?? null,
+    data.countryCode ?? null,
+    data.done ?? 0,
+    data.notes ?? null,
+    data.bookmark ?? 0,
+    data.notifications ?? 0,
+    data.invite ?? null,
+    data.item_hash ?? null,
+  ];
+
+  db.query(sql, values, (err, result) => {
+    if (err) {
+      console.error("Insert/upsert daily_notifications_all_users error:", err);
+      return res.status(500).json({ error: "Insert failed" });
+    }
+    res.json({ message: "Row inserted/upserted", result });
+  });
+});
+
 // PATCH: Update notes for a review horse
 app.patch('/api/review_horses/:id/notes', (req, res) => {
   const horseId = parseInt(req.params.id); // ✅ Ensure numeric ID
@@ -4294,6 +4677,141 @@ app.delete("/api/notify_horses/:id", (req, res) => {
   });
 });
 
+
+// POST: send chat message
+app.post('/api/chat/messages', (req, res) => {
+  const { sender_id, receiver_id, message } = req.body || {};
+
+  if (!sender_id || !receiver_id || !message) {
+    return res.status(400).json({ error: 'sender_id, receiver_id and message are required' });
+  }
+
+  const sql = `
+    INSERT INTO chat_messages (sender_id, receiver_id, message)
+    VALUES (?, ?, ?)
+  `;
+
+  db.query(sql, [sender_id, receiver_id, message], (err, result) => {
+    if (err) {
+      console.error('❌ Error inserting message:', err);
+      return res.status(500).json({ error: 'Database insert failed' });
+    }
+
+    res.json({
+      message: '✅ Message sent',
+      messageId: result.insertId
+    });
+  });
+});
+
+// GET: fetch conversation between two users
+app.get('/api/chat/messages', (req, res) => {
+  const { user1, user2 } = req.query;
+
+  if (!user1 || !user2) {
+    return res.status(400).json({ error: 'user1 and user2 are required' });
+  }
+
+  const sql = `
+    SELECT id, sender_id, receiver_id, message, sent_at, is_read
+    FROM chat_messages
+    WHERE
+      (sender_id = ? AND receiver_id = ?)
+      OR
+      (sender_id = ? AND receiver_id = ?)
+    ORDER BY sent_at ASC
+  `;
+
+  db.query(sql, [user1, user2, user2, user1], (err, rows) => {
+    if (err) {
+      console.error('❌ Error fetching messages:', err);
+      return res.status(500).json({
+        error: 'Database fetch failed',
+        details: err.message,
+      });
+    }
+
+    return res.json(rows);
+  });
+});
+
+// PATCH: mark messages as read
+app.patch('/api/chat/messages/read', (req, res) => {
+  const { sender_id, receiver_id } = req.body || {};
+
+  if (!sender_id || !receiver_id) {
+    return res.status(400).json({ error: 'sender_id and receiver_id are required' });
+  }
+
+  const sql = `
+    UPDATE chat_messages
+    SET is_read = 1
+    WHERE sender_id = ?
+    AND receiver_id = ?
+    AND is_read = 0
+  `;
+
+  db.query(sql, [sender_id, receiver_id], (err, result) => {
+    if (err) {
+      console.error('❌ Error updating read status:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    res.json({
+      message: '✅ Messages marked as read',
+      affectedRows: result.affectedRows
+    });
+  });
+});
+
+// GET: conversation list for a user
+app.get('/api/chat/conversations/:userId', (req, res) => {
+  const userId = req.params.userId;
+
+  if (!userId) {
+    return res.status(400).json({ error: 'userId is required' });
+  }
+
+  const sql = `
+    SELECT cm.id, cm.sender_id, cm.receiver_id, cm.message, cm.sent_at, cm.is_read
+    FROM chat_messages cm
+    INNER JOIN (
+      SELECT
+        LEAST(sender_id, receiver_id) AS user_a,
+        GREATEST(sender_id, receiver_id) AS user_b,
+        MAX(id) AS max_id
+      FROM chat_messages
+      WHERE sender_id = ? OR receiver_id = ?
+      GROUP BY
+        LEAST(sender_id, receiver_id),
+        GREATEST(sender_id, receiver_id)
+    ) latest
+      ON cm.id = latest.max_id
+    ORDER BY cm.sent_at DESC
+  `;
+
+  db.query(sql, [userId, userId], (err, rows) => {
+    if (err) {
+      console.error('❌ Error fetching conversations:', err);
+      return res.status(500).json({
+        error: 'Database fetch failed',
+        details: err.message,
+      });
+    }
+
+    const formatted = rows.map((row) => {
+      const other_user =
+        row.sender_id === userId ? row.receiver_id : row.sender_id;
+
+      return {
+        ...row,
+        other_user,report_female_under
+      };
+    });
+
+    return res.json(formatted);
+  });
+});
 
 // Start the server
 app.listen(port, () => {
