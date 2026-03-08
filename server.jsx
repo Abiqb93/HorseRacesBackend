@@ -4704,27 +4704,59 @@ app.post('/api/chat/messages', (req, res) => {
   });
 });
 
-// GET: fetch conversation between two users
-app.get('/api/chat/messages', (req, res) => {
-  const { user1, user2 } = req.query;
+// GET: conversation list for a user (with unread_count per sender/conversation)
+app.get('/api/chat/conversations/:userId', (req, res) => {
+  const userId = req.params.userId;
 
-  if (!user1 || !user2) {
-    return res.status(400).json({ error: 'user1 and user2 are required' });
+  if (!userId) {
+    return res.status(400).json({ error: 'userId is required' });
   }
 
   const sql = `
-    SELECT id, sender_id, receiver_id, message, sent_at, is_read
-    FROM chat_messages
-    WHERE
-      (sender_id = ? AND receiver_id = ?)
-      OR
-      (sender_id = ? AND receiver_id = ?)
-    ORDER BY sent_at ASC
+    SELECT
+      cm.id,
+      cm.sender_id,
+      cm.receiver_id,
+      cm.message,
+      cm.sent_at,
+      cm.is_read,
+      CASE
+        WHEN cm.sender_id = ? THEN cm.receiver_id
+        ELSE cm.sender_id
+      END AS other_user,
+      COALESCE(unread.unread_count, 0) AS unread_count
+    FROM chat_messages cm
+    INNER JOIN (
+      SELECT
+        LEAST(sender_id, receiver_id) AS user_a,
+        GREATEST(sender_id, receiver_id) AS user_b,
+        MAX(id) AS max_id
+      FROM chat_messages
+      WHERE sender_id = ? OR receiver_id = ?
+      GROUP BY
+        LEAST(sender_id, receiver_id),
+        GREATEST(sender_id, receiver_id)
+    ) latest
+      ON cm.id = latest.max_id
+    LEFT JOIN (
+      SELECT
+        sender_id,
+        COUNT(*) AS unread_count
+      FROM chat_messages
+      WHERE receiver_id = ?
+        AND is_read = 0
+      GROUP BY sender_id
+    ) unread
+      ON unread.sender_id = CASE
+        WHEN cm.sender_id = ? THEN cm.receiver_id
+        ELSE cm.sender_id
+      END
+    ORDER BY cm.sent_at DESC
   `;
 
-  db.query(sql, [user1, user2, user2, user1], (err, rows) => {
+  db.query(sql, [userId, userId, userId, userId, userId], (err, rows) => {
     if (err) {
-      console.error('❌ Error fetching messages:', err);
+      console.error('❌ Error fetching conversations:', err);
       return res.status(500).json({
         error: 'Database fetch failed',
         details: err.message,
