@@ -4421,12 +4421,11 @@ app.post("/api/daily_notifications_all_users", (req, res) => {
 
 // PATCH: Update notes for a review horse
 app.patch('/api/review_horses/:id/notes', (req, res) => {
-  const horseId = parseInt(req.params.id); // ✅ Ensure numeric ID
+  const horseId = parseInt(req.params.id);
   const { notes } = req.body;
 
   console.log("🔄 PATCH request received:", { horseId, notes });
 
-  // Validation
   if (!Number.isInteger(horseId)) {
     return res.status(400).json({ error: 'Invalid horse ID' });
   }
@@ -4456,40 +4455,45 @@ app.patch('/api/review_horses/:id/reviewStatus', (req, res) => {
   if (!Number.isInteger(horseId)) {
     return res.status(400).json({ error: 'Invalid horse ID' });
   }
+
   if (!userId || typeof userId !== 'string' || !userId.trim()) {
     return res.status(400).json({ error: 'userId is required' });
   }
 
-  // Determine desired state: reviewed (true) or unreviewed (false)
-  // Support both `reviewed: true/false` and legacy `reviewStatus: 1/0`
   const wantReviewed =
     typeof reviewed === 'boolean'
       ? reviewed
       : (reviewStatus === 1 || reviewStatus === '1');
 
   if (wantReviewed) {
-    // ADD userId to JSON array if not already present
     const sql = `
       UPDATE review_horses
       SET reviewStatus = IF(
         JSON_CONTAINS(reviewStatus, JSON_QUOTE(?), '$'),
-        reviewStatus,                                  -- already present, keep as-is
-        JSON_ARRAY_APPEND(reviewStatus, '$', ?)        -- append userId
+        reviewStatus,
+        JSON_ARRAY_APPEND(reviewStatus, '$', ?)
       )
       WHERE id = ?;
     `;
+
     db.query(sql, [userId, userId, horseId], (err, result) => {
       if (err) {
         console.error('❌ Error updating reviewStatus (add):', err);
         return res.status(500).json({ error: 'Database update failed' });
       }
+
       if (result.affectedRows === 0) {
         return res.status(404).json({ error: 'Review horse not found' });
       }
-      return res.json({ message: '✅ Marked reviewed', id: horseId, userId, reviewed: true });
+
+      return res.json({
+        message: '✅ Marked reviewed',
+        id: horseId,
+        userId,
+        reviewed: true
+      });
     });
   } else {
-    // REMOVE userId from JSON array if present
     const sql = `
       UPDATE review_horses
       SET reviewStatus = CASE
@@ -4498,19 +4502,100 @@ app.patch('/api/review_horses/:id/reviewStatus', (req, res) => {
       END
       WHERE id = ?;
     `;
+
     db.query(sql, [userId, userId, horseId], (err, result) => {
       if (err) {
         console.error('❌ Error updating reviewStatus (remove):', err);
         return res.status(500).json({ error: 'Database update failed' });
       }
+
       if (result.affectedRows === 0) {
         return res.status(404).json({ error: 'Review horse not found' });
       }
-      return res.json({ message: '✅ Marked unreviewed', id: horseId, userId, reviewed: false });
+
+      return res.json({
+        message: '✅ Marked unreviewed',
+        id: horseId,
+        userId,
+        reviewed: false
+      });
     });
   }
 });
 
+
+// PATCH: tag users for a review horse
+// Stores tagged_users as a JSON array of objects like:
+// [
+//   {
+//     "taggedBy": "abiq",
+//     "taggedUsers": ["john", "sarah"],
+//     "taggedAt": "2026-03-08 14:25:00"
+//   }
+// ]
+app.patch('/api/review_horses/:id/tagged_users', (req, res) => {
+  const horseId = Number(req.params.id);
+  const { taggedBy, taggedUsers } = req.body || {};
+
+  console.log('🔄 PATCH tag request received:', { horseId, taggedBy, taggedUsers });
+
+  if (!Number.isInteger(horseId)) {
+    return res.status(400).json({ error: 'Invalid horse ID' });
+  }
+
+  if (!taggedBy || typeof taggedBy !== 'string' || !taggedBy.trim()) {
+    return res.status(400).json({ error: 'taggedBy is required' });
+  }
+
+  if (!Array.isArray(taggedUsers) || taggedUsers.length === 0) {
+    return res.status(400).json({ error: 'taggedUsers must be a non-empty array' });
+  }
+
+  // Clean tagged users list
+  const cleanedTaggedUsers = [...new Set(
+    taggedUsers
+      .filter(name => typeof name === 'string')
+      .map(name => name.trim())
+      .filter(Boolean)
+  )];
+
+  if (cleanedTaggedUsers.length === 0) {
+    return res.status(400).json({ error: 'No valid tagged users provided' });
+  }
+
+  const newTagEntry = {
+    taggedBy: taggedBy.trim(),
+    taggedUsers: cleanedTaggedUsers,
+    taggedAt: new Date().toISOString().slice(0, 19).replace('T', ' ')
+  };
+
+  const sql = `
+    UPDATE review_horses
+    SET tagged_users = JSON_ARRAY_APPEND(
+      COALESCE(tagged_users, JSON_ARRAY()),
+      '$',
+      CAST(? AS JSON)
+    )
+    WHERE id = ?;
+  `;
+
+  db.query(sql, [JSON.stringify(newTagEntry), horseId], (err, result) => {
+    if (err) {
+      console.error('❌ Error updating tagged_users:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Review horse not found' });
+    }
+
+    return res.json({
+      message: '✅ Users tagged successfully',
+      id: horseId,
+      tagged: newTagEntry
+    });
+  });
+});
 
 app.patch('/api/horseTracking/:horseName/flags', (req, res) => {
   try {
