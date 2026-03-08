@@ -4704,7 +4704,132 @@ app.post('/api/chat/messages', (req, res) => {
   });
 });
 
-// GET: conversation list for a user (with unread_count per sender/conversation)
+
+// PATCH: mark messages as read
+app.patch('/api/chat/messages/read', (req, res) => {
+  const { sender_id, receiver_id } = req.body || {};
+
+  if (!sender_id || !receiver_id) {
+    return res.status(400).json({ error: 'sender_id and receiver_id are required' });
+  }
+
+  const sql = `
+    UPDATE chat_messages
+    SET is_read = 1
+    WHERE sender_id = ?
+    AND receiver_id = ?
+    AND is_read = 0
+  `;
+
+  db.query(sql, [sender_id, receiver_id], (err, result) => {
+    if (err) {
+      console.error('❌ Error updating read status:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    res.json({
+      message: '✅ Messages marked as read',
+      affectedRows: result.affectedRows
+    });
+  });
+});
+
+// POST: send chat message
+app.post('/api/chat/messages', (req, res) => {
+  const { sender_id, receiver_id, message } = req.body || {};
+
+  if (!sender_id || !receiver_id || !message) {
+    return res.status(400).json({
+      error: 'sender_id, receiver_id and message are required',
+    });
+  }
+
+  const sql = `
+    INSERT INTO chat_messages (sender_id, receiver_id, message)
+    VALUES (?, ?, ?)
+  `;
+
+  db.query(sql, [sender_id, receiver_id, message], (err, result) => {
+    if (err) {
+      console.error('❌ Error inserting message:', err);
+      return res.status(500).json({ error: 'Database insert failed' });
+    }
+
+    return res.json({
+      message: '✅ Message sent',
+      messageId: result.insertId,
+    });
+  });
+});
+
+
+// GET: fetch conversation between two users
+app.get('/api/chat/messages', (req, res) => {
+  const { user1, user2 } = req.query;
+
+  if (!user1 || !user2) {
+    return res.status(400).json({ error: 'user1 and user2 are required' });
+  }
+
+  const sql = `
+    SELECT id, sender_id, receiver_id, message, sent_at, is_read
+    FROM chat_messages
+    WHERE
+      (sender_id = ? AND receiver_id = ?)
+      OR
+      (sender_id = ? AND receiver_id = ?)
+    ORDER BY sent_at ASC
+  `;
+
+  db.query(sql, [user1, user2, user2, user1], (err, rows) => {
+    if (err) {
+      console.error('❌ Error fetching messages:', err);
+      return res.status(500).json({
+        error: 'Database fetch failed',
+        details: err.message,
+      });
+    }
+
+    return res.json({
+      messages: rows,
+    });
+  });
+});
+
+
+// PATCH: mark messages as read
+app.patch('/api/chat/messages/read', (req, res) => {
+  const { sender_id, receiver_id } = req.body || {};
+
+  if (!sender_id || !receiver_id) {
+    return res.status(400).json({
+      error: 'sender_id and receiver_id are required',
+    });
+  }
+
+  const sql = `
+    UPDATE chat_messages
+    SET is_read = 1
+    WHERE sender_id = ?
+      AND receiver_id = ?
+      AND is_read = 0
+  `;
+
+  db.query(sql, [sender_id, receiver_id], (err, result) => {
+    if (err) {
+      console.error('❌ Error updating read status:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    return res.json({
+      message: '✅ Messages marked as read',
+      affectedRows: result.affectedRows,
+    });
+  });
+});
+
+
+// GET: conversation list for a user with unread_count
 app.get('/api/chat/conversations/:userId', (req, res) => {
   const userId = req.params.userId;
 
@@ -4763,88 +4888,11 @@ app.get('/api/chat/conversations/:userId', (req, res) => {
       });
     }
 
-    return res.json(rows);
-  });
-});
-
-// PATCH: mark messages as read
-app.patch('/api/chat/messages/read', (req, res) => {
-  const { sender_id, receiver_id } = req.body || {};
-
-  if (!sender_id || !receiver_id) {
-    return res.status(400).json({ error: 'sender_id and receiver_id are required' });
-  }
-
-  const sql = `
-    UPDATE chat_messages
-    SET is_read = 1
-    WHERE sender_id = ?
-    AND receiver_id = ?
-    AND is_read = 0
-  `;
-
-  db.query(sql, [sender_id, receiver_id], (err, result) => {
-    if (err) {
-      console.error('❌ Error updating read status:', err);
-      return res.status(500).json({ error: 'Database update failed' });
-    }
-
-    res.json({
-      message: '✅ Messages marked as read',
-      affectedRows: result.affectedRows
+    return res.json({
+      conversations: rows,
     });
   });
 });
-
-// GET: conversation list for a user
-app.get('/api/chat/conversations/:userId', (req, res) => {
-  const userId = req.params.userId;
-
-  if (!userId) {
-    return res.status(400).json({ error: 'userId is required' });
-  }
-
-  const sql = `
-    SELECT cm.id, cm.sender_id, cm.receiver_id, cm.message, cm.sent_at, cm.is_read
-    FROM chat_messages cm
-    INNER JOIN (
-      SELECT
-        LEAST(sender_id, receiver_id) AS user_a,
-        GREATEST(sender_id, receiver_id) AS user_b,
-        MAX(id) AS max_id
-      FROM chat_messages
-      WHERE sender_id = ? OR receiver_id = ?
-      GROUP BY
-        LEAST(sender_id, receiver_id),
-        GREATEST(sender_id, receiver_id)
-    ) latest
-      ON cm.id = latest.max_id
-    ORDER BY cm.sent_at DESC
-  `;
-
-  db.query(sql, [userId, userId], (err, rows) => {
-    if (err) {
-      console.error('❌ Error fetching conversations:', err);
-      return res.status(500).json({
-        error: 'Database fetch failed',
-        details: err.message,
-      });
-    }
-
-    const formatted = rows.map((row) => {
-      const other_user =
-        row.sender_id === userId ? row.receiver_id : row.sender_id;
-
-      return {
-        ...row,
-        other_user,
-      };
-    });
-
-    return res.json(formatted);
-  });
-});
-
 // Start the server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
