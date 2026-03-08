@@ -240,37 +240,7 @@ app.get('/api/review_horses', (req, res) => {
 });
 
 
-app.get('/api/potential_stallion', (req, res) => {
-  const sql = `
-    SELECT 
-      id,
-      DATE_FORMAT(meetingDate, '%Y-%m-%d') AS meetingDate,
-      horseName,
-      performanceRating,
-      performanceRatingNum,
-      raceTitle,
-      courseName,
-      DATE_FORMAT(scheduledTimeOfRaceLocal, '%Y-%m-%d %H:%i:%s') AS scheduledTimeOfRaceLocal,
-      horseAge,
-      sireName,
-      damName,
-      ownerFullName,
-      trainerFullName,
-      horseGender,
-      horseGenderFull,
-      raceType,
-      created_at
-    FROM potential_stallion
-  `;
 
-  db.query(sql, (err, rows) => {
-    if (err) {
-      console.error('[ERROR] DB query failed:', err);
-      return res.status(500).json({ error: 'Database query failed' });
-    }
-    res.json(rows);
-  });
-});
 
 
 function required(body, fields) {
@@ -1074,83 +1044,6 @@ app.get("/api/reports/report_female_under90_damvalue_owners_filtered", (req, res
   });
 });
 
-// Potential Stallion Report endpoint
-// Table: report_potential_stallions
-// Columns expected (from our pandas push): horseName, sireName, damName,
-// Runs, Total_Wins, Win_%, Group_Wins, Group1_Wins, Stakes_Wins,
-// Avg_Rating, PrizeMoney, Sire_Horses, Sire_GroupWinners
-
-app.get("/api/reports/potential_stallions", (req, res) => {
-  res.setHeader("Cache-Control", "no-store");
-
-  // Optional query params:
-  //   ?limit=500
-  //   ?minGroupWins=1
-  //   ?minRating=105
-  //   ?minWinPct=20
-  const limit = Math.min(parseInt(req.query.limit || "2000", 10), 10000);
-  const minGroupWins = parseInt(req.query.minGroupWins || "1", 10);
-  const minRating = parseFloat(req.query.minRating || "0");
-  const minWinPct = parseFloat(req.query.minWinPct || "0");
-
-  // NOTE:
-  // - Your SQL table column for Win_% will be cleaned by clean_sql_column_names -> Win_
-  // - PrizeMoney might be PrizeMoney or PrizeMoneyWon depending on what you stored.
-  // Adjust aliases below if your column names differ.
-  //
-  // If you used clean_sql_column_names, Win_% becomes Win_ (or Win__ depending on cleaning).
-  // In our cleaning function: "%" -> "Percent", so Win_% becomes Win_Percent if the column is literally "Win_%".
-  // In the code we built, the column is "Win_%", so it becomes "Win_Percent".
-
-  const query = `
-    SELECT
-      r.horseName,
-      r.sireName,
-      r.damName,
-
-      r.Runs,
-      r.Total_Wins AS \`Total Wins\`,
-      r.Win_Percent AS \`Win %\`,
-
-      r.Group_Wins AS \`Group Wins\`,
-      r.Group1_Wins AS \`Group 1 Wins\`,
-      r.Stakes_Wins AS \`Stakes Wins\`,
-
-      r.Avg_Rating AS \`Avg Rating\`,
-      r.PrizeMoney AS \`Prize Money\`,
-
-      r.Sire_Horses AS \`Sire Horses\`,
-      r.Sire_GroupWinners AS \`Sire Group Winners\`
-
-    FROM report_potential_stallions r
-    WHERE
-      r.horseName IS NOT NULL
-      AND TRIM(r.horseName) <> ''
-      AND r.Group_Wins >= ?
-      AND COALESCE(r.Avg_Rating, 0) >= ?
-      AND COALESCE(r.Win_Percent, 0) >= ?
-    ORDER BY
-      r.Group_Wins DESC,
-      r.Group1_Wins DESC,
-      r.Avg_Rating DESC,
-      r.PrizeMoney DESC,
-      r.Runs DESC
-    LIMIT ?
-  `;
-
-  db.query(query, [minGroupWins, minRating, minWinPct, limit], (err, results) => {
-    if (err) {
-      console.error("Error fetching report_potential_stallions:", err);
-      return res.status(500).json({ error: "Database error", details: err.message });
-    }
-
-    if (!results || results.length === 0) {
-      return res.status(200).json({ data: [], message: "No Data Found" });
-    }
-
-    return res.status(200).json({ data: results });
-  });
-});
 
 
 app.get("/api/attheraces/:time/:racename/:date", (req, res) => {
@@ -4695,6 +4588,203 @@ app.patch("/api/horseTracking/:horseName/dslr-review", (req, res) => {
 });
 
 
+app.get('/api/potential_stallion', (req, res) => {
+  const sql = `
+    SELECT 
+      id,
+      DATE_FORMAT(meetingDate, '%Y-%m-%d') AS meetingDate,
+      horseName,
+      performanceRating,
+      performanceRatingNum,
+      raceTitle,
+      courseName,
+      DATE_FORMAT(scheduledTimeOfRaceLocal, '%Y-%m-%d %H:%i:%s') AS scheduledTimeOfRaceLocal,
+      horseAge,
+      sireName,
+      damName,
+      ownerFullName,
+      trainerFullName,
+      horseGender,
+      horseGenderFull,
+      raceType,
+      notes,
+      reviewStatus,
+      tagged_users,
+      created_at
+    FROM potential_stallion
+  `;
+
+  db.query(sql, (err, rows) => {
+    if (err) {
+      console.error('[ERROR] DB query failed:', err);
+      return res.status(500).json({ error: 'Database query failed' });
+    }
+    res.json(rows);
+  });
+});
+
+
+// PATCH: Update notes for a potential stallion
+app.patch('/api/potential_stallion/:id/notes', (req, res) => {
+  const horseId = parseInt(req.params.id, 10);
+  const { notes } = req.body;
+
+  console.log("🔄 PATCH potential_stallion notes:", { horseId, notes });
+
+  if (!Number.isInteger(horseId)) {
+    return res.status(400).json({ error: 'Invalid horse ID' });
+  }
+
+  const sql = `UPDATE potential_stallion SET notes = ? WHERE id = ?`;
+
+  db.query(sql, [notes, horseId], (err, result) => {
+    if (err) {
+      console.error('❌ Error updating potential_stallion notes:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Potential stallion not found' });
+    }
+
+    res.json({ message: '✅ Notes updated successfully' });
+  });
+});
+
+
+// PATCH: per-user review status using JSON array (reviewStatus holds userIds)
+app.patch('/api/potential_stallion/:id/reviewStatus', (req, res) => {
+  const horseId = Number(req.params.id);
+  const { userId, reviewed, reviewStatus } = req.body || {};
+
+  if (!Number.isInteger(horseId)) {
+    return res.status(400).json({ error: 'Invalid horse ID' });
+  }
+
+  if (!userId || typeof userId !== 'string' || !userId.trim()) {
+    return res.status(400).json({ error: 'userId is required' });
+  }
+
+  const wantReviewed =
+    typeof reviewed === 'boolean'
+      ? reviewed
+      : (reviewStatus === 1 || reviewStatus === '1');
+
+  if (wantReviewed) {
+    const sql = `
+      UPDATE potential_stallion
+      SET reviewStatus = IF(
+        JSON_CONTAINS(COALESCE(reviewStatus, JSON_ARRAY()), JSON_QUOTE(?), '$'),
+        COALESCE(reviewStatus, JSON_ARRAY()),
+        JSON_ARRAY_APPEND(COALESCE(reviewStatus, JSON_ARRAY()), '$', ?)
+      )
+      WHERE id = ?;
+    `;
+
+    db.query(sql, [userId, userId, horseId], (err, result) => {
+      if (err) {
+        console.error('❌ Error updating potential_stallion reviewStatus (add):', err);
+        return res.status(500).json({ error: 'Database update failed' });
+      }
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: 'Potential stallion not found' });
+      }
+
+      return res.json({
+        message: '✅ Marked reviewed',
+        id: horseId,
+        userId,
+        reviewed: true
+      });
+    });
+  } else {
+    const sql = `
+      UPDATE potential_stallion
+      SET reviewStatus = CASE
+        WHEN JSON_SEARCH(COALESCE(reviewStatus, JSON_ARRAY()), 'one', ?) IS NULL THEN COALESCE(reviewStatus, JSON_ARRAY())
+        ELSE JSON_REMOVE(
+          COALESCE(reviewStatus, JSON_ARRAY()),
+          JSON_UNQUOTE(JSON_SEARCH(COALESCE(reviewStatus, JSON_ARRAY()), 'one', ?))
+        )
+      END
+      WHERE id = ?;
+    `;
+
+    db.query(sql, [userId, userId, horseId], (err, result) => {
+      if (err) {
+        console.error('❌ Error updating potential_stallion reviewStatus (remove):', err);
+        return res.status(500).json({ error: 'Database update failed' });
+      }
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: 'Potential stallion not found' });
+      }
+
+      return res.json({
+        message: '✅ Marked unreviewed',
+        id: horseId,
+        userId,
+        reviewed: false
+      });
+    });
+  }
+});
+
+
+// PATCH: tag users for a potential stallion
+app.patch('/api/potential_stallion/:id/tagged_users', (req, res) => {
+  const horseId = Number(req.params.id);
+  const { taggedBy, taggedUsers, reason } = req.body || {};
+
+  if (!Number.isInteger(horseId)) {
+    return res.status(400).json({ error: 'Invalid horse ID' });
+  }
+
+  if (!taggedBy || !Array.isArray(taggedUsers) || taggedUsers.length === 0) {
+    return res.status(400).json({ error: 'taggedBy and taggedUsers required' });
+  }
+
+  const cleanUsers = [...new Set(
+    taggedUsers
+      .filter(u => typeof u === "string")
+      .map(u => u.trim())
+      .filter(Boolean)
+  )];
+
+  const tagEntry = {
+    taggedBy: taggedBy.trim(),
+    taggedUsers: cleanUsers,
+    reason: reason || "",
+    taggedAt: new Date().toISOString().slice(0, 19).replace("T", " ")
+  };
+
+  const sql = `
+    UPDATE potential_stallion
+    SET tagged_users = JSON_ARRAY_APPEND(
+      COALESCE(tagged_users, JSON_ARRAY()),
+      '$',
+      CAST(? AS JSON)
+    )
+    WHERE id = ?
+  `;
+
+  db.query(sql, [JSON.stringify(tagEntry), horseId], (err, result) => {
+    if (err) {
+      console.error("❌ Error tagging users in potential_stallion:", err);
+      return res.status(500).json({ error: "Database update failed" });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Potential stallion not found' });
+    }
+
+    res.json({
+      message: "Users tagged",
+      tagged: tagEntry
+    });
+  });
+});
 
 // POST /api/notify_horses  -> insert (or touch updated_at if duplicate)
 app.post("/api/notify_horses", (req, res) => {
