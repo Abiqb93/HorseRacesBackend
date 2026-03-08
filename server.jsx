@@ -4535,38 +4535,28 @@ app.patch('/api/review_horses/:id/reviewStatus', (req, res) => {
 // ]
 app.patch('/api/review_horses/:id/tagged_users', (req, res) => {
   const horseId = Number(req.params.id);
-  const { taggedBy, taggedUsers } = req.body || {};
-
-  console.log('🔄 PATCH tag request received:', { horseId, taggedBy, taggedUsers });
+  const { taggedBy, taggedUsers, reason } = req.body || {};
 
   if (!Number.isInteger(horseId)) {
     return res.status(400).json({ error: 'Invalid horse ID' });
   }
 
-  if (!taggedBy || typeof taggedBy !== 'string' || !taggedBy.trim()) {
-    return res.status(400).json({ error: 'taggedBy is required' });
+  if (!taggedBy || !Array.isArray(taggedUsers) || taggedUsers.length === 0) {
+    return res.status(400).json({ error: 'taggedBy and taggedUsers required' });
   }
 
-  if (!Array.isArray(taggedUsers) || taggedUsers.length === 0) {
-    return res.status(400).json({ error: 'taggedUsers must be a non-empty array' });
-  }
-
-  // Clean tagged users list
-  const cleanedTaggedUsers = [...new Set(
+  const cleanUsers = [...new Set(
     taggedUsers
-      .filter(name => typeof name === 'string')
-      .map(name => name.trim())
+      .filter(u => typeof u === "string")
+      .map(u => u.trim())
       .filter(Boolean)
   )];
 
-  if (cleanedTaggedUsers.length === 0) {
-    return res.status(400).json({ error: 'No valid tagged users provided' });
-  }
-
-  const newTagEntry = {
-    taggedBy: taggedBy.trim(),
-    taggedUsers: cleanedTaggedUsers,
-    taggedAt: new Date().toISOString().slice(0, 19).replace('T', ' ')
+  const tagEntry = {
+    taggedBy,
+    taggedUsers: cleanUsers,
+    reason: reason || "",
+    taggedAt: new Date().toISOString().slice(0, 19).replace("T", " ")
   };
 
   const sql = `
@@ -4576,23 +4566,18 @@ app.patch('/api/review_horses/:id/tagged_users', (req, res) => {
       '$',
       CAST(? AS JSON)
     )
-    WHERE id = ?;
+    WHERE id = ?
   `;
 
-  db.query(sql, [JSON.stringify(newTagEntry), horseId], (err, result) => {
+  db.query(sql, [JSON.stringify(tagEntry), horseId], (err, result) => {
     if (err) {
-      console.error('❌ Error updating tagged_users:', err);
-      return res.status(500).json({ error: 'Database update failed' });
+      console.error("❌ Error tagging users:", err);
+      return res.status(500).json({ error: "Database update failed" });
     }
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Review horse not found' });
-    }
-
-    return res.json({
-      message: '✅ Users tagged successfully',
-      id: horseId,
-      tagged: newTagEntry
+    res.json({
+      message: "Users tagged",
+      tagged: tagEntry
     });
   });
 });
