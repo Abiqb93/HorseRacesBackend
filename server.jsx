@@ -4475,6 +4475,73 @@ app.patch('/api/review_horses/:id/tagged_users', (req, res) => {
   });
 });
 
+
+app.patch('/api/APIData_Table2/:id/tags', (req, res) => {
+  const horseId = Number(req.params.id);
+  const { column, taggedBy, taggedUsers, reason } = req.body || {};
+
+  if (!Number.isInteger(horseId)) {
+    return res.status(400).json({ error: 'Invalid horse ID' });
+  }
+
+  // Only allow these two columns
+  const allowedColumns = ['tagging', 'horse_tagging'];
+  if (!column || !allowedColumns.includes(column)) {
+    return res.status(400).json({ error: 'Invalid column. Must be tagging or horse_tagging' });
+  }
+
+  if (!taggedBy || !Array.isArray(taggedUsers) || taggedUsers.length === 0) {
+    return res.status(400).json({ error: 'taggedBy and taggedUsers required' });
+  }
+
+  const cleanUsers = [...new Set(
+    taggedUsers
+      .filter(u => typeof u === 'string')
+      .map(u => u.trim())
+      .filter(Boolean)
+  )];
+
+  if (cleanUsers.length === 0) {
+    return res.status(400).json({ error: 'No valid tagged users provided' });
+  }
+
+  const tagEntry = {
+    taggedBy: String(taggedBy).trim(),
+    taggedUsers: cleanUsers,
+    reason: reason || '',
+    taggedAt: new Date().toISOString().slice(0, 19).replace('T', ' ')
+  };
+
+  // Since tagging / horse_tagging are TEXT columns, we store a JSON array as text
+  // and append the new tag entry into that JSON array.
+  const sql = `
+    UPDATE APIData_Table2
+    SET \`${column}\` = JSON_ARRAY_APPEND(
+      COALESCE(NULLIF(\`${column}\`, ''), JSON_ARRAY()),
+      '$',
+      CAST(? AS JSON)
+    )
+    WHERE id = ?
+  `;
+
+  db.query(sql, [JSON.stringify(tagEntry), horseId], (err, result) => {
+    if (err) {
+      console.error(`❌ Error updating ${column}:`, err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Horse record not found' });
+    }
+
+    res.json({
+      message: `${column} updated successfully`,
+      column,
+      tagged: tagEntry
+    });
+  });
+});
+
 app.patch('/api/horseTracking/:horseName/flags', (req, res) => {
   try {
     const { horseName } = req.params;
