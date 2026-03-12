@@ -4541,65 +4541,103 @@ app.patch('/api/APIData_Table2/race/tags', (req, res) => {
 });
 
 
-app.patch('/api/APIData_Table2/:id/tags', (req, res) => {
-  const horseId = Number(req.params.id);
-  const { column, taggedBy, taggedUsers, reason } = req.body || {};
+app.patch('/api/RacesAndEntries/tag', (req, res) => {
+  const {
+    taggedBy,
+    taggedUser,
+    tagComments,
+    raceTitle,
+    meetingDate,
+    courseName,
+    raceTime // optional but useful if you want to narrow it down
+  } = req.body || {};
 
-  if (!Number.isInteger(horseId)) {
-    return res.status(400).json({ error: 'Invalid horse ID' });
+  if (!taggedBy || !taggedUser) {
+    return res.status(400).json({
+      error: 'taggedBy and taggedUser are required'
+    });
   }
 
-  const allowedColumns = ['tagging', 'horse_tagging'];
-  if (!column || !allowedColumns.includes(column)) {
-    return res.status(400).json({ error: 'Invalid column. Must be tagging or horse_tagging' });
+  if (!raceTitle || !meetingDate || !courseName) {
+    return res.status(400).json({
+      error: 'raceTitle, meetingDate, and courseName are required'
+    });
   }
 
-  if (!taggedBy || !Array.isArray(taggedUsers) || taggedUsers.length === 0) {
-    return res.status(400).json({ error: 'taggedBy and taggedUsers required' });
+  const cleanTaggedBy = String(taggedBy).trim();
+  const cleanTaggedUser = String(taggedUser).trim();
+  const cleanComments = tagComments ? String(tagComments).trim() : '';
+
+  if (!cleanTaggedBy || !cleanTaggedUser) {
+    return res.status(400).json({
+      error: 'taggedBy and taggedUser cannot be empty'
+    });
   }
 
-  const cleanUsers = [...new Set(
-    taggedUsers
-      .filter(u => typeof u === 'string')
-      .map(u => u.trim())
-      .filter(Boolean)
-  )];
-
-  if (cleanUsers.length === 0) {
-    return res.status(400).json({ error: 'No valid tagged users provided' });
+  // Normalize meetingDate to start/end of day
+  const inputDate = new Date(meetingDate);
+  if (Number.isNaN(inputDate.getTime())) {
+    return res.status(400).json({ error: 'Invalid meetingDate' });
   }
 
-  const tagEntry = {
-    taggedBy: String(taggedBy).trim(),
-    taggedUsers: cleanUsers,
-    reason: reason || '',
-    taggedAt: new Date().toISOString().slice(0, 19).replace('T', ' ')
-  };
+  const yyyy = inputDate.getFullYear();
+  const mm = String(inputDate.getMonth() + 1).padStart(2, '0');
+  const dd = String(inputDate.getDate()).padStart(2, '0');
 
-  const sql = `
-    UPDATE APIData_Table2
-    SET \`${column}\` = JSON_ARRAY_APPEND(
-      COALESCE(NULLIF(\`${column}\`, ''), JSON_ARRAY()),
-      '$',
-      CAST(? AS JSON)
-    )
-    WHERE id = ?
+  const startOfDay = `${yyyy}-${mm}-${dd} 00:00:00`;
+
+  const nextDate = new Date(inputDate);
+  nextDate.setDate(nextDate.getDate() + 1);
+
+  const nextYyyy = nextDate.getFullYear();
+  const nextMm = String(nextDate.getMonth() + 1).padStart(2, '0');
+  const nextDd = String(nextDate.getDate()).padStart(2, '0');
+
+  const nextDay = `${nextYyyy}-${nextMm}-${nextDd} 00:00:00`;
+
+  let sql = `
+    UPDATE RacesAndEntries
+    SET taggedBy = ?, taggedUser = ?, tagComments = ?
+    WHERE raceTitle = ?
+      AND meetingDate >= ?
+      AND meetingDate < ?
+      AND courseName = ?
   `;
 
-  db.query(sql, [JSON.stringify(tagEntry), horseId], (err, result) => {
+  const params = [
+    cleanTaggedBy,
+    cleanTaggedUser,
+    cleanComments,
+    raceTitle,
+    startOfDay,
+    nextDay,
+    courseName
+  ];
+
+  // Optional extra filter if raceTime is available
+  if (raceTime) {
+    sql += ` AND raceTime = ?`;
+    params.push(raceTime);
+  }
+
+  db.query(sql, params, (err, result) => {
     if (err) {
-      console.error(`❌ Error updating ${column}:`, err);
+      console.error('❌ Error updating race tag:', err);
       return res.status(500).json({ error: 'Database update failed' });
     }
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Horse record not found' });
+      return res.status(404).json({ error: 'No matching race row found' });
     }
 
-    res.json({
-      message: `${column} updated successfully`,
-      column,
-      tagged: tagEntry
+    return res.json({
+      message: 'Race tagging updated successfully',
+      updatedRows: result.affectedRows,
+      tagging: {
+        taggedBy: cleanTaggedBy,
+        taggedUser: cleanTaggedUser,
+        tagComments: cleanComments
+      }
     });
   });
 });
