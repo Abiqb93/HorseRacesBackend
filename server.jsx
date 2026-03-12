@@ -2085,29 +2085,6 @@ app.get('/api/companies', (req, res) => {
 });
 
 
-// app.get('/api/APIData_Table2/horse', (req, res) => {
-//   const { horseName } = req.query;
-
-//   if (!horseName) {
-//     return res.status(400).json({ error: "Missing required query parameter: horseName" });
-//   }
-
-//   const query = `
-//     SELECT * 
-//     FROM APIData_Table2
-//     WHERE LOWER(CONVERT(horseName USING utf8mb4)) = LOWER(CONVERT(? USING utf8mb4));
-//   `;
-
-//   db.query(query, [horseName], (err, rows) => {
-//     if (err) {
-//       console.error("Error fetching records:", err);
-//       return res.status(500).json({ error: "Database error" });
-//     }
-
-//     res.status(200).json({ data: rows });
-//   });
-// });
-
 app.get('/api/APIData_Table2/horse', (req, res) => {
   const { horseName } = req.query;
 
