@@ -4477,6 +4477,27 @@ app.patch('/api/APIData_Table2/race/tags', (req, res) => {
     return res.status(400).json({ error: 'No valid tagged users provided' });
   }
 
+  // Normalize date to YYYY-MM-DD
+  const inputDate = new Date(meetingDate);
+  if (Number.isNaN(inputDate.getTime())) {
+    return res.status(400).json({ error: 'Invalid meetingDate' });
+  }
+
+  const yyyy = inputDate.getFullYear();
+  const mm = String(inputDate.getMonth() + 1).padStart(2, '0');
+  const dd = String(inputDate.getDate()).padStart(2, '0');
+
+  const startOfDay = `${yyyy}-${mm}-${dd} 00:00:00`;
+
+  const nextDate = new Date(inputDate);
+  nextDate.setDate(nextDate.getDate() + 1);
+
+  const nextYyyy = nextDate.getFullYear();
+  const nextMm = String(nextDate.getMonth() + 1).padStart(2, '0');
+  const nextDd = String(nextDate.getDate()).padStart(2, '0');
+
+  const nextDay = `${nextYyyy}-${nextMm}-${nextDd} 00:00:00`;
+
   const tagEntry = {
     taggedBy: String(taggedBy).trim(),
     taggedUsers: cleanUsers,
@@ -4492,13 +4513,14 @@ app.patch('/api/APIData_Table2/race/tags', (req, res) => {
       CAST(? AS JSON)
     )
     WHERE raceTitle = ?
-      AND DATE(meetingDate) = ?
+      AND meetingDate >= ?
+      AND meetingDate < ?
       AND courseName = ?
   `;
 
   db.query(
     sql,
-    [JSON.stringify(tagEntry), raceTitle, meetingDate, courseName],
+    [JSON.stringify(tagEntry), raceTitle, startOfDay, nextDay, courseName],
     (err, result) => {
       if (err) {
         console.error('❌ Error updating tagging by race:', err);
