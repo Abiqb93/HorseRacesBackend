@@ -4540,107 +4540,96 @@ app.patch('/api/APIData_Table2/race/tags', (req, res) => {
   );
 });
 
-
-app.patch('/api/RacesAndEntries/tag', (req, res) => {
+app.patch("/api/RacesAndEntries/tag", (req, res) => {
   const {
     taggedBy,
-    taggedUser,
-    tagComments,
+    taggedUsers,
+    reason,
     raceTitle,
-    meetingDate,
-    courseName,
-    raceTime // optional but useful if you want to narrow it down
+    fixtureDate,
+    fixtureTrack,
+    raceTime,
   } = req.body || {};
 
-  if (!taggedBy || !taggedUser) {
+  if (!raceTitle || !fixtureDate || !fixtureTrack) {
     return res.status(400).json({
-      error: 'taggedBy and taggedUser are required'
+      error: "raceTitle, fixtureDate and fixtureTrack are required",
     });
   }
 
-  if (!raceTitle || !meetingDate || !courseName) {
+  if (!taggedBy || !Array.isArray(taggedUsers) || taggedUsers.length === 0) {
     return res.status(400).json({
-      error: 'raceTitle, meetingDate, and courseName are required'
+      error: "taggedBy and taggedUsers are required",
     });
   }
 
   const cleanTaggedBy = String(taggedBy).trim();
-  const cleanTaggedUser = String(taggedUser).trim();
-  const cleanComments = tagComments ? String(tagComments).trim() : '';
 
-  if (!cleanTaggedBy || !cleanTaggedUser) {
+  const cleanUsers = [...new Set(
+    taggedUsers
+      .filter((u) => typeof u === "string")
+      .map((u) => u.trim())
+      .filter(Boolean)
+  )];
+
+  if (!cleanTaggedBy || cleanUsers.length === 0) {
     return res.status(400).json({
-      error: 'taggedBy and taggedUser cannot be empty'
+      error: "No valid tagged users provided",
     });
   }
 
-  // Normalize meetingDate to start/end of day
-  const inputDate = new Date(meetingDate);
-  if (Number.isNaN(inputDate.getTime())) {
-    return res.status(400).json({ error: 'Invalid meetingDate' });
-  }
-
-  const yyyy = inputDate.getFullYear();
-  const mm = String(inputDate.getMonth() + 1).padStart(2, '0');
-  const dd = String(inputDate.getDate()).padStart(2, '0');
-
-  const startOfDay = `${yyyy}-${mm}-${dd} 00:00:00`;
-
-  const nextDate = new Date(inputDate);
-  nextDate.setDate(nextDate.getDate() + 1);
-
-  const nextYyyy = nextDate.getFullYear();
-  const nextMm = String(nextDate.getMonth() + 1).padStart(2, '0');
-  const nextDd = String(nextDate.getDate()).padStart(2, '0');
-
-  const nextDay = `${nextYyyy}-${nextMm}-${nextDd} 00:00:00`;
+  const cleanReason = String(reason || "").trim();
 
   let sql = `
     UPDATE RacesAndEntries
     SET taggedBy = ?, taggedUser = ?, tagComments = ?
-    WHERE raceTitle = ?
-      AND meetingDate >= ?
-      AND meetingDate < ?
-      AND courseName = ?
+    WHERE RaceTitle = ?
+      AND FixtureDate = ?
+      AND FixtureTrack = ?
   `;
 
   const params = [
     cleanTaggedBy,
-    cleanTaggedUser,
-    cleanComments,
+    cleanUsers.join(", "),
+    cleanReason,
     raceTitle,
-    startOfDay,
-    nextDay,
-    courseName
+    fixtureDate,
+    fixtureTrack,
   ];
 
-  // Optional extra filter if raceTime is available
   if (raceTime) {
-    sql += ` AND raceTime = ?`;
+    sql += ` AND RaceTime = ?`;
     params.push(raceTime);
   }
 
   db.query(sql, params, (err, result) => {
     if (err) {
-      console.error('❌ Error updating race tag:', err);
-      return res.status(500).json({ error: 'Database update failed' });
+      console.error("❌ Error updating RacesAndEntries tag:", err);
+      return res.status(500).json({
+        error: "Database update failed",
+        details: err.message,
+      });
     }
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'No matching race row found' });
+      return res.status(404).json({
+        error: "Race row not found",
+      });
     }
 
     return res.json({
-      message: 'Race tagging updated successfully',
-      updatedRows: result.affectedRows,
-      tagging: {
+      message: "Tag saved successfully",
+      tagged: {
         taggedBy: cleanTaggedBy,
-        taggedUser: cleanTaggedUser,
-        tagComments: cleanComments
-      }
+        taggedUsers: cleanUsers,
+        reason: cleanReason,
+        taggedAt: new Date().toISOString().slice(0, 19).replace("T", " "),
+      },
+      updatedRows: result.affectedRows,
     });
   });
 });
+
 
 app.patch('/api/horseTracking/:horseName/flags', (req, res) => {
   try {
