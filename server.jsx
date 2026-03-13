@@ -4453,6 +4453,61 @@ app.patch('/api/review_horses/:id/tagged_users', (req, res) => {
 });
 
 
+app.patch('/api/horseTracking/:horseName/flags', (req, res) => {
+  try {
+    const { horseName } = req.params;
+    const user = req.query.user || req.body.user || req.body.User;
+    let { bookmark, notify, done } = req.body || {};
+
+    if (!horseName || !user) {
+      return res.status(400).json({ error: "horseName and user are required." });
+    }
+
+    const sets = [];
+    const values = [];
+
+    if (bookmark !== undefined) {
+      bookmark = (bookmark === true || bookmark === 1 || bookmark === "1") ? 1 : 0;
+      sets.push('bookmark = ?');
+      values.push(bookmark);
+    }
+    if (notify !== undefined) {
+      notify = (notify === true || notify === 1 || notify === "1") ? 1 : 0;
+      sets.push('notify = ?');
+      values.push(notify);
+    }
+    if (done !== undefined) {
+      done = (done === true || done === 1 || done === "1") ? 1 : 0;
+      sets.push('done = ?');
+      values.push(done);
+    }
+
+    if (sets.length === 0) {
+      return res.status(400).json({ error: "Provide at least one of bookmark, notify, done." });
+    }
+
+    // Case-insensitive match on horseName; backtick `User`
+    const sql = `
+      UPDATE horse_tracking
+      SET ${sets.join(', ')}
+      WHERE LOWER(horseName) = LOWER(?) AND \`User\` = ?
+    `;
+    values.push(horseName, user);
+
+    db.query(sql, values, (err, result) => {
+      if (err) {
+        console.error("[horseTracking flags] SQL ERROR:", err.code, err.sqlMessage);
+        return res.status(500).json({ error: "Database error", code: err.code, message: err.sqlMessage });
+      }
+      return res.json({ message: "Flags updated", affectedRows: result.affectedRows });
+    });
+  } catch (e) {
+    console.error("[horseTracking flags] Handler error:", e);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+
 app.patch('/api/APIData_Table2/race/tags', (req, res) => {
   const { taggedBy, taggedUsers, reason, raceTitle, meetingDate, courseName } = req.body || {};
 
@@ -4631,59 +4686,6 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
 });
 
 
-app.patch('/api/horseTracking/:horseName/flags', (req, res) => {
-  try {
-    const { horseName } = req.params;
-    const user = req.query.user || req.body.user || req.body.User;
-    let { bookmark, notify, done } = req.body || {};
-
-    if (!horseName || !user) {
-      return res.status(400).json({ error: "horseName and user are required." });
-    }
-
-    const sets = [];
-    const values = [];
-
-    if (bookmark !== undefined) {
-      bookmark = (bookmark === true || bookmark === 1 || bookmark === "1") ? 1 : 0;
-      sets.push('bookmark = ?');
-      values.push(bookmark);
-    }
-    if (notify !== undefined) {
-      notify = (notify === true || notify === 1 || notify === "1") ? 1 : 0;
-      sets.push('notify = ?');
-      values.push(notify);
-    }
-    if (done !== undefined) {
-      done = (done === true || done === 1 || done === "1") ? 1 : 0;
-      sets.push('done = ?');
-      values.push(done);
-    }
-
-    if (sets.length === 0) {
-      return res.status(400).json({ error: "Provide at least one of bookmark, notify, done." });
-    }
-
-    // Case-insensitive match on horseName; backtick `User`
-    const sql = `
-      UPDATE horse_tracking
-      SET ${sets.join(', ')}
-      WHERE LOWER(horseName) = LOWER(?) AND \`User\` = ?
-    `;
-    values.push(horseName, user);
-
-    db.query(sql, values, (err, result) => {
-      if (err) {
-        console.error("[horseTracking flags] SQL ERROR:", err.code, err.sqlMessage);
-        return res.status(500).json({ error: "Database error", code: err.code, message: err.sqlMessage });
-      }
-      return res.json({ message: "Flags updated", affectedRows: result.affectedRows });
-    });
-  } catch (e) {
-    console.error("[horseTracking flags] Handler error:", e);
-    return res.status(500).json({ error: "Server error" });
-  }
-});
 
 
 app.patch("/api/horseTracking/:horseName/dslr-review", (req, res) => {
