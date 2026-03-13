@@ -1550,6 +1550,11 @@ Add to Outlook Calendar: ${outlookUrl}
 // HORSE TRACKING ROUTES
 // =========================
 
+// =========================
+// HORSE TRACKING ROUTES
+// SAFE VERSION
+// =========================
+
 // ✅ GET: All tracking entries for a specific user
 app.get("/api/horseTracking", (req, res) => {
   const { user } = req.query;
@@ -1561,28 +1566,26 @@ app.get("/api/horseTracking", (req, res) => {
   const query = `
     SELECT 
       ht.*,
-      COALESCE(ua.Name, ht.User) AS noteAuthor
+      ht.User AS noteAuthor
     FROM horse_tracking ht
-    LEFT JOIN UserAccounts ua
-      ON ua.UserID = ht.User
     WHERE ht.User = ?
-    ORDER BY 
-      COALESCE(ht.noteDateTime, ht.trackingDate) DESC
+    ORDER BY COALESCE(ht.noteDateTime, ht.trackingDate) DESC
   `;
 
   db.query(query, [user], (err, results) => {
     if (err) {
       console.error("Error fetching tracking:", err);
-      return res.status(500).json({ error: "Database error" });
+      return res.status(500).json({
+        error: "Database error",
+        details: err.sqlMessage || err.message,
+      });
     }
+
     return res.status(200).json({ data: results });
   });
 });
 
-// ✅ GET: All visible tracking entries for a specific horse
-// Returns:
-// 1) the current user's own rows
-// 2) other users' PUBLIC notes for the same horse
+// ✅ GET: Horse tracking + visible notes
 app.get("/api/horseTracking/:horseName", (req, res) => {
   const { horseName } = req.params;
   const { user } = req.query;
@@ -1594,30 +1597,31 @@ app.get("/api/horseTracking/:horseName", (req, res) => {
   const query = `
     SELECT 
       ht.*,
-      COALESCE(ua.Name, ht.User) AS noteAuthor
+      ht.User AS noteAuthor
     FROM horse_tracking ht
-    LEFT JOIN UserAccounts ua
-      ON ua.UserID = ht.User
     WHERE 
       ht.horseName = ?
       AND (
         ht.User = ?
         OR (ht.noteVisibility = 'public' AND ht.User <> ?)
       )
-    ORDER BY 
-      COALESCE(ht.noteDateTime, ht.trackingDate) DESC
+    ORDER BY COALESCE(ht.noteDateTime, ht.trackingDate) DESC
   `;
 
   db.query(query, [horseName, user, user], (err, results) => {
     if (err) {
       console.error("Error fetching horseTracking:", err);
-      return res.status(500).json({ error: "Database error" });
+      return res.status(500).json({
+        error: "Database error",
+        details: err.sqlMessage || err.message,
+      });
     }
+
     return res.status(200).json({ data: results });
   });
 });
 
-// ✅ POST: Add a tracking entry / add a note
+// ✅ POST: Add tracking row / note row
 app.post("/api/horseTracking", (req, res) => {
   const {
     horseName,
@@ -1641,8 +1645,7 @@ app.post("/api/horseTracking", (req, res) => {
 
   const finalTrackingType = trackingType || TrackingType || null;
   const finalUser = user || User;
-  const finalVisibility =
-    noteVisibility === "public" ? "public" : "private";
+  const finalVisibility = noteVisibility === "public" ? "public" : "private";
 
   if (!horseName || !trackingDate || !finalUser) {
     return res.status(400).json({
@@ -1667,23 +1670,7 @@ app.post("/api/horseTracking", (req, res) => {
       horseColour,
       silkCode,
       noteVisibility
-    ) VALUES (
-      ?,
-      ?,
-      COALESCE(?, NOW()),
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?,
-      ?
-    )
+    ) VALUES (?, ?, COALESCE(?, NOW()), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
   const values = [
@@ -1707,19 +1694,20 @@ app.post("/api/horseTracking", (req, res) => {
   db.query(query, values, (err, result) => {
     if (err) {
       console.error("Error inserting horseTracking:", err);
-      return res.status(500).json({ error: "Database error" });
+      return res.status(500).json({
+        error: "Database error",
+        details: err.sqlMessage || err.message,
+      });
     }
 
     return res.status(201).json({
       message: "Horse tracking entry added.",
       id: result.insertId,
-      noteVisibility: finalVisibility,
     });
   });
 });
 
-// ✅ DELETE: Remove tracking entry for a horse and specific user
-// This removes ALL rows for that horse belonging to that user
+// ✅ DELETE: Remove all tracking rows for horse + user
 app.delete("/api/horseTracking/:horseName", (req, res) => {
   const { horseName } = req.params;
   const { user } = req.query;
@@ -1728,12 +1716,18 @@ app.delete("/api/horseTracking/:horseName", (req, res) => {
     return res.status(400).json({ error: "Missing user parameter" });
   }
 
-  const query = "DELETE FROM horse_tracking WHERE horseName = ? AND User = ?";
+  const query = `
+    DELETE FROM horse_tracking
+    WHERE horseName = ? AND User = ?
+  `;
 
   db.query(query, [horseName, user], (err, result) => {
     if (err) {
       console.error("Error deleting horseTracking:", err);
-      return res.status(500).json({ error: "Database error" });
+      return res.status(500).json({
+        error: "Database error",
+        details: err.sqlMessage || err.message,
+      });
     }
 
     if (result.affectedRows === 0) {
@@ -1748,12 +1742,12 @@ app.delete("/api/horseTracking/:horseName", (req, res) => {
   });
 });
 
-// ✅ PATCH: Update tracking type for an existing tracked horse (per user)
+// ✅ PATCH: Update tracking type
 app.patch("/api/horseTracking/:horseName/type", (req, res) => {
   const { horseName } = req.params;
   const { user } = req.query;
-
   const { trackingType, TrackingType } = req.body;
+
   const finalTrackingType = trackingType || TrackingType || null;
 
   if (!user) {
@@ -1773,7 +1767,10 @@ app.patch("/api/horseTracking/:horseName/type", (req, res) => {
   db.query(query, [finalTrackingType, horseName, user], (err, result) => {
     if (err) {
       console.error("Error updating TrackingType:", err);
-      return res.status(500).json({ error: "Database error" });
+      return res.status(500).json({
+        error: "Database error",
+        details: err.sqlMessage || err.message,
+      });
     }
 
     if (result.affectedRows === 0) {
