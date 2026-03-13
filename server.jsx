@@ -4517,7 +4517,15 @@ app.patch('/api/review_horses/:id/tagged_users', (req, res) => {
 });
 
 app.patch('/api/APIData_Table2/race/tags', (req, res) => {
-  const { taggedBy, taggedUsers, reason, raceTitle, meetingDate, courseName } = req.body || {};
+  const {
+    taggedBy,
+    taggedUsers,
+    reason,
+    raceTitle,
+    meetingDate,
+    courseName,
+    raceUrl
+  } = req.body || {};
 
   if (!raceTitle || !meetingDate || !courseName) {
     return res.status(400).json({
@@ -4529,6 +4537,8 @@ app.patch('/api/APIData_Table2/race/tags', (req, res) => {
     return res.status(400).json({ error: 'taggedBy and taggedUsers required' });
   }
 
+  const cleanTaggedBy = String(taggedBy || '').trim();
+
   const cleanUsers = [...new Set(
     taggedUsers
       .filter(u => typeof u === 'string')
@@ -4536,9 +4546,12 @@ app.patch('/api/APIData_Table2/race/tags', (req, res) => {
       .filter(Boolean)
   )];
 
-  if (cleanUsers.length === 0) {
+  if (!cleanTaggedBy || cleanUsers.length === 0) {
     return res.status(400).json({ error: 'No valid tagged users provided' });
   }
+
+  const cleanReason = String(reason || '').trim();
+  const cleanRaceUrl = String(raceUrl || '').trim();
 
   // Normalize date to YYYY-MM-DD
   const inputDate = new Date(meetingDate);
@@ -4562,9 +4575,10 @@ app.patch('/api/APIData_Table2/race/tags', (req, res) => {
   const nextDay = `${nextYyyy}-${nextMm}-${nextDd} 00:00:00`;
 
   const tagEntry = {
-    taggedBy: String(taggedBy).trim(),
+    taggedBy: cleanTaggedBy,
     taggedUsers: cleanUsers,
-    reason: reason || '',
+    reason: cleanReason,
+    raceUrl: cleanRaceUrl,
     taggedAt: new Date().toISOString().slice(0, 19).replace('T', ' ')
   };
 
