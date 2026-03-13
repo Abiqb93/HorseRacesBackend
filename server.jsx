@@ -2115,6 +2115,40 @@ app.get('/api/APIData_Table2/horse', (req, res) => {
 });
 
 
+app.patch('/api/APIData_Table2/public_comments', (req, res) => {
+  const { horseName, public_comments } = req.body;
+
+  if (!horseName) {
+    return res.status(400).json({
+      error: "horseName is required"
+    });
+  }
+
+  const query = `
+    UPDATE APIData_Table2
+    SET public_comments = ?
+    WHERE horseName = ?
+    ORDER BY meetingDate DESC
+    LIMIT 1
+  `;
+
+  db.query(query, [public_comments, horseName], (err, result) => {
+    if (err) {
+      console.error("Error updating public_comments:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Horse not found" });
+    }
+
+    res.status(200).json({
+      message: "Public comment updated for latest race",
+      affectedRows: result.affectedRows
+    });
+  });
+});
+
 app.get('/api/APIData_Table2/sire', (req, res) => {
   const { sireName } = req.query;
 
