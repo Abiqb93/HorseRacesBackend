@@ -4612,6 +4612,7 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
     fixtureDate,
     fixtureTrack,
     raceTime,
+    raceUrl,
   } = req.body || {};
 
   if (!raceTitle || !fixtureDate || !fixtureTrack) {
@@ -4628,12 +4629,14 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
 
   const cleanTaggedBy = String(taggedBy).trim();
 
-  const cleanUsers = [...new Set(
-    taggedUsers
-      .filter((u) => typeof u === "string")
-      .map((u) => u.trim())
-      .filter(Boolean)
-  )];
+  const cleanUsers = [
+    ...new Set(
+      taggedUsers
+        .filter((u) => typeof u === "string")
+        .map((u) => u.trim())
+        .filter(Boolean)
+    ),
+  ];
 
   if (!cleanTaggedBy || cleanUsers.length === 0) {
     return res.status(400).json({
@@ -4642,10 +4645,11 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
   }
 
   const cleanReason = String(reason || "").trim();
+  const cleanRaceUrl = String(raceUrl || "").trim();
 
   let sql = `
     UPDATE RacesAndEntries
-    SET taggedBy = ?, taggedUser = ?, tagComments = ?
+    SET taggedBy = ?, taggedUser = ?, tagComments = ?, raceUrl = ?
     WHERE RaceTitle = ?
       AND FixtureDate = ?
       AND FixtureTrack = ?
@@ -4655,6 +4659,7 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
     cleanTaggedBy,
     cleanUsers.join(", "),
     cleanReason,
+    cleanRaceUrl,
     raceTitle,
     fixtureDate,
     fixtureTrack,
@@ -4686,14 +4691,13 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
         taggedBy: cleanTaggedBy,
         taggedUsers: cleanUsers,
         reason: cleanReason,
+        raceUrl: cleanRaceUrl,
         taggedAt: new Date().toISOString().slice(0, 19).replace("T", " "),
       },
       updatedRows: result.affectedRows,
     });
   });
 });
-
-
 
 
 app.patch("/api/horseTracking/:horseName/dslr-review", (req, res) => {
