@@ -4453,60 +4453,68 @@ app.patch('/api/review_horses/:id/tagged_users', (req, res) => {
 });
 
 
-app.patch('/api/horseTracking/:horseName/flags', (req, res) => {
+app.patch('/api/review_horses/:id/tagged_users', (req, res) => {
   try {
-    const { horseName } = req.params;
-    const user = req.query.user || req.body.user || req.body.User;
-    let { bookmark, notify, done } = req.body || {};
+    const { id } = req.params;
+    const { taggedBy, taggedUsers, reason } = req.body || {};
 
-    if (!horseName || !user) {
-      return res.status(400).json({ error: "horseName and user are required." });
+    if (!id) {
+      return res.status(400).json({ error: "Review horse id is required." });
     }
 
-    const sets = [];
-    const values = [];
-
-    if (bookmark !== undefined) {
-      bookmark = (bookmark === true || bookmark === 1 || bookmark === "1") ? 1 : 0;
-      sets.push('bookmark = ?');
-      values.push(bookmark);
-    }
-    if (notify !== undefined) {
-      notify = (notify === true || notify === 1 || notify === "1") ? 1 : 0;
-      sets.push('notify = ?');
-      values.push(notify);
-    }
-    if (done !== undefined) {
-      done = (done === true || done === 1 || done === "1") ? 1 : 0;
-      sets.push('done = ?');
-      values.push(done);
+    if (!Array.isArray(taggedUsers) || taggedUsers.length === 0) {
+      return res.status(400).json({ error: "taggedUsers must be a non-empty array." });
     }
 
-    if (sets.length === 0) {
-      return res.status(400).json({ error: "Provide at least one of bookmark, notify, done." });
-    }
+    const selectSql = `SELECT tagged_users FROM review_horses WHERE id = ? LIMIT 1`;
 
-    // Case-insensitive match on horseName; backtick `User`
-    const sql = `
-      UPDATE horse_tracking
-      SET ${sets.join(', ')}
-      WHERE LOWER(horseName) = LOWER(?) AND \`User\` = ?
-    `;
-    values.push(horseName, user);
-
-    db.query(sql, values, (err, result) => {
-      if (err) {
-        console.error("[horseTracking flags] SQL ERROR:", err.code, err.sqlMessage);
-        return res.status(500).json({ error: "Database error", code: err.code, message: err.sqlMessage });
+    db.query(selectSql, [id], (selectErr, rows) => {
+      if (selectErr) {
+        console.error("[review_horses tagged_users] SELECT ERROR:", selectErr);
+        return res.status(500).json({ error: "Database error on select." });
       }
-      return res.json({ message: "Flags updated", affectedRows: result.affectedRows });
+
+      if (!rows || rows.length === 0) {
+        return res.status(404).json({ error: "Review horse not found." });
+      }
+
+      let existing = [];
+      try {
+        existing = rows[0]?.tagged_users ? JSON.parse(rows[0].tagged_users) : [];
+        if (!Array.isArray(existing)) existing = [];
+      } catch {
+        existing = [];
+      }
+
+      const newTag = {
+        taggedBy: String(taggedBy || "").trim(),
+        taggedUsers: taggedUsers.map((u) => String(u).trim()).filter(Boolean),
+        reason: String(reason || "").trim(),
+        taggedAt: new Date().toISOString(),
+      };
+
+      const updated = [...existing, newTag];
+
+      const updateSql = `UPDATE review_horses SET tagged_users = ? WHERE id = ?`;
+
+      db.query(updateSql, [JSON.stringify(updated), id], (updateErr) => {
+        if (updateErr) {
+          console.error("[review_horses tagged_users] UPDATE ERROR:", updateErr);
+          return res.status(500).json({ error: "Database error on update." });
+        }
+
+        return res.json({
+          message: "Tagged users updated successfully.",
+          tagged: newTag,
+          tagged_users: updated,
+        });
+      });
     });
   } catch (e) {
-    console.error("[horseTracking flags] Handler error:", e);
-    return res.status(500).json({ error: "Server error" });
+    console.error("[review_horses tagged_users] Handler error:", e);
+    return res.status(500).json({ error: "Server error." });
   }
 });
-
 
 app.patch('/api/APIData_Table2/race/tags', (req, res) => {
   const { taggedBy, taggedUsers, reason, raceTitle, meetingDate, courseName } = req.body || {};
