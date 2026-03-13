@@ -1546,6 +1546,10 @@ Add to Outlook Calendar: ${outlookUrl}
 });
 
 
+// =========================
+// HORSE TRACKING ROUTES
+// =========================
+
 // ✅ GET: All tracking entries for a specific user
 app.get("/api/horseTracking", (req, res) => {
   const { user } = req.query;
@@ -1554,8 +1558,17 @@ app.get("/api/horseTracking", (req, res) => {
     return res.status(400).json({ error: "Missing user parameter" });
   }
 
-  const query =
-    "SELECT * FROM horse_tracking WHERE User = ? ORDER BY trackingDate DESC";
+  const query = `
+    SELECT 
+      ht.*,
+      COALESCE(ua.Name, ht.User) AS noteAuthor
+    FROM horse_tracking ht
+    LEFT JOIN UserAccounts ua
+      ON ua.UserID = ht.User
+    WHERE ht.User = ?
+    ORDER BY 
+      COALESCE(ht.noteDateTime, ht.trackingDate) DESC
+  `;
 
   db.query(query, [user], (err, results) => {
     if (err) {
@@ -1566,7 +1579,10 @@ app.get("/api/horseTracking", (req, res) => {
   });
 });
 
-// ✅ GET: All tracking entries for a specific horse and user
+// ✅ GET: All visible tracking entries for a specific horse
+// Returns:
+// 1) the current user's own rows
+// 2) other users' PUBLIC notes for the same horse
 app.get("/api/horseTracking/:horseName", (req, res) => {
   const { horseName } = req.params;
   const { user } = req.query;
@@ -1575,10 +1591,24 @@ app.get("/api/horseTracking/:horseName", (req, res) => {
     return res.status(400).json({ error: "Missing user parameter" });
   }
 
-  const query =
-    "SELECT * FROM horse_tracking WHERE horseName = ? AND User = ? ORDER BY noteDateTime DESC";
+  const query = `
+    SELECT 
+      ht.*,
+      COALESCE(ua.Name, ht.User) AS noteAuthor
+    FROM horse_tracking ht
+    LEFT JOIN UserAccounts ua
+      ON ua.UserID = ht.User
+    WHERE 
+      ht.horseName = ?
+      AND (
+        ht.User = ?
+        OR (ht.noteVisibility = 'public' AND ht.User <> ?)
+      )
+    ORDER BY 
+      COALESCE(ht.noteDateTime, ht.trackingDate) DESC
+  `;
 
-  db.query(query, [horseName, user], (err, results) => {
+  db.query(query, [horseName, user, user], (err, results) => {
     if (err) {
       console.error("Error fetching horseTracking:", err);
       return res.status(500).json({ error: "Database error" });
@@ -1587,7 +1617,7 @@ app.get("/api/horseTracking/:horseName", (req, res) => {
   });
 });
 
-// ✅ POST: Add a tracking entry
+// ✅ POST: Add a tracking entry / add a note
 app.post("/api/horseTracking", (req, res) => {
   const {
     horseName,
@@ -1606,10 +1636,13 @@ app.post("/api/horseTracking", (req, res) => {
     horseGender,
     horseColour,
     silkCode,
+    noteVisibility,
   } = req.body;
 
   const finalTrackingType = trackingType || TrackingType || null;
   const finalUser = user || User;
+  const finalVisibility =
+    noteVisibility === "public" ? "public" : "private";
 
   if (!horseName || !trackingDate || !finalUser) {
     return res.status(400).json({
@@ -1632,11 +1665,13 @@ app.post("/api/horseTracking", (req, res) => {
       horseAge,
       horseGender,
       horseColour,
-      silkCode
+      silkCode,
+      noteVisibility
     ) VALUES (
       ?,
       ?,
       COALESCE(?, NOW()),
+      ?,
       ?,
       ?,
       ?,
@@ -1666,6 +1701,7 @@ app.post("/api/horseTracking", (req, res) => {
     horseGender || null,
     horseColour || null,
     silkCode || null,
+    finalVisibility,
   ];
 
   db.query(query, values, (err, result) => {
@@ -1673,13 +1709,17 @@ app.post("/api/horseTracking", (req, res) => {
       console.error("Error inserting horseTracking:", err);
       return res.status(500).json({ error: "Database error" });
     }
-    return res
-      .status(201)
-      .json({ message: "Horse tracking entry added.", id: result.insertId });
+
+    return res.status(201).json({
+      message: "Horse tracking entry added.",
+      id: result.insertId,
+      noteVisibility: finalVisibility,
+    });
   });
 });
 
 // ✅ DELETE: Remove tracking entry for a horse and specific user
+// This removes ALL rows for that horse belonging to that user
 app.delete("/api/horseTracking/:horseName", (req, res) => {
   const { horseName } = req.params;
   const { user } = req.query;
@@ -1697,9 +1737,9 @@ app.delete("/api/horseTracking/:horseName", (req, res) => {
     }
 
     if (result.affectedRows === 0) {
-      return res
-        .status(404)
-        .json({ error: "No tracking entries found for that horse and user." });
+      return res.status(404).json({
+        error: "No tracking entries found for that horse and user.",
+      });
     }
 
     return res.status(200).json({
@@ -1707,7 +1747,6 @@ app.delete("/api/horseTracking/:horseName", (req, res) => {
     });
   });
 });
-
 
 // ✅ PATCH: Update tracking type for an existing tracked horse (per user)
 app.patch("/api/horseTracking/:horseName/type", (req, res) => {
@@ -1721,7 +1760,6 @@ app.patch("/api/horseTracking/:horseName/type", (req, res) => {
     return res.status(400).json({ error: "Missing user parameter" });
   }
 
-  // If you want to REQUIRE a type, use: if (!finalTrackingType) { ... }
   if (finalTrackingType === null) {
     return res.status(400).json({ error: "Missing trackingType in request body" });
   }
@@ -1753,7 +1791,6 @@ app.patch("/api/horseTracking/:horseName/type", (req, res) => {
     });
   });
 });
-
 
 // 1. sire_birthyear_reports
 app.get('/api/sire_crop_reports', (req, res) => {
