@@ -5289,12 +5289,21 @@ app.post("/api/notifications/tag", (req, res) => {
     taggedBy,
     taggedUsers,
     reason,
+    source,
+    sourceId,
+
+    // RacesAndEntries fields
     raceTitle,
     fixtureDate,
     fixtureTrack,
     raceTime,
+
+    // APIData_Table2 fields
+    meetingDate,
+    courseName,
+
     raceUrl,
-    raceId,
+    icon,
   } = req.body || {};
 
   if (!taggedBy || !Array.isArray(taggedUsers) || taggedUsers.length === 0) {
@@ -5303,29 +5312,16 @@ app.post("/api/notifications/tag", (req, res) => {
     });
   }
 
-  if (!raceTitle || !fixtureDate || !fixtureTrack) {
-    return res.status(400).json({
-      error: "raceTitle, fixtureDate and fixtureTrack are required",
-    });
-  }
+  const cleanTaggedBy = String(taggedBy || "").trim();
 
-  const cleanTaggedBy = safeTrim(taggedBy);
   const cleanUsers = [
     ...new Set(
       taggedUsers
         .filter((u) => typeof u === "string")
-        .map((u) => safeTrim(u))
+        .map((u) => String(u).trim())
         .filter(Boolean)
     ),
   ];
-
-  const cleanReason = safeTrim(reason);
-  const cleanRaceTitle = safeTrim(raceTitle);
-  const cleanFixtureTrack = safeTrim(fixtureTrack);
-  const cleanFixtureDate = normalizeDateToMySQL(fixtureDate);
-  const cleanRaceTime = safeTrim(raceTime);
-  const cleanRaceUrl = safeTrim(raceUrl);
-  const cleanRaceId = safeTrim(raceId);
 
   if (!cleanTaggedBy || cleanUsers.length === 0) {
     return res.status(400).json({
@@ -5333,54 +5329,117 @@ app.post("/api/notifications/tag", (req, res) => {
     });
   }
 
-  if (!cleanFixtureDate) {
-    return res.status(400).json({
-      error: "Invalid fixtureDate format",
-    });
-  }
+  const cleanReason = String(reason || "").trim();
+  const cleanSource = String(source || "RacesAndEntries").trim();
+  const cleanRaceTitle = String(raceTitle || "").trim();
+  const cleanFixtureDate = String(fixtureDate || "").trim();
+  const cleanFixtureTrack = String(fixtureTrack || "").trim();
+  const cleanRaceTime = String(raceTime || "").trim();
+  const cleanMeetingDate = String(meetingDate || "").trim();
+  const cleanCourseName = String(courseName || "").trim();
+  const cleanRaceUrl = String(raceUrl || "").trim();
+  const cleanSourceId = String(sourceId || "").trim();
 
-  const source = "RacesAndEntries";
-  const sourceId =
-    cleanRaceId ||
-    buildSourceId({
+  let finalSource = cleanSource;
+  let finalSourceId = cleanSourceId;
+  let title = "";
+  let subtitle = "";
+  let meeting_date = null;
+  let finalIcon = String(icon || "").trim() || "bell";
+  let extraData = {};
+
+  if (finalSource === "RacesAndEntries") {
+    if (!cleanRaceTitle || !cleanFixtureDate || !cleanFixtureTrack) {
+      return res.status(400).json({
+        error: "raceTitle, fixtureDate and fixtureTrack are required",
+      });
+    }
+
+    if (!finalSourceId) {
+      finalSourceId = [
+        cleanRaceTitle,
+        cleanFixtureDate,
+        cleanFixtureTrack,
+        cleanRaceTime,
+      ].join("__");
+    }
+
+    title = `You were tagged in ${cleanRaceTitle}`;
+    subtitle = [cleanFixtureTrack, cleanRaceTime].filter(Boolean).join(" · ");
+    meeting_date = cleanFixtureDate;
+    finalIcon = finalIcon || "flag";
+
+    extraData = {
       raceTitle: cleanRaceTitle,
       fixtureDate: cleanFixtureDate,
       fixtureTrack: cleanFixtureTrack,
       raceTime: cleanRaceTime,
+      source: "RacesAndEntries",
+    };
+  } else if (finalSource === "APIData_Table2") {
+    if (!cleanRaceTitle || !cleanMeetingDate || !cleanCourseName) {
+      return res.status(400).json({
+        error: "raceTitle, meetingDate and courseName are required",
+      });
+    }
+
+    if (!finalSourceId) {
+      finalSourceId = [
+        cleanMeetingDate,
+        cleanCourseName,
+        cleanRaceTitle,
+      ].join("__");
+    }
+
+    title = `You were tagged in ${cleanRaceTitle}`;
+    subtitle = [cleanCourseName, cleanMeetingDate].filter(Boolean).join(" · ");
+    meeting_date = cleanMeetingDate;
+    finalIcon = finalIcon || "trophy";
+
+    extraData = {
+      raceTitle: cleanRaceTitle,
+      meetingDate: cleanMeetingDate,
+      courseName: cleanCourseName,
+      source: "APIData_Table2",
+    };
+  } else if (finalSource === "review_horses") {
+    title = `You were tagged`;
+    subtitle = "";
+    meeting_date = cleanMeetingDate || null;
+    finalIcon = finalIcon || "clipboard";
+
+    extraData = {
+      raceTitle: cleanRaceTitle,
+      meetingDate: cleanMeetingDate,
+      courseName: cleanCourseName,
+      source: "review_horses",
+    };
+  } else {
+    return res.status(400).json({
+      error: `Unsupported source: ${finalSource}`,
     });
+  }
 
-  const title = `You were tagged in ${cleanRaceTitle}`;
-  const subtitle = `${cleanFixtureTrack}${cleanRaceTime ? ` · ${cleanRaceTime}` : ""}`;
-  const message = cleanReason || `${cleanTaggedBy} tagged you in a race entry`;
+  const message = cleanReason || `${cleanTaggedBy} tagged you`;
   const taggedAt = new Date().toISOString().slice(0, 19).replace("T", " ");
-  const link = cleanRaceUrl || null;
-  const icon = "tag";
-
   const taggedUsersJson = JSON.stringify(cleanUsers);
-  const extraDataJson = JSON.stringify({
-    raceTitle: cleanRaceTitle,
-    fixtureDate: cleanFixtureDate,
-    fixtureTrack: cleanFixtureTrack,
-    raceTime: cleanRaceTime,
-    raceId: cleanRaceId || null,
-    source: "RacesAndEntries",
-  });
+  const extraDataJson = JSON.stringify(extraData);
 
   const rows = cleanUsers.map((userId) => [
-    userId,                 // user_id
-    cleanTaggedBy,          // tagged_by
-    source,                 // source
-    sourceId,               // source_id
-    title,                  // title
-    subtitle,               // subtitle
-    message,                // message
-    taggedAt,               // tagged_at
-    cleanFixtureDate,       // meeting_date
-    link,                   // link
-    icon,                   // icon
-    taggedUsersJson,        // tagged_users
-    extraDataJson,          // extra_data
-    false,                  // is_read
+    userId,               // user_id
+    cleanTaggedBy,        // tagged_by
+    finalSource,          // source
+    finalSourceId,        // source_id
+    title,                // title
+    subtitle,             // subtitle
+    message,              // message
+    taggedAt,             // tagged_at
+    meeting_date || null, // meeting_date
+    cleanRaceUrl || null, // link
+    finalIcon,            // icon
+    taggedUsersJson,      // tagged_users
+    extraDataJson,        // extra_data
+    false,                // is_read
   ]);
 
   const insertSql = `
@@ -5417,6 +5476,7 @@ app.post("/api/notifications/tag", (req, res) => {
       message: "Notifications created successfully",
       insertedRows: result.affectedRows,
       users: cleanUsers,
+      source: finalSource,
     });
   });
 });
