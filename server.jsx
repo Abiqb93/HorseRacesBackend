@@ -5107,6 +5107,46 @@ app.patch('/api/APIData_Table2/race/tags', (req, res) => {
   );
 });
 
+const normalizeDateToMySQL = (value) => {
+  if (!value) return null;
+
+  const str = String(value).trim();
+
+  // yyyy-mm-dd
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+
+  // dd/mm/yyyy or dd-mm-yyyy
+  const dmy = str.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (dmy) {
+    const [, dd, mm, yyyy] = dmy;
+    return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+  }
+
+  const parsed = new Date(str);
+  if (!isNaN(parsed)) {
+    const yyyy = parsed.getFullYear();
+    const mm = String(parsed.getMonth() + 1).padStart(2, "0");
+    const dd = String(parsed.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  return null;
+};
+
+const safeTrim = (v) => String(v || "").trim();
+
+const buildSourceId = ({ raceTitle, fixtureDate, fixtureTrack, raceTime }) => {
+  return [
+    safeTrim(raceTitle),
+    safeTrim(fixtureDate),
+    safeTrim(fixtureTrack),
+    safeTrim(raceTime),
+  ].join("__");
+};
+
+/**
+ * 1) Update tag info in RacesAndEntries
+ */
 app.patch("/api/RacesAndEntries/tag", (req, res) => {
   const {
     taggedBy,
@@ -5131,13 +5171,13 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
     });
   }
 
-  const cleanTaggedBy = String(taggedBy).trim();
+  const cleanTaggedBy = safeTrim(taggedBy);
 
   const cleanUsers = [
     ...new Set(
       taggedUsers
         .filter((u) => typeof u === "string")
-        .map((u) => u.trim())
+        .map((u) => safeTrim(u))
         .filter(Boolean)
     ),
   ];
@@ -5148,12 +5188,18 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
     });
   }
 
-  const cleanReason = String(reason || "").trim();
-  const cleanRaceUrl = String(raceUrl || "").trim();
-  const cleanFixtureDate = String(fixtureDate).trim();
-  const cleanFixtureTrack = String(fixtureTrack).trim();
-  const cleanRaceTitle = String(raceTitle).trim();
-  const cleanRaceTime = String(raceTime || "").trim();
+  const cleanReason = safeTrim(reason);
+  const cleanRaceUrl = safeTrim(raceUrl);
+  const cleanRaceTitle = safeTrim(raceTitle);
+  const cleanFixtureTrack = safeTrim(fixtureTrack);
+  const cleanFixtureDate = normalizeDateToMySQL(fixtureDate);
+  const cleanRaceTime = safeTrim(raceTime);
+
+  if (!cleanFixtureDate) {
+    return res.status(400).json({
+      error: "Invalid fixtureDate format",
+    });
+  }
 
   let sql = `
     UPDATE RacesAndEntries
@@ -5178,8 +5224,8 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
     params.push(cleanRaceTime);
   }
 
-  console.log("TAG SQL:", sql);
-  console.log("TAG PARAMS:", params);
+  console.log("TAG UPDATE SQL:", sql);
+  console.log("TAG UPDATE PARAMS:", params);
 
   db.query(sql, params, (err, result) => {
     if (err) {
@@ -5205,6 +5251,235 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
         raceUrl: cleanRaceUrl,
         taggedAt: new Date().toISOString().slice(0, 19).replace("T", " "),
       },
+      updatedRows: result.affectedRows,
+    });
+  });
+});
+
+/**
+ * 2) Insert notification rows for tagged users
+ *    One row per tagged user
+ */
+app.post("/api/notifications/tag", (req, res) => {
+  const {
+    taggedBy,
+    taggedUsers,
+    reason,
+    raceTitle,
+    fixtureDate,
+    fixtureTrack,
+    raceTime,
+    raceUrl,
+    raceId,
+  } = req.body || {};
+
+  if (!taggedBy || !Array.isArray(taggedUsers) || taggedUsers.length === 0) {
+    return res.status(400).json({
+      error: "taggedBy and taggedUsers are required",
+    });
+  }
+
+  if (!raceTitle || !fixtureDate || !fixtureTrack) {
+    return res.status(400).json({
+      error: "raceTitle, fixtureDate and fixtureTrack are required",
+    });
+  }
+
+  const cleanTaggedBy = safeTrim(taggedBy);
+  const cleanUsers = [
+    ...new Set(
+      taggedUsers
+        .filter((u) => typeof u === "string")
+        .map((u) => safeTrim(u))
+        .filter(Boolean)
+    ),
+  ];
+
+  const cleanReason = safeTrim(reason);
+  const cleanRaceTitle = safeTrim(raceTitle);
+  const cleanFixtureTrack = safeTrim(fixtureTrack);
+  const cleanFixtureDate = normalizeDateToMySQL(fixtureDate);
+  const cleanRaceTime = safeTrim(raceTime);
+  const cleanRaceUrl = safeTrim(raceUrl);
+  const cleanRaceId = safeTrim(raceId);
+
+  if (!cleanTaggedBy || cleanUsers.length === 0) {
+    return res.status(400).json({
+      error: "No valid tagged users provided",
+    });
+  }
+
+  if (!cleanFixtureDate) {
+    return res.status(400).json({
+      error: "Invalid fixtureDate format",
+    });
+  }
+
+  const source = "RacesAndEntries";
+  const sourceId =
+    cleanRaceId ||
+    buildSourceId({
+      raceTitle: cleanRaceTitle,
+      fixtureDate: cleanFixtureDate,
+      fixtureTrack: cleanFixtureTrack,
+      raceTime: cleanRaceTime,
+    });
+
+  const title = `You were tagged in ${cleanRaceTitle}`;
+  const subtitle = `${cleanFixtureTrack}${cleanRaceTime ? ` · ${cleanRaceTime}` : ""}`;
+  const message = cleanReason || `${cleanTaggedBy} tagged you in a race entry`;
+  const taggedAt = new Date().toISOString().slice(0, 19).replace("T", " ");
+  const link = cleanRaceUrl || null;
+  const icon = "tag";
+
+  const taggedUsersJson = JSON.stringify(cleanUsers);
+  const extraDataJson = JSON.stringify({
+    raceTitle: cleanRaceTitle,
+    fixtureDate: cleanFixtureDate,
+    fixtureTrack: cleanFixtureTrack,
+    raceTime: cleanRaceTime,
+    raceId: cleanRaceId || null,
+    source: "RacesAndEntries",
+  });
+
+  const rows = cleanUsers.map((userId) => [
+    userId,                 // user_id
+    cleanTaggedBy,          // tagged_by
+    source,                 // source
+    sourceId,               // source_id
+    title,                  // title
+    subtitle,               // subtitle
+    message,                // message
+    taggedAt,               // tagged_at
+    cleanFixtureDate,       // meeting_date
+    link,                   // link
+    icon,                   // icon
+    taggedUsersJson,        // tagged_users
+    extraDataJson,          // extra_data
+    false,                  // is_read
+  ]);
+
+  const insertSql = `
+    INSERT INTO notifications
+    (
+      user_id,
+      tagged_by,
+      source,
+      source_id,
+      title,
+      subtitle,
+      message,
+      tagged_at,
+      meeting_date,
+      link,
+      icon,
+      tagged_users,
+      extra_data,
+      is_read
+    )
+    VALUES ?
+  `;
+
+  db.query(insertSql, [rows], (err, result) => {
+    if (err) {
+      console.error("❌ Error inserting notifications:", err);
+      return res.status(500).json({
+        error: "Failed to create notifications",
+        details: err.message,
+      });
+    }
+
+    return res.json({
+      message: "Notifications created successfully",
+      insertedRows: result.affectedRows,
+      users: cleanUsers,
+    });
+  });
+});
+
+/**
+ * 3) Fetch notifications for a user
+ */
+app.get("/api/notifications/:userId", (req, res) => {
+  const userId = safeTrim(req.params.userId);
+
+  const sql = `
+    SELECT *
+    FROM notifications
+    WHERE user_id = ?
+    ORDER BY is_read ASC, created_at DESC, id DESC
+  `;
+
+  db.query(sql, [userId], (err, rows) => {
+    if (err) {
+      console.error("❌ Error fetching notifications:", err);
+      return res.status(500).json({
+        error: "Failed to fetch notifications",
+        details: err.message,
+      });
+    }
+
+    return res.json(rows || []);
+  });
+});
+
+/**
+ * 4) Mark one notification as read
+ */
+app.patch("/api/notifications/:id/read", (req, res) => {
+  const id = req.params.id;
+
+  const sql = `
+    UPDATE notifications
+    SET is_read = TRUE
+    WHERE id = ?
+  `;
+
+  db.query(sql, [id], (err, result) => {
+    if (err) {
+      console.error("❌ Error marking notification as read:", err);
+      return res.status(500).json({
+        error: "Failed to mark notification as read",
+        details: err.message,
+      });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        error: "Notification not found",
+      });
+    }
+
+    return res.json({
+      message: "Notification marked as read",
+    });
+  });
+});
+
+/**
+ * 5) Mark all notifications as read for a user
+ */
+app.patch("/api/notifications/read-all/:userId", (req, res) => {
+  const userId = safeTrim(req.params.userId);
+
+  const sql = `
+    UPDATE notifications
+    SET is_read = TRUE
+    WHERE user_id = ?
+      AND is_read = FALSE
+  `;
+
+  db.query(sql, [userId], (err, result) => {
+    if (err) {
+      console.error("❌ Error marking all notifications as read:", err);
+      return res.status(500).json({
+        error: "Failed to mark all notifications as read",
+        details: err.message,
+      });
+    }
+
+    return res.json({
+      message: "All notifications marked as read",
       updatedRows: result.affectedRows,
     });
   });
