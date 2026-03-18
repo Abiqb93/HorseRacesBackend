@@ -3959,6 +3959,455 @@ app.patch('/api/race_watchlist/:id/notify', (req, res) => {
 });
 
 
+/* -------------------------------------------------
+   CREATE SINGLE NOTIFICATION
+------------------------------------------------- */
+app.post('/api/notifications', (req, res) => {
+  const {
+    user_id,
+    tagged_by,
+    source,
+    source_id,
+    title,
+    subtitle,
+    message,
+    tagged_at,
+    meeting_date,
+    link,
+    icon,
+    tagged_users,
+    extra_data,
+    is_read
+  } = req.body;
+
+  if (!user_id) {
+    return res.status(400).json({ error: 'user_id is required' });
+  }
+
+  const sql = `
+    INSERT INTO notifications (
+      user_id,
+      tagged_by,
+      source,
+      source_id,
+      title,
+      subtitle,
+      message,
+      tagged_at,
+      meeting_date,
+      link,
+      icon,
+      tagged_users,
+      extra_data,
+      is_read
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+
+  const values = [
+    user_id,
+    tagged_by || null,
+    source || null,
+    source_id || null,
+    title || null,
+    subtitle || null,
+    message || null,
+    tagged_at || null,
+    meeting_date || null,
+    link || null,
+    icon || null,
+    tagged_users ? JSON.stringify(tagged_users) : null,
+    extra_data ? JSON.stringify(extra_data) : null,
+    is_read ? 1 : 0
+  ];
+
+  db.query(sql, values, (err, result) => {
+    if (err) {
+      console.error('Error inserting notification:', err);
+      return res.status(500).json({ error: 'Failed to insert notification' });
+    }
+
+    res.status(201).json({
+      message: 'Notification created successfully',
+      id: result.insertId
+    });
+  });
+});
+
+
+/* -------------------------------------------------
+   BULK INSERT NOTIFICATIONS
+------------------------------------------------- */
+app.post('/api/notifications/bulk', (req, res) => {
+  const { notifications } = req.body;
+
+  if (!Array.isArray(notifications) || notifications.length === 0) {
+    return res.status(400).json({ error: 'notifications array is required' });
+  }
+
+  const sql = `
+    INSERT INTO notifications (
+      user_id,
+      tagged_by,
+      source,
+      source_id,
+      title,
+      subtitle,
+      message,
+      tagged_at,
+      meeting_date,
+      link,
+      icon,
+      tagged_users,
+      extra_data,
+      is_read
+    )
+    VALUES ?
+  `;
+
+  const values = notifications.map((item) => [
+    item.user_id,
+    item.tagged_by || null,
+    item.source || null,
+    item.source_id || null,
+    item.title || null,
+    item.subtitle || null,
+    item.message || null,
+    item.tagged_at || null,
+    item.meeting_date || null,
+    item.link || null,
+    item.icon || null,
+    item.tagged_users ? JSON.stringify(item.tagged_users) : null,
+    item.extra_data ? JSON.stringify(item.extra_data) : null,
+    item.is_read ? 1 : 0
+  ]);
+
+  db.query(sql, [values], (err, result) => {
+    if (err) {
+      console.error('Error bulk inserting notifications:', err);
+      return res.status(500).json({ error: 'Failed to bulk insert notifications' });
+    }
+
+    res.status(201).json({
+      message: 'Notifications inserted successfully',
+      insertedCount: result.affectedRows
+    });
+  });
+});
+
+
+/* -------------------------------------------------
+   GET NOTIFICATIONS FOR A USER
+   Optional query params:
+   - unreadOnly=true
+   - limit=50
+------------------------------------------------- */
+app.get('/api/notifications/:userId', (req, res) => {
+  const userId = req.params.userId;
+  const { unreadOnly, limit } = req.query;
+
+  let sql = `
+    SELECT *
+    FROM notifications
+    WHERE user_id = ?
+  `;
+
+  const params = [userId];
+
+  if (unreadOnly === 'true') {
+    sql += ` AND is_read = 0 `;
+  }
+
+  sql += ` ORDER BY COALESCE(tagged_at, created_at) DESC `;
+
+  if (limit) {
+    sql += ` LIMIT ? `;
+    params.push(Number(limit));
+  }
+
+  db.query(sql, params, (err, results) => {
+    if (err) {
+      console.error('Error fetching notifications:', err);
+      return res.status(500).json({ error: 'Failed to fetch notifications' });
+    }
+
+    const parsedResults = results.map((row) => ({
+      ...row,
+      tagged_users:
+        typeof row.tagged_users === 'string'
+          ? safeJsonParse(row.tagged_users, [])
+          : row.tagged_users || [],
+      extra_data:
+        typeof row.extra_data === 'string'
+          ? safeJsonParse(row.extra_data, {})
+          : row.extra_data || {}
+    }));
+
+    res.json({
+      data: parsedResults,
+      count: parsedResults.length
+    });
+  });
+});
+
+
+/* -------------------------------------------------
+   GET UNREAD COUNT FOR A USER
+------------------------------------------------- */
+app.get('/api/notifications/:userId/unread-count', (req, res) => {
+  const userId = req.params.userId;
+
+  const sql = `
+    SELECT COUNT(*) AS unreadCount
+    FROM notifications
+    WHERE user_id = ? AND is_read = 0
+  `;
+
+  db.query(sql, [userId], (err, results) => {
+    if (err) {
+      console.error('Error fetching unread count:', err);
+      return res.status(500).json({ error: 'Failed to fetch unread count' });
+    }
+
+    res.json({
+      user_id: userId,
+      unreadCount: results[0]?.unreadCount || 0
+    });
+  });
+});
+
+
+/* -------------------------------------------------
+   MARK SINGLE NOTIFICATION AS READ
+------------------------------------------------- */
+app.patch('/api/notifications/:id/read', (req, res) => {
+  const notificationId = req.params.id;
+
+  const sql = `
+    UPDATE notifications
+    SET is_read = 1
+    WHERE id = ?
+  `;
+
+  db.query(sql, [notificationId], (err, result) => {
+    if (err) {
+      console.error('Error marking notification as read:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
+    res.json({ message: 'Notification marked as read' });
+  });
+});
+
+
+/* -------------------------------------------------
+   MARK SINGLE NOTIFICATION AS UNREAD
+------------------------------------------------- */
+app.patch('/api/notifications/:id/unread', (req, res) => {
+  const notificationId = req.params.id;
+
+  const sql = `
+    UPDATE notifications
+    SET is_read = 0
+    WHERE id = ?
+  `;
+
+  db.query(sql, [notificationId], (err, result) => {
+    if (err) {
+      console.error('Error marking notification as unread:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
+    res.json({ message: 'Notification marked as unread' });
+  });
+});
+
+
+/* -------------------------------------------------
+   MARK ALL USER NOTIFICATIONS AS READ
+------------------------------------------------- */
+app.patch('/api/notifications/user/:userId/read-all', (req, res) => {
+  const userId = req.params.userId;
+
+  const sql = `
+    UPDATE notifications
+    SET is_read = 1
+    WHERE user_id = ? AND is_read = 0
+  `;
+
+  db.query(sql, [userId], (err, result) => {
+    if (err) {
+      console.error('Error marking all notifications as read:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    res.json({
+      message: 'All notifications marked as read',
+      updatedRows: result.affectedRows
+    });
+  });
+});
+
+
+/* -------------------------------------------------
+   DELETE ONE NOTIFICATION
+------------------------------------------------- */
+app.delete('/api/notifications/:id', (req, res) => {
+  const notificationId = req.params.id;
+
+  const sql = `
+    DELETE FROM notifications
+    WHERE id = ?
+  `;
+
+  db.query(sql, [notificationId], (err, result) => {
+    if (err) {
+      console.error('Error deleting notification:', err);
+      return res.status(500).json({ error: 'Database delete failed' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
+    res.json({ message: 'Notification deleted successfully' });
+  });
+});
+
+
+/* -------------------------------------------------
+   OPTIONAL: AVOID DUPLICATE INSERTS
+   This checks same user/source/source_id/message/tagged_at
+------------------------------------------------- */
+app.post('/api/notifications/upsert', (req, res) => {
+  const {
+    user_id,
+    tagged_by,
+    source,
+    source_id,
+    title,
+    subtitle,
+    message,
+    tagged_at,
+    meeting_date,
+    link,
+    icon,
+    tagged_users,
+    extra_data
+  } = req.body;
+
+  if (!user_id) {
+    return res.status(400).json({ error: 'user_id is required' });
+  }
+
+  const checkSql = `
+    SELECT id
+    FROM notifications
+    WHERE user_id = ?
+      AND source = ?
+      AND source_id = ?
+      AND message = ?
+      AND (
+        (tagged_at IS NULL AND ? IS NULL)
+        OR tagged_at = ?
+      )
+    LIMIT 1
+  `;
+
+  const checkValues = [
+    user_id,
+    source || null,
+    source_id || null,
+    message || null,
+    tagged_at || null,
+    tagged_at || null
+  ];
+
+  db.query(checkSql, checkValues, (checkErr, checkResults) => {
+    if (checkErr) {
+      console.error('Error checking duplicate notification:', checkErr);
+      return res.status(500).json({ error: 'Duplicate check failed' });
+    }
+
+    if (checkResults.length > 0) {
+      return res.json({
+        message: 'Notification already exists',
+        id: checkResults[0].id,
+        skipped: true
+      });
+    }
+
+    const insertSql = `
+      INSERT INTO notifications (
+        user_id,
+        tagged_by,
+        source,
+        source_id,
+        title,
+        subtitle,
+        message,
+        tagged_at,
+        meeting_date,
+        link,
+        icon,
+        tagged_users,
+        extra_data,
+        is_read
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `;
+
+    const insertValues = [
+      user_id,
+      tagged_by || null,
+      source || null,
+      source_id || null,
+      title || null,
+      subtitle || null,
+      message || null,
+      tagged_at || null,
+      meeting_date || null,
+      link || null,
+      icon || null,
+      tagged_users ? JSON.stringify(tagged_users) : null,
+      extra_data ? JSON.stringify(extra_data) : null
+    ];
+
+    db.query(insertSql, insertValues, (insertErr, result) => {
+      if (insertErr) {
+        console.error('Error inserting notification:', insertErr);
+        return res.status(500).json({ error: 'Failed to insert notification' });
+      }
+
+      res.status(201).json({
+        message: 'Notification inserted successfully',
+        id: result.insertId,
+        skipped: false
+      });
+    });
+  });
+});
+
+
+/* -------------------------------------------------
+   JSON SAFE PARSER
+------------------------------------------------- */
+function safeJsonParse(value, fallback = null) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
 // PATCH: Toggle bookmark flag
 app.patch('/api/race_watchlist/:id/bookmark', (req, res) => {
   const watchlistId = req.params.id;
