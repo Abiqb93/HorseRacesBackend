@@ -5131,6 +5131,8 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
     });
   }
 
+  const cleanTaggedBy = String(taggedBy).trim();
+
   const cleanUsers = [
     ...new Set(
       taggedUsers
@@ -5146,7 +5148,6 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
     });
   }
 
-  const cleanTaggedBy = String(taggedBy).trim();
   const cleanReason = String(reason || "").trim();
   const cleanRaceUrl = String(raceUrl || "").trim();
 
@@ -5202,349 +5203,349 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
   });
 });
 
-// app.get("/api/notifications/tags/:userId", async (req, res) => {
-//   const userId = String(req.params.userId || "").trim();
-//   const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
+app.get("/api/notifications/tags/:userId", async (req, res) => {
+  const userId = String(req.params.userId || "").trim();
+  const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
 
-//   if (!userId) {
-//     return res.status(400).json({ error: "userId is required" });
-//   }
+  if (!userId) {
+    return res.status(400).json({ error: "userId is required" });
+  }
 
-//   const normalizedUser = userId.replace(/^@+/, "").trim().toLowerCase();
+  const normalizedUser = userId.replace(/^@+/, "").trim().toLowerCase();
 
-//   const dbQuery = (sql, params = []) =>
-//     new Promise((resolve, reject) => {
-//       db.query(sql, params, (err, rows) => {
-//         if (err) reject(err);
-//         else resolve(rows || []);
-//       });
-//     });
+  const dbQuery = (sql, params = []) =>
+    new Promise((resolve, reject) => {
+      db.query(sql, params, (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      });
+    });
 
-//   const formatDateOnly = (value) => {
-//     if (!value) return "";
-//     const d = new Date(value);
-//     if (isNaN(d)) return String(value);
-//     const dd = String(d.getDate()).padStart(2, "0");
-//     const mm = String(d.getMonth() + 1).padStart(2, "0");
-//     const yyyy = d.getFullYear();
-//     return `${dd}-${mm}-${yyyy}`;
-//   };
+  const formatDateOnly = (value) => {
+    if (!value) return "";
+    const d = new Date(value);
+    if (isNaN(d)) return String(value);
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    return `${dd}-${mm}-${yyyy}`;
+  };
 
-//   const normalizeUserValue = (value) =>
-//     String(value || "")
-//       .trim()
-//       .replace(/^@+/, "")
-//       .toLowerCase();
+  const normalizeUserValue = (value) =>
+    String(value || "")
+      .trim()
+      .replace(/^@+/, "")
+      .toLowerCase();
 
-//   const safeJsonParse = (value, fallback = null) => {
-//     try {
-//       return JSON.parse(value);
-//     } catch {
-//       return fallback;
-//     }
-//   };
+  const safeJsonParse = (value, fallback = null) => {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return fallback;
+    }
+  };
 
-//   const parseTaggingField = (value) => {
-//     if (!value) return [];
-//     if (Array.isArray(value)) return value;
-//     if (typeof value === "string") {
-//       const trimmed = value.trim();
-//       if (!trimmed) return [];
-//       const parsed = safeJsonParse(trimmed, null);
-//       return Array.isArray(parsed) ? parsed : [];
-//     }
-//     return [];
-//   };
+  const parseTaggingField = (value) => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed) return [];
+      const parsed = safeJsonParse(trimmed, null);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+    return [];
+  };
 
-//   const normalizeTagEntry = (entry = {}) => {
-//     const taggedUsersRaw =
-//       entry.taggedUsers ||
-//       entry.tagged_users ||
-//       entry.users ||
-//       entry.usernames ||
-//       [];
+  const normalizeTagEntry = (entry = {}) => {
+    const taggedUsersRaw =
+      entry.taggedUsers ||
+      entry.tagged_users ||
+      entry.users ||
+      entry.usernames ||
+      [];
 
-//     return {
-//       taggedBy: String(
-//         entry.taggedBy ||
-//           entry.tagged_by ||
-//           entry.userId ||
-//           entry.createdBy ||
-//           ""
-//       ).trim(),
-//       taggedUsers: Array.isArray(taggedUsersRaw)
-//         ? taggedUsersRaw.map((u) => String(u).trim()).filter(Boolean)
-//         : [],
-//       reason: String(
-//         entry.reason ||
-//           entry.tagReason ||
-//           entry.tag_note ||
-//           entry.note ||
-//           entry.notes ||
-//           entry.message ||
-//           ""
-//       ).trim(),
-//       taggedAt:
-//         entry.taggedAt ||
-//         entry.createdAt ||
-//         entry.updatedAt ||
-//         entry.timestamp ||
-//         null,
-//       raceUrl: String(entry.raceUrl || "").trim(),
-//     };
-//   };
+    return {
+      taggedBy: String(
+        entry.taggedBy ||
+          entry.tagged_by ||
+          entry.userId ||
+          entry.createdBy ||
+          ""
+      ).trim(),
+      taggedUsers: Array.isArray(taggedUsersRaw)
+        ? taggedUsersRaw.map((u) => String(u).trim()).filter(Boolean)
+        : [],
+      reason: String(
+        entry.reason ||
+          entry.tagReason ||
+          entry.tag_note ||
+          entry.note ||
+          entry.notes ||
+          entry.message ||
+          ""
+      ).trim(),
+      taggedAt:
+        entry.taggedAt ||
+        entry.createdAt ||
+        entry.updatedAt ||
+        entry.timestamp ||
+        null,
+      raceUrl: String(entry.raceUrl || "").trim(),
+    };
+  };
 
-//   const uniqueBy = (items, getKey) => {
-//     const seen = new Set();
-//     return items.filter((item) => {
-//       const key = getKey(item);
-//       if (seen.has(key)) return false;
-//       seen.add(key);
-//       return true;
-//     });
-//   };
+  const uniqueBy = (items, getKey) => {
+    const seen = new Set();
+    return items.filter((item) => {
+      const key = getKey(item);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
 
-//   try {
-//     const frontendBase = "https://www.blandfordbloodstock.tech/#";
+  try {
+    const frontendBase = "https://www.blandfordbloodstock.tech/#";
 
-//     const racecardsSql = `
-//       SELECT
-//         RaceID,
-//         RaceTitle,
-//         FixtureTrack,
-//         FixtureDate,
-//         RaceTime,
-//         taggedBy,
-//         taggedUser,
-//         tagComments,
-//         taggedAt,
-//         updatedAt,
-//         createdAt,
-//         raceUrl
-//       FROM RacesAndEntries
-//       WHERE taggedUser IS NOT NULL
-//         AND taggedUser <> ''
-//         AND FIND_IN_SET(?, REPLACE(taggedUser, ' ', '')) > 0
-//       ORDER BY COALESCE(taggedAt, updatedAt, createdAt) DESC
-//       LIMIT 200
-//     `;
+    const racecardsSql = `
+      SELECT
+        RaceID,
+        RaceTitle,
+        FixtureTrack,
+        FixtureDate,
+        RaceTime,
+        taggedBy,
+        taggedUser,
+        tagComments,
+        taggedAt,
+        updatedAt,
+        createdAt,
+        raceUrl
+      FROM RacesAndEntries
+      WHERE taggedUser IS NOT NULL
+        AND taggedUser <> ''
+        AND FIND_IN_SET(?, REPLACE(taggedUser, ' ', '')) > 0
+      ORDER BY COALESCE(taggedAt, updatedAt, createdAt) DESC
+      LIMIT 200
+    `;
 
-//     const resultsSql = `
-//       SELECT
-//         meetingDate,
-//         courseName,
-//         raceTitle,
-//         tagging
-//       FROM APIData_Table2
-//       WHERE tagging IS NOT NULL
-//         AND tagging <> ''
-//         AND meetingDate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-//       ORDER BY meetingDate DESC
-//     `;
+    const resultsSql = `
+      SELECT
+        meetingDate,
+        courseName,
+        raceTitle,
+        tagging
+      FROM APIData_Table2
+      WHERE tagging IS NOT NULL
+        AND tagging <> ''
+        AND meetingDate >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+      ORDER BY meetingDate DESC
+    `;
 
-//     const reviewSql = `
-//       SELECT
-//         id,
-//         horseName,
-//         raceTitle,
-//         courseName,
-//         meetingDate,
-//         tagged_users,
-//         updated_at,
-//         created_at
-//       FROM review_horses
-//       WHERE tagged_users IS NOT NULL
-//         AND tagged_users <> ''
-//       ORDER BY COALESCE(updated_at, created_at) DESC
-//       LIMIT 500
-//     `;
+    const reviewSql = `
+      SELECT
+        id,
+        horseName,
+        raceTitle,
+        courseName,
+        meetingDate,
+        tagged_users,
+        updated_at,
+        created_at
+      FROM review_horses
+      WHERE tagged_users IS NOT NULL
+        AND tagged_users <> ''
+      ORDER BY COALESCE(updated_at, created_at) DESC
+      LIMIT 500
+    `;
 
-//     const [racecardsRows, resultsRows, reviewRows] = await Promise.all([
-//       dbQuery(racecardsSql, [normalizedUser]),
-//       dbQuery(resultsSql),
-//       dbQuery(reviewSql),
-//     ]);
+    const [racecardsRows, resultsRows, reviewRows] = await Promise.all([
+      dbQuery(racecardsSql, [normalizedUser]),
+      dbQuery(resultsSql),
+      dbQuery(reviewSql),
+    ]);
 
-//     const racecardNotifications = [];
-//     for (const row of racecardsRows) {
-//       const taggedUsers = String(row.taggedUser || "")
-//         .split(",")
-//         .map((v) => v.trim())
-//         .filter(Boolean);
+    const racecardNotifications = [];
+    for (const row of racecardsRows) {
+      const taggedUsers = String(row.taggedUser || "")
+        .split(",")
+        .map((v) => v.trim())
+        .filter(Boolean);
 
-//       const link =
-//         String(row.raceUrl || "").trim() ||
-//         `${frontendBase}/dashboard/racedetails?${new URLSearchParams({
-//           url: "https://horseracesbackend-production.up.railway.app/api/RacesAndEntries",
-//           RaceTitle: row.RaceTitle || "",
-//           FixtureDate: row.FixtureDate || "",
-//           FixtureTrack: row.FixtureTrack || "",
-//           RaceTime: row.RaceTime || "",
-//         }).toString()}`;
+      const link =
+        String(row.raceUrl || "").trim() ||
+        `${frontendBase}/dashboard/racedetails?${new URLSearchParams({
+          url: "https://horseracesbackend-production.up.railway.app/api/RacesAndEntries",
+          RaceTitle: row.RaceTitle || "",
+          FixtureDate: row.FixtureDate || "",
+          FixtureTrack: row.FixtureTrack || "",
+          RaceTime: row.RaceTime || "",
+        }).toString()}`;
 
-//       const signature = [
-//         "racecards",
-//         row.RaceID || "",
-//         normalizeUserValue(row.taggedBy),
-//         taggedUsers.map(normalizeUserValue).sort().join("|"),
-//         String(row.tagComments || "").trim(),
-//         String(row.taggedAt || row.updatedAt || row.createdAt || "").trim(),
-//       ].join("::");
+      const signature = [
+        "racecards",
+        row.RaceID || "",
+        normalizeUserValue(row.taggedBy),
+        taggedUsers.map(normalizeUserValue).sort().join("|"),
+        String(row.tagComments || "").trim(),
+        String(row.taggedAt || row.updatedAt || row.createdAt || "").trim(),
+      ].join("::");
 
-//       racecardNotifications.push({
-//         id: signature,
-//         source: "RacesAndEntries",
-//         sourceLabel: "Racecards",
-//         title: row.RaceTitle || "Tagged racecard",
-//         subtitle: [row.FixtureTrack, row.RaceTime].filter(Boolean).join(" • "),
-//         message: row.tagComments || "You were tagged on a racecard.",
-//         taggedBy: row.taggedBy || "Unknown",
-//         taggedUsers,
-//         taggedAt: row.taggedAt || row.updatedAt || row.createdAt || null,
-//         meetingDate: row.FixtureDate || null,
-//         link,
-//         icon: "flag",
-//       });
-//     }
+      racecardNotifications.push({
+        id: signature,
+        source: "RacesAndEntries",
+        sourceLabel: "Racecards",
+        title: row.RaceTitle || "Tagged racecard",
+        subtitle: [row.FixtureTrack, row.RaceTime].filter(Boolean).join(" • "),
+        message: row.tagComments || "You were tagged on a racecard.",
+        taggedBy: row.taggedBy || "Unknown",
+        taggedUsers,
+        taggedAt: row.taggedAt || row.updatedAt || row.createdAt || null,
+        meetingDate: row.FixtureDate || null,
+        link,
+        icon: "flag",
+      });
+    }
 
-//     const resultsMap = new Map();
+    const resultsMap = new Map();
 
-//     for (const row of resultsRows) {
-//       const key = [
-//         row?.meetingDate || "",
-//         row?.courseName || "",
-//         row?.raceTitle || "",
-//       ].join("__");
+    for (const row of resultsRows) {
+      const key = [
+        row?.meetingDate || "",
+        row?.courseName || "",
+        row?.raceTitle || "",
+      ].join("__");
 
-//       if (!resultsMap.has(key)) {
-//         resultsMap.set(key, []);
-//       }
-//       resultsMap.get(key).push(row);
-//     }
+      if (!resultsMap.has(key)) {
+        resultsMap.set(key, []);
+      }
+      resultsMap.get(key).push(row);
+    }
 
-//     const resultNotifications = [];
+    const resultNotifications = [];
 
-//     for (const [groupKey, records] of resultsMap.entries()) {
-//       const meta = records[0] || {};
-//       const allTags = records.flatMap((r) =>
-//         parseTaggingField(r?.tagging).map(normalizeTagEntry)
-//       );
+    for (const [groupKey, records] of resultsMap.entries()) {
+      const meta = records[0] || {};
+      const allTags = records.flatMap((r) =>
+        parseTaggingField(r?.tagging).map(normalizeTagEntry)
+      );
 
-//       const matched = allTags.filter((entry) =>
-//         (entry.taggedUsers || []).some(
-//           (u) => normalizeUserValue(u) === normalizedUser
-//         )
-//       );
+      const matched = allTags.filter((entry) =>
+        (entry.taggedUsers || []).some(
+          (u) => normalizeUserValue(u) === normalizedUser
+        )
+      );
 
-//       if (!matched.length) continue;
+      if (!matched.length) continue;
 
-//       for (let i = 0; i < matched.length; i++) {
-//         const entry = matched[i];
+      for (let i = 0; i < matched.length; i++) {
+        const entry = matched[i];
 
-//         const link =
-//           entry.raceUrl ||
-//           `${frontendBase}/dashboard/racedetails?${new URLSearchParams({
-//             url: "https://horseracesbackend-production.up.railway.app/api/APIData_Table2",
-//             RaceTitle: meta.raceTitle || "",
-//             meetingDate: meta.meetingDate
-//               ? new Date(meta.meetingDate).toISOString().slice(0, 10)
-//               : "",
-//           }).toString()}`;
+        const link =
+          entry.raceUrl ||
+          `${frontendBase}/dashboard/racedetails?${new URLSearchParams({
+            url: "https://horseracesbackend-production.up.railway.app/api/APIData_Table2",
+            RaceTitle: meta.raceTitle || "",
+            meetingDate: meta.meetingDate
+              ? new Date(meta.meetingDate).toISOString().slice(0, 10)
+              : "",
+          }).toString()}`;
 
-//         const signature = [
-//           "results",
-//           groupKey,
-//           normalizeUserValue(entry.taggedBy),
-//           (entry.taggedUsers || []).map(normalizeUserValue).sort().join("|"),
-//           entry.reason,
-//           String(entry.taggedAt || ""),
-//           i,
-//         ].join("::");
+        const signature = [
+          "results",
+          groupKey,
+          normalizeUserValue(entry.taggedBy),
+          (entry.taggedUsers || []).map(normalizeUserValue).sort().join("|"),
+          entry.reason,
+          String(entry.taggedAt || ""),
+          i,
+        ].join("::");
 
-//         resultNotifications.push({
-//           id: signature,
-//           source: "APIData_Table2",
-//           sourceLabel: "Results",
-//           title: meta.raceTitle || "Tagged result",
-//           subtitle: [meta.courseName, formatDateOnly(meta.meetingDate)]
-//             .filter(Boolean)
-//             .join(" • "),
-//           message: entry.reason || "You were tagged on a result entry.",
-//           taggedBy: entry.taggedBy || "Unknown",
-//           taggedUsers: entry.taggedUsers || [],
-//           taggedAt: entry.taggedAt || null,
-//           meetingDate: meta.meetingDate || null,
-//           link,
-//           icon: "trophy",
-//         });
-//       }
-//     }
+        resultNotifications.push({
+          id: signature,
+          source: "APIData_Table2",
+          sourceLabel: "Results",
+          title: meta.raceTitle || "Tagged result",
+          subtitle: [meta.courseName, formatDateOnly(meta.meetingDate)]
+            .filter(Boolean)
+            .join(" • "),
+          message: entry.reason || "You were tagged on a result entry.",
+          taggedBy: entry.taggedBy || "Unknown",
+          taggedUsers: entry.taggedUsers || [],
+          taggedAt: entry.taggedAt || null,
+          meetingDate: meta.meetingDate || null,
+          link,
+          icon: "trophy",
+        });
+      }
+    }
 
-//     const reviewNotifications = [];
+    const reviewNotifications = [];
 
-//     for (const row of reviewRows) {
-//       const entries = parseTaggingField(row?.tagged_users).map(normalizeTagEntry);
-//       const matched = entries.filter((entry) =>
-//         (entry.taggedUsers || []).some(
-//           (u) => normalizeUserValue(u) === normalizedUser
-//         )
-//       );
+    for (const row of reviewRows) {
+      const entries = parseTaggingField(row?.tagged_users).map(normalizeTagEntry);
+      const matched = entries.filter((entry) =>
+        (entry.taggedUsers || []).some(
+          (u) => normalizeUserValue(u) === normalizedUser
+        )
+      );
 
-//       if (!matched.length) continue;
+      if (!matched.length) continue;
 
-//       matched.forEach((entry, tagIndex) => {
-//         const signature = [
-//           "review",
-//           row?.id || row?.horseName || "",
-//           normalizeUserValue(entry.taggedBy),
-//           (entry.taggedUsers || []).map(normalizeUserValue).sort().join("|"),
-//           entry.reason,
-//           String(entry.taggedAt || row?.updated_at || row?.created_at || ""),
-//           tagIndex,
-//         ].join("::");
+      matched.forEach((entry, tagIndex) => {
+        const signature = [
+          "review",
+          row?.id || row?.horseName || "",
+          normalizeUserValue(entry.taggedBy),
+          (entry.taggedUsers || []).map(normalizeUserValue).sort().join("|"),
+          entry.reason,
+          String(entry.taggedAt || row?.updated_at || row?.created_at || ""),
+          tagIndex,
+        ].join("::");
 
-//         reviewNotifications.push({
-//           id: signature,
-//           source: "review_horses",
-//           sourceLabel: "Review List",
-//           title: row?.horseName ? `${row.horseName}` : "Tagged review horse",
-//           subtitle: [row?.raceTitle, row?.courseName].filter(Boolean).join(" • "),
-//           message: entry.reason || "You were tagged on a review list entry.",
-//           taggedBy: entry.taggedBy || "Unknown",
-//           taggedUsers: entry.taggedUsers || [],
-//           taggedAt: entry.taggedAt || row?.updated_at || row?.created_at || null,
-//           meetingDate: row?.meetingDate || null,
-//           link: row?.horseName
-//             ? `/dashboard/horse/${encodeURIComponent(String(row.horseName).trim())}`
-//             : null,
-//           icon: "clipboard",
-//         });
-//       });
-//     }
+        reviewNotifications.push({
+          id: signature,
+          source: "review_horses",
+          sourceLabel: "Review List",
+          title: row?.horseName ? `${row.horseName}` : "Tagged review horse",
+          subtitle: [row?.raceTitle, row?.courseName].filter(Boolean).join(" • "),
+          message: entry.reason || "You were tagged on a review list entry.",
+          taggedBy: entry.taggedBy || "Unknown",
+          taggedUsers: entry.taggedUsers || [],
+          taggedAt: entry.taggedAt || row?.updated_at || row?.created_at || null,
+          meetingDate: row?.meetingDate || null,
+          link: row?.horseName
+            ? `/dashboard/horse/${encodeURIComponent(String(row.horseName).trim())}`
+            : null,
+          icon: "clipboard",
+        });
+      });
+    }
 
-//     const combined = uniqueBy(
-//       [...racecardNotifications, ...resultNotifications, ...reviewNotifications],
-//       (item) => item.id
-//     )
-//       .sort((a, b) => {
-//         const ta = a.taggedAt ? new Date(a.taggedAt).getTime() : 0;
-//         const tb = b.taggedAt ? new Date(b.taggedAt).getTime() : 0;
-//         return tb - ta;
-//       })
-//       .slice(0, limit);
+    const combined = uniqueBy(
+      [...racecardNotifications, ...resultNotifications, ...reviewNotifications],
+      (item) => item.id
+    )
+      .sort((a, b) => {
+        const ta = a.taggedAt ? new Date(a.taggedAt).getTime() : 0;
+        const tb = b.taggedAt ? new Date(b.taggedAt).getTime() : 0;
+        return tb - ta;
+      })
+      .slice(0, limit);
 
-//     return res.json({
-//       data: combined,
-//       count: combined.length,
-//     });
-//   } catch (err) {
-//     console.error("❌ Error loading notifications:", err);
-//     return res.status(500).json({
-//       error: "Failed to load notifications",
-//       details: err.message,
-//     });
-//   }
-// });
+    return res.json({
+      data: combined,
+      count: combined.length,
+    });
+  } catch (err) {
+    console.error("❌ Error loading notifications:", err);
+    return res.status(500).json({
+      error: "Failed to load notifications",
+      details: err.message,
+    });
+  }
+});
 
 
 app.patch("/api/horseTracking/:horseName/dslr-review", (req, res) => {
