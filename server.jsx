@@ -5150,6 +5150,10 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
 
   const cleanReason = String(reason || "").trim();
   const cleanRaceUrl = String(raceUrl || "").trim();
+  const cleanFixtureDate = String(fixtureDate).trim();
+  const cleanFixtureTrack = String(fixtureTrack).trim();
+  const cleanRaceTitle = String(raceTitle).trim();
+  const cleanRaceTime = String(raceTime || "").trim();
 
   let sql = `
     UPDATE RacesAndEntries
@@ -5164,15 +5168,18 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
     cleanUsers.join(", "),
     cleanReason,
     cleanRaceUrl,
-    raceTitle,
-    fixtureDate,
-    fixtureTrack,
+    cleanRaceTitle,
+    cleanFixtureDate,
+    cleanFixtureTrack,
   ];
 
-  if (raceTime) {
+  if (cleanRaceTime) {
     sql += ` AND RaceTime = ?`;
-    params.push(raceTime);
+    params.push(cleanRaceTime);
   }
+
+  console.log("TAG SQL:", sql);
+  console.log("TAG PARAMS:", params);
 
   db.query(sql, params, (err, result) => {
     if (err) {
