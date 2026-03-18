@@ -5107,7 +5107,7 @@ app.patch('/api/APIData_Table2/race/tags', (req, res) => {
   );
 });
 
-app.patch('/api/RacesAndEntries/tag', (req, res) => {
+app.patch("/api/RacesAndEntries/tag", (req, res) => {
   const {
     taggedBy,
     taggedUsers,
@@ -5117,151 +5117,90 @@ app.patch('/api/RacesAndEntries/tag', (req, res) => {
     fixtureTrack,
     raceTime,
     raceUrl,
-  } = req.body;
+  } = req.body || {};
+
+  if (!raceTitle || !fixtureDate || !fixtureTrack) {
+    return res.status(400).json({
+      error: "raceTitle, fixtureDate and fixtureTrack are required",
+    });
+  }
 
   if (!taggedBy || !Array.isArray(taggedUsers) || taggedUsers.length === 0) {
     return res.status(400).json({
-      error: 'taggedBy and taggedUsers are required',
+      error: "taggedBy and taggedUsers are required",
     });
   }
 
-  if (!raceTitle || !fixtureDate || !fixtureTrack || !raceTime) {
+  const cleanUsers = [
+    ...new Set(
+      taggedUsers
+        .filter((u) => typeof u === "string")
+        .map((u) => u.trim())
+        .filter(Boolean)
+    ),
+  ];
+
+  if (!cleanTaggedBy || cleanUsers.length === 0) {
     return res.status(400).json({
-      error: 'raceTitle, fixtureDate, fixtureTrack, and raceTime are required',
+      error: "No valid tagged users provided",
     });
   }
 
-  const normalizedTaggedUsers = [...new Set(
-    taggedUsers
-      .map((u) => String(u || '').trim())
-      .filter(Boolean)
-  )];
+  const cleanTaggedBy = String(taggedBy).trim();
+  const cleanReason = String(reason || "").trim();
+  const cleanRaceUrl = String(raceUrl || "").trim();
 
-  const taggedUserString = normalizedTaggedUsers.join(', ');
-  const now = new Date();
-
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, '0');
-  const dd = String(now.getDate()).padStart(2, '0');
-  const hh = String(now.getHours()).padStart(2, '0');
-  const mi = String(now.getMinutes()).padStart(2, '0');
-  const ss = String(now.getSeconds()).padStart(2, '0');
-
-  const taggedAt = `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
-
-  const updateRaceSql = `
+  let sql = `
     UPDATE RacesAndEntries
-    SET
-      taggedBy = ?,
-      taggedUser = ?,
-      tagComments = ?,
-      taggedAt = ?,
-      raceUrl = ?
+    SET taggedBy = ?, taggedUser = ?, tagComments = ?, raceUrl = ?
     WHERE RaceTitle = ?
       AND FixtureDate = ?
       AND FixtureTrack = ?
-      AND RaceTime = ?
   `;
 
-  const updateRaceValues = [
-    taggedBy,
-    taggedUserString,
-    reason || '',
-    taggedAt,
-    raceUrl || null,
+  const params = [
+    cleanTaggedBy,
+    cleanUsers.join(", "),
+    cleanReason,
+    cleanRaceUrl,
     raceTitle,
     fixtureDate,
     fixtureTrack,
-    raceTime,
   ];
 
-  db.query(updateRaceSql, updateRaceValues, (updateErr, updateResult) => {
-    if (updateErr) {
-      console.error('Error updating RacesAndEntries tag fields:', updateErr);
+  if (raceTime) {
+    sql += ` AND RaceTime = ?`;
+    params.push(raceTime);
+  }
+
+  db.query(sql, params, (err, result) => {
+    if (err) {
+      console.error("❌ Error updating RacesAndEntries tag:", err);
       return res.status(500).json({
-        error: 'Failed to update race tagging information',
+        error: "Database update failed",
+        details: err.message,
       });
     }
 
-    if (updateResult.affectedRows === 0) {
+    if (result.affectedRows === 0) {
       return res.status(404).json({
-        error: 'Race not found in RacesAndEntries',
+        error: "Race row not found",
       });
     }
 
-    const sourceId = `${raceTitle}__${fixtureDate}__${fixtureTrack}__${raceTime}`;
-    const title = raceTitle || 'Tagged racecard';
-    const subtitle = [fixtureTrack, raceTime].filter(Boolean).join(' • ');
-    const message = reason || 'You were tagged on a racecard.';
-    const meetingDate = fixtureDate || null;
-    const icon = 'flag';
-    const source = 'RacesAndEntries';
-
-    const notificationRows = normalizedTaggedUsers.map((userId) => [
-      userId,
-      taggedBy,
-      source,
-      sourceId,
-      title,
-      subtitle,
-      message,
-      taggedAt,
-      meetingDate,
-      raceUrl || null,
-      icon,
-      JSON.stringify(normalizedTaggedUsers),
-      JSON.stringify({
-        raceTitle,
-        fixtureDate,
-        fixtureTrack,
-        raceTime,
-        raceUrl: raceUrl || null,
-      }),
-      0,
-    ]);
-
-    const insertNotificationsSql = `
-      INSERT INTO notifications (
-        user_id,
-        tagged_by,
-        source,
-        source_id,
-        title,
-        subtitle,
-        message,
-        tagged_at,
-        meeting_date,
-        link,
-        icon,
-        tagged_users,
-        extra_data,
-        is_read
-      )
-      VALUES ?
-    `;
-
-    db.query(insertNotificationsSql, [notificationRows], (insertErr) => {
-      if (insertErr) {
-        console.error('Error inserting notifications:', insertErr);
-        return res.status(500).json({
-          error: 'Race updated, but failed to insert notifications',
-        });
-      }
-
-      return res.json({
-        message: 'Tag saved and notifications created successfully',
-        tagged: {
-          taggedBy,
-          taggedUsers: normalizedTaggedUsers,
-          reason: reason || '',
-          raceUrl: raceUrl || null,
-          taggedAt,
-        },
-      });
+    return res.json({
+      message: "Tag saved successfully",
+      tagged: {
+        taggedBy: cleanTaggedBy,
+        taggedUsers: cleanUsers,
+        reason: cleanReason,
+        raceUrl: cleanRaceUrl,
+        taggedAt: new Date().toISOString().slice(0, 19).replace("T", " "),
+      },
+      updatedRows: result.affectedRows,
     });
   });
 });
-
 
 app.get("/api/notifications/tags/:userId", async (req, res) => {
   const userId = String(req.params.userId || "").trim();
