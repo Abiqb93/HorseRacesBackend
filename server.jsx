@@ -5157,13 +5157,8 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
     fixtureTrack,
     raceTime,
     raceUrl,
+    raceId,
   } = req.body || {};
-
-  if (!raceTitle || !fixtureDate || !fixtureTrack) {
-    return res.status(400).json({
-      error: "raceTitle, fixtureDate and fixtureTrack are required",
-    });
-  }
 
   if (!taggedBy || !Array.isArray(taggedUsers) || taggedUsers.length === 0) {
     return res.status(400).json({
@@ -5171,13 +5166,13 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
     });
   }
 
-  const cleanTaggedBy = safeTrim(taggedBy);
+  const cleanTaggedBy = String(taggedBy || "").trim();
 
   const cleanUsers = [
     ...new Set(
       taggedUsers
         .filter((u) => typeof u === "string")
-        .map((u) => safeTrim(u))
+        .map((u) => String(u).trim())
         .filter(Boolean)
     ),
   ];
@@ -5188,40 +5183,62 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
     });
   }
 
-  const cleanReason = safeTrim(reason);
-  const cleanRaceUrl = safeTrim(raceUrl);
-  const cleanRaceTitle = safeTrim(raceTitle);
-  const cleanFixtureTrack = safeTrim(fixtureTrack);
-  const cleanFixtureDate = normalizeDateToMySQL(fixtureDate);
-  const cleanRaceTime = safeTrim(raceTime);
+  const cleanReason = String(reason || "").trim();
+  const cleanRaceUrl = String(raceUrl || "").trim();
+  const cleanRaceId = String(raceId || "").trim();
 
-  if (!cleanFixtureDate) {
-    return res.status(400).json({
-      error: "Invalid fixtureDate format",
-    });
-  }
+  let sql = "";
+  let params = [];
 
-  let sql = `
-    UPDATE RacesAndEntries
-    SET taggedBy = ?, taggedUser = ?, tagComments = ?, raceUrl = ?
-    WHERE RaceTitle = ?
-      AND FixtureDate = ?
-      AND FixtureTrack = ?
-  `;
+  // Prefer RaceID if available
+  if (cleanRaceId) {
+    sql = `
+      UPDATE RacesAndEntries
+      SET taggedBy = ?, taggedUser = ?, tagComments = ?, raceUrl = ?
+      WHERE RaceID = ?
+    `;
 
-  const params = [
-    cleanTaggedBy,
-    cleanUsers.join(", "),
-    cleanReason,
-    cleanRaceUrl,
-    cleanRaceTitle,
-    cleanFixtureDate,
-    cleanFixtureTrack,
-  ];
+    params = [
+      cleanTaggedBy,
+      cleanUsers.join(", "),
+      cleanReason,
+      cleanRaceUrl,
+      cleanRaceId,
+    ];
+  } else {
+    if (!raceTitle || !fixtureDate || !fixtureTrack) {
+      return res.status(400).json({
+        error: "raceId or (raceTitle, fixtureDate, fixtureTrack) is required",
+      });
+    }
 
-  if (cleanRaceTime) {
-    sql += ` AND RaceTime = ?`;
-    params.push(cleanRaceTime);
+    const cleanRaceTitle = String(raceTitle || "").trim();
+    const cleanFixtureDate = String(fixtureDate || "").trim();
+    const cleanFixtureTrack = String(fixtureTrack || "").trim();
+    const cleanRaceTime = String(raceTime || "").trim();
+
+    sql = `
+      UPDATE RacesAndEntries
+      SET taggedBy = ?, taggedUser = ?, tagComments = ?, raceUrl = ?
+      WHERE TRIM(RaceTitle) = ?
+        AND DATE(FixtureDate) = DATE(?)
+        AND TRIM(FixtureTrack) = ?
+    `;
+
+    params = [
+      cleanTaggedBy,
+      cleanUsers.join(", "),
+      cleanReason,
+      cleanRaceUrl,
+      cleanRaceTitle,
+      cleanFixtureDate,
+      cleanFixtureTrack,
+    ];
+
+    if (cleanRaceTime) {
+      sql += ` AND TRIM(RaceTime) = ?`;
+      params.push(cleanRaceTime);
+    }
   }
 
   console.log("TAG UPDATE SQL:", sql);
@@ -5239,6 +5256,13 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
     if (result.affectedRows === 0) {
       return res.status(404).json({
         error: "Race row not found",
+        debug: {
+          raceId: cleanRaceId || null,
+          raceTitle: raceTitle || null,
+          fixtureDate: fixtureDate || null,
+          fixtureTrack: fixtureTrack || null,
+          raceTime: raceTime || null,
+        },
       });
     }
 
