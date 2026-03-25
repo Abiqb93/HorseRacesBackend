@@ -1046,6 +1046,55 @@ app.get("/api/reports/report_female_under90_damvalue_owners_filtered", (req, res
 
 
 
+app.get("/api/reports/potential_stallions", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+
+  const query = `
+    SELECT
+      r.horseName,
+      r.sireName,
+      r.damName,
+      r.Runs,
+      r.Total_Wins,
+      r.\`Win_%\`,
+      r.Group_Wins,
+      r.Group1_Wins,
+      r.Stakes_Wins,
+      r.Avg_Rating,
+      r.PrizeMoney,
+      r.Sire_Horses,
+      r.Sire_GroupWinners
+    FROM report_potential_stallions r
+    ORDER BY
+      r.Group1_Wins DESC,
+      r.Group_Wins DESC,
+      r.Stakes_Wins DESC,
+      r.Avg_Rating DESC,
+      r.PrizeMoney DESC,
+      r.Total_Wins DESC,
+      r.Runs DESC
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching potential_stallions report:", err);
+      return res.status(500).json({
+        error: "Database error",
+        details: err.message,
+      });
+    }
+
+    if (!results || results.length === 0) {
+      return res.status(200).json({
+        data: [],
+        message: "No Data Found",
+      });
+    }
+
+    return res.status(200).json({ data: results });
+  });
+});
+
 app.get("/api/attheraces/:time/:racename/:date", (req, res) => {
   const raceTime = req.params.time;       // e.g., "14:40"
   const raceName = req.params.racename;   // e.g., "Southwell"
