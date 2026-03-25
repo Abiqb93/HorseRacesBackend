@@ -60,7 +60,7 @@ const validTables = [
   'sire_going_unknown', 'sire_going_firm', 'sire_going_good_firm', 'sire_going_good', 'sire_going_heavy', 'sire_going_soft', 'sire_uplift', 'ClosingEntries',
   'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
   'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion', 'StrideParsPercentilesPerTrack', 
-  'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift', 'foalSale_Dashboard', 'foalSale_Pedigree', 'foalSale_StallionStats', 'foalSale_Sales', 'foalSale_StudFeeAnalysis', 'jockey_tracking'
+  'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift', 'foalSale_Dashboard', 'foalSale_Pedigree', 'foalSale_StallionStats', 'foalSale_Sales', 'foalSale_StudFeeAnalysis', 'jockey_tracking', 'report_potential_stallions'
 ];
 
 
@@ -1056,7 +1056,7 @@ app.get("/api/reports/potential_stallions", (req, res) => {
       r.damName,
       r.Runs,
       r.Total_Wins,
-      r.\`Win_%\`,
+      r.Win_Percent AS \`Win_%\`,
       r.Group_Wins,
       r.Group1_Wins,
       r.Stakes_Wins,
@@ -1085,10 +1085,7 @@ app.get("/api/reports/potential_stallions", (req, res) => {
     }
 
     if (!results || results.length === 0) {
-      return res.status(200).json({
-        data: [],
-        message: "No Data Found",
-      });
+      return res.status(200).json({ data: [], message: "No Data Found" });
     }
 
     return res.status(200).json({ data: results });
