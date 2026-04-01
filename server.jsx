@@ -1060,7 +1060,8 @@ app.get("/api/reports/potential_stallions", (req, res) => {
       r.Group_Wins,
       r.Group1_Wins,
       r.Stakes_Wins,
-      r.Avg_Rating,
+      r.Max_Rating,
+      r.Last_Rating,
       r.PrizeMoney,
       r.Sire_Horses,
       r.Sire_GroupWinners
@@ -1069,7 +1070,8 @@ app.get("/api/reports/potential_stallions", (req, res) => {
       r.Group1_Wins DESC,
       r.Group_Wins DESC,
       r.Stakes_Wins DESC,
-      r.Avg_Rating DESC,
+      r.Max_Rating DESC,
+      r.Last_Rating DESC,
       r.PrizeMoney DESC,
       r.Total_Wins DESC,
       r.Runs DESC
