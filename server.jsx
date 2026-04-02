@@ -1062,9 +1062,7 @@ app.get("/api/reports/potential_stallions", (req, res) => {
       r.Stakes_Wins,
       r.Max_Rating,
       r.Last_Rating,
-      r.PrizeMoney,
-      r.Sire_Horses,
-      r.Sire_GroupWinners
+      r.PrizeMoney
     FROM report_potential_stallions r
     ORDER BY
       r.Group1_Wins DESC,
