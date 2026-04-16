@@ -1284,13 +1284,14 @@ app.get("/api/stride/meeting/:course/:dateUK", (req, res) => {
   });
 });
 
+// Put THIS FIRST
 app.get("/api/racingtv/race/:track/:date", (req, res) => {
-  const track = req.params.track; // e.g. "lingfield-park"
-  const raceDate = req.params.date; // e.g. "2025-01-15"
+  const track = String(req.params.track || "").trim().toLowerCase();
+  const raceDate = String(req.params.date || "").trim();
 
   const query = `
     SELECT * FROM racingtv
-    WHERE Track = ? AND Date = ?
+    WHERE LOWER(Track) = ? AND Date = ?
   `;
 
   db.query(query, [track, raceDate], (err, results) => {
@@ -1299,22 +1300,25 @@ app.get("/api/racingtv/race/:track/:date", (req, res) => {
       return res.status(500).json({ error: "Database error" });
     }
 
-    if (results.length === 0) {
-      return res.status(200).json({ data: [], message: "No RacingTV Race Data Found" });
+    if (!results || results.length === 0) {
+      return res.status(200).json({
+        data: [],
+        message: "No RacingTV Race Data Found",
+        debug: { track, raceDate }
+      });
     }
 
     res.status(200).json({ data: results });
   });
 });
 
-
-
+// Put the horse route AFTER the /race route
 app.get("/api/racingtv/:horseName", (req, res) => {
-  const horseName = req.params.horseName;
+  const horseName = String(req.params.horseName || "").trim().toLowerCase();
 
   const query = `
     SELECT * FROM racingtv
-    WHERE horseName = ?
+    WHERE LOWER(horseName) = ?
   `;
 
   db.query(query, [horseName], (err, results) => {
@@ -1323,14 +1327,13 @@ app.get("/api/racingtv/:horseName", (req, res) => {
       return res.status(500).json({ error: "Database error" });
     }
 
-    if (results.length === 0) {
+    if (!results || results.length === 0) {
       return res.status(200).json({ data: [], message: "No RacingTV Data Found" });
     }
 
     res.status(200).json({ data: results });
   });
 });
-
 
 
 app.get("/api/racingtv/url/:raceUrl", (req, res) => {
