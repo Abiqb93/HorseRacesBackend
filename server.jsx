@@ -1092,17 +1092,16 @@ app.get("/api/reports/potential_stallions", (req, res) => {
   });
 });
 
-app.get("/api/attheraces/:time/:racename/:date", (req, res) => {
-  const raceTime = req.params.time;       // e.g., "14:40"
-  const raceName = req.params.racename;   // e.g., "Southwell"
-  const raceDate = req.params.date;       // e.g., "09-06-2025"
+app.get("/api/attheraces/:racename/:date", (req, res) => {
+  const raceName = req.params.racename; // e.g. "Newcastle"
+  const raceDate = req.params.date;     // e.g. "31-01-2026"
 
   const query = `
     SELECT * FROM attheraces
-    WHERE Time = ? AND Racename = ? AND Date = ?
+    WHERE Racename = ? AND Date = ?
   `;
 
-  db.query(query, [raceTime, raceName, raceDate], (err, results) => {
+  db.query(query, [raceName, raceDate], (err, results) => {
     if (err) {
       console.error("Error fetching race data:", err);
       return res.status(500).json({ error: "Database error" });
@@ -1115,6 +1114,7 @@ app.get("/api/attheraces/:time/:racename/:date", (req, res) => {
     res.status(200).json({ data: results });
   });
 });
+
 
 // GET /api/pars/:racename
 app.get("/api/pars/:racename", (req, res) => {
