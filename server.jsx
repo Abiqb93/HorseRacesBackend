@@ -1284,6 +1284,30 @@ app.get("/api/stride/meeting/:course/:dateUK", (req, res) => {
   });
 });
 
+app.get("/api/racingtv/race/:track/:date", (req, res) => {
+  const track = req.params.track; // e.g. "lingfield-park"
+  const raceDate = req.params.date; // e.g. "2025-01-15"
+
+  const query = `
+    SELECT * FROM racingtv
+    WHERE Track = ? AND Date = ?
+  `;
+
+  db.query(query, [track, raceDate], (err, results) => {
+    if (err) {
+      console.error("❌ Error fetching RacingTV race data:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    if (results.length === 0) {
+      return res.status(200).json({ data: [], message: "No RacingTV Race Data Found" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
 
 app.get("/api/racingtv/:horseName", (req, res) => {
   const horseName = req.params.horseName;
@@ -1308,28 +1332,6 @@ app.get("/api/racingtv/:horseName", (req, res) => {
 });
 
 
-app.get("/api/racingtv/race/:track/:date", (req, res) => {
-  const track = req.params.track; // e.g. "lingfield-park"
-  const raceDate = req.params.date; // e.g. "2025-01-15"
-
-  const query = `
-    SELECT * FROM racingtv
-    WHERE Track = ? AND Date = ?
-  `;
-
-  db.query(query, [track, raceDate], (err, results) => {
-    if (err) {
-      console.error("❌ Error fetching RacingTV race data:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
-
-    if (results.length === 0) {
-      return res.status(200).json({ data: [], message: "No RacingTV Race Data Found" });
-    }
-
-    res.status(200).json({ data: results });
-  });
-});
 
 app.get("/api/racingtv/url/:raceUrl", (req, res) => {
   const raceUrl = req.params.raceUrl;
