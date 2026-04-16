@@ -1289,9 +1289,17 @@ app.get("/api/racingtv/race/:track/:date", (req, res) => {
   const track = String(req.params.track || "").trim().toLowerCase();
   const raceDate = String(req.params.date || "").trim();
 
+  if (!track || !raceDate) {
+    return res.status(400).json({
+      error: "Track and date are required",
+      debug: { track, raceDate },
+    });
+  }
+
   const query = `
-    SELECT * FROM racingtv
-    WHERE LOWER(Track) = ? AND Date = ?
+    SELECT *
+    FROM racingtv
+    WHERE Track = ? AND Date = ?
   `;
 
   db.query(query, [track, raceDate], (err, results) => {
@@ -1304,7 +1312,7 @@ app.get("/api/racingtv/race/:track/:date", (req, res) => {
       return res.status(200).json({
         data: [],
         message: "No RacingTV Race Data Found",
-        debug: { track, raceDate }
+        debug: { track, raceDate },
       });
     }
 
