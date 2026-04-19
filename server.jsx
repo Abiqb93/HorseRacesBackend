@@ -1299,7 +1299,7 @@ app.get("/api/racingtv/race/:track/:date", (req, res) => {
   const query = `
     SELECT *
     FROM racingtv
-    WHERE Track = ? AND Date = ?
+    WHERE Track = ? AND Date_fromURL = ?
   `;
 
   db.query(query, [track, raceDate], (err, results) => {
