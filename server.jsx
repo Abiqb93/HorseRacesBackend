@@ -1092,23 +1092,23 @@ app.get("/api/reports/potential_stallions", (req, res) => {
   });
 });
 
-app.get("/api/attheraces/:racename/:horseName", (req, res) => {
-  const raceName = req.params.racename;
-  const horseName = req.params.horseName;
+app.get("/api/attheraces/:racename/:date", (req, res) => {
+  const raceName = req.params.racename; // e.g. "Newcastle"
+  const raceDate = req.params.date;     // e.g. "31-01-2026"
 
   const query = `
     SELECT * FROM attheraces
-    WHERE Racename = ? AND horseName = ?
+    WHERE Racename = ? AND Date = ?
   `;
 
-  db.query(query, [raceName, horseName], (err, results) => {
+  db.query(query, [raceName, raceDate], (err, results) => {
     if (err) {
-      console.error("Error fetching attheraces data:", err);
+      console.error("Error fetching race data:", err);
       return res.status(500).json({ error: "Database error" });
     }
 
     if (results.length === 0) {
-      return res.status(200).json({ data: [], message: "No Record Found" });
+      return res.status(200).json({ data: [], message: "No Race Found" });
     }
 
     res.status(200).json({ data: results });
