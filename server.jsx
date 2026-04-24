@@ -2198,6 +2198,34 @@ app.get('/api/APIData_Table2/horse', (req, res) => {
 });
 
 
+app.get('/api/entries_timeform/horse', (req, res) => {
+  const { horseName } = req.query;
+
+  if (!horseName) {
+    return res.status(400).json({ error: "Missing required query parameter: horseName" });
+  }
+
+  const startTime = Date.now();
+
+  const query = `
+    SELECT horseName, sireName, damName, horseAge, horseColour, silkCode
+    FROM Entries_Timeform
+    WHERE horseName = ?;
+  `;
+
+  db.query(query, [horseName], (err, rows) => {
+    const elapsed = (Date.now() - startTime) / 1000;
+    console.log(`Entries_Timeform query for "${horseName}" took ${elapsed.toFixed(3)}s`);
+
+    if (err) {
+      console.error("Error fetching Entries_Timeform records:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: rows });
+  });
+});
+
 app.patch('/api/APIData_Table2/public_comments', (req, res) => {
   const { horseName, public_comments } = req.body;
 
