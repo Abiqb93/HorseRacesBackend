@@ -4187,6 +4187,29 @@ app.patch('/api/race_watchlist/:id/notify', (req, res) => {
 });
 
 
+// DELETE: Unwatch/remove a race from watchlist by ID
+app.delete('/api/race_watchlist/:id', (req, res) => {
+  const watchlistId = req.params.id;
+
+  const sql = `
+    DELETE FROM race_watchlist
+    WHERE id = ?
+  `;
+
+  db.query(sql, [watchlistId], (err, result) => {
+    if (err) {
+      console.error('Error deleting race_watchlist item:', err);
+      return res.status(500).json({ error: 'Database delete failed' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Watchlist item not found' });
+    }
+
+    res.json({ message: 'Race removed from watchlist' });
+  });
+});
+
 /* -------------------------------------------------
    CREATE SINGLE NOTIFICATION
 ------------------------------------------------- */
