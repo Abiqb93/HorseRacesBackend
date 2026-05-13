@@ -476,7 +476,6 @@ const cleanHorseName = (name = "") => {
 };
 
 
-// Get ATR sectional data by horse
 app.get("/api/sectionsparsed/horse/:horseName", (req, res) => {
   const rawHorseName = req.params.horseName;
   const cleanedHorseName = cleanHorseName(rawHorseName);
@@ -492,13 +491,25 @@ app.get("/api/sectionsparsed/horse/:horseName", (req, res) => {
       race_class,
       race_n_runners,
       horse_name,
+      age,
+      sex,
       finishing_position,
       jockey,
       trainer,
       weight,
       sp,
       timeform_rating,
+      tfig,
       official_rating,
+
+      stride_length_m,
+      stride_rank,
+      rtv_zero_to_20mph_seconds,
+      rtv_zero_to_20mph_rank,
+      rtv_top_speed_mph,
+      rtv_top_speed_rank,
+      rtv_finishing_speed_pct,
+      rtv_finishing_speed_rank,
 
       atr_sect_early_mph,
       atr_sect_mid_mph,
@@ -507,19 +518,18 @@ app.get("/api/sectionsparsed/horse/:horseName", (req, res) => {
       atr_final_speed_mph,
       atr_accel_seconds_to_30mph,
       atr_efficiency_grade,
+      atr_finish_pct,
 
-      section,
-      section_time,
-      rank_in_section,
-      gap_to_leader,
       flags,
       weighted_upgrade_lbs,
       max_confidence,
-      race_id,
-      horse_id
+      section,
+      section_time,
+      rank_in_section,
+      gap_to_leader
     FROM sectionsparsed
     WHERE horse_name = ?
-    ORDER BY date DESC, race_time DESC
+    ORDER BY date DESC, race_time DESC, race_name ASC, section ASC
   `;
 
   db.query(query, [cleanedHorseName], (err, results) => {
@@ -538,7 +548,6 @@ app.get("/api/sectionsparsed/horse/:horseName", (req, res) => {
 });
 
 
-// Get ATR sectional data by race
 app.get("/api/sectionsparsed/race/:raceName", (req, res) => {
   const raceName = req.params.raceName;
 
@@ -553,13 +562,25 @@ app.get("/api/sectionsparsed/race/:raceName", (req, res) => {
       race_class,
       race_n_runners,
       horse_name,
+      age,
+      sex,
       finishing_position,
       jockey,
       trainer,
       weight,
       sp,
       timeform_rating,
+      tfig,
       official_rating,
+
+      stride_length_m,
+      stride_rank,
+      rtv_zero_to_20mph_seconds,
+      rtv_zero_to_20mph_rank,
+      rtv_top_speed_mph,
+      rtv_top_speed_rank,
+      rtv_finishing_speed_pct,
+      rtv_finishing_speed_rank,
 
       atr_sect_early_mph,
       atr_sect_mid_mph,
@@ -568,16 +589,15 @@ app.get("/api/sectionsparsed/race/:raceName", (req, res) => {
       atr_final_speed_mph,
       atr_accel_seconds_to_30mph,
       atr_efficiency_grade,
+      atr_finish_pct,
 
-      section,
-      section_time,
-      rank_in_section,
-      gap_to_leader,
       flags,
       weighted_upgrade_lbs,
       max_confidence,
-      race_id,
-      horse_id
+      section,
+      section_time,
+      rank_in_section,
+      gap_to_leader
     FROM sectionsparsed
     WHERE LOWER(TRIM(race_name)) = LOWER(TRIM(?))
     ORDER BY horse_name ASC, section ASC
@@ -589,7 +609,11 @@ app.get("/api/sectionsparsed/race/:raceName", (req, res) => {
       return res.status(500).json({ error: "Database error" });
     }
 
-    res.status(200).json({ data: results });
+    res.status(200).json({
+      searched: raceName,
+      count: results.length,
+      data: results,
+    });
   });
 });
 
