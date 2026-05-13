@@ -463,9 +463,23 @@ app.get('/api/tarrersalls_ahit', (req, res) => {
 // sectionsparsed - ATR sectional data
 // ================================
 
+// Clean horse name same way as Python upload script
+const cleanHorseName = (name = "") => {
+  return String(name)
+    .toUpperCase()
+    .trim()
+    .replace(/\s*\([A-Z]+\)\s*$/g, "")   // remove (IRE), (FR), etc.
+    .replace(/[^A-Z0-9\s]/g, "")         // remove special characters
+    .replace(/\s+/g, "_")                // spaces to underscores
+    .toLowerCase()
+    .trim();
+};
+
+
 // Get ATR sectional data by horse
 app.get("/api/sectionsparsed/horse/:horseName", (req, res) => {
-  const horseName = req.params.horseName;
+  const rawHorseName = req.params.horseName;
+  const cleanedHorseName = cleanHorseName(rawHorseName);
 
   const query = `
     SELECT 
@@ -504,17 +518,22 @@ app.get("/api/sectionsparsed/horse/:horseName", (req, res) => {
       race_id,
       horse_id
     FROM sectionsparsed
-    WHERE LOWER(TRIM(horse_name)) = LOWER(TRIM(?))
+    WHERE horse_name = ?
     ORDER BY date DESC, race_time DESC
   `;
 
-  db.query(query, [horseName], (err, results) => {
+  db.query(query, [cleanedHorseName], (err, results) => {
     if (err) {
       console.error("Error fetching sectionsparsed by horse:", err);
       return res.status(500).json({ error: "Database error" });
     }
 
-    res.status(200).json({ data: results });
+    res.status(200).json({
+      searched: rawHorseName,
+      cleaned: cleanedHorseName,
+      count: results.length,
+      data: results,
+    });
   });
 });
 
