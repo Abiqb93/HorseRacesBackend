@@ -501,6 +501,7 @@ app.get("/api/sectionsparsed/horse/:horseName", (req, res) => {
       timeform_rating,
       tfig,
       official_rating,
+      race_id,
 
       stride_length_m,
       stride_rank,
