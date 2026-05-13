@@ -1366,18 +1366,6 @@ app.get("/api/racingtv/url/:raceUrl", (req, res) => {
   });
 });
 
-app.get('/api/RacesAndEntries', (req, res) => {
-  const query = `SELECT * FROM RacesAndEntries`;
-
-  db.query(query, (err, results) => {
-    if (err) {
-      console.error("Error fetching ClosingEntries:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
-
-    res.status(200).json({ data: results });
-  });
-});
 
 app.get("/api/RacesAndEntries/horse/:horseName", (req, res) => {
   const horseName = req.params.horseName;
@@ -1412,6 +1400,21 @@ app.get("/api/RacesAndEntries/horse/:horseName", (req, res) => {
     });
   });
 });
+
+
+app.get('/api/RacesAndEntries', (req, res) => {
+  const query = `SELECT * FROM RacesAndEntries`;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching ClosingEntries:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
 
 
 app.get('/api/racingpost', (req, res) => {
