@@ -459,6 +459,121 @@ app.get('/api/tarrersalls_ahit', (req, res) => {
 });
 
 
+// ================================
+// sectionsparsed - ATR sectional data
+// ================================
+
+// Get ATR sectional data by horse
+app.get("/api/sectionsparsed/horse/:horseName", (req, res) => {
+  const horseName = req.params.horseName;
+
+  const query = `
+    SELECT 
+      date,
+      race_time,
+      course,
+      race_name,
+      distance,
+      going,
+      race_class,
+      race_n_runners,
+      horse_name,
+      finishing_position,
+      jockey,
+      trainer,
+      weight,
+      sp,
+      timeform_rating,
+      official_rating,
+
+      atr_sect_early_mph,
+      atr_sect_mid_mph,
+      atr_sect_late_mph,
+      atr_top_speed_mph,
+      atr_final_speed_mph,
+      atr_accel_seconds_to_30mph,
+      atr_efficiency_grade,
+
+      section,
+      section_time,
+      rank_in_section,
+      gap_to_leader,
+      flags,
+      weighted_upgrade_lbs,
+      max_confidence,
+      race_id,
+      horse_id
+    FROM sectionsparsed
+    WHERE LOWER(TRIM(horse_name)) = LOWER(TRIM(?))
+    ORDER BY date DESC, race_time DESC
+  `;
+
+  db.query(query, [horseName], (err, results) => {
+    if (err) {
+      console.error("Error fetching sectionsparsed by horse:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
+
+// Get ATR sectional data by race
+app.get("/api/sectionsparsed/race/:raceName", (req, res) => {
+  const raceName = req.params.raceName;
+
+  const query = `
+    SELECT 
+      date,
+      race_time,
+      course,
+      race_name,
+      distance,
+      going,
+      race_class,
+      race_n_runners,
+      horse_name,
+      finishing_position,
+      jockey,
+      trainer,
+      weight,
+      sp,
+      timeform_rating,
+      official_rating,
+
+      atr_sect_early_mph,
+      atr_sect_mid_mph,
+      atr_sect_late_mph,
+      atr_top_speed_mph,
+      atr_final_speed_mph,
+      atr_accel_seconds_to_30mph,
+      atr_efficiency_grade,
+
+      section,
+      section_time,
+      rank_in_section,
+      gap_to_leader,
+      flags,
+      weighted_upgrade_lbs,
+      max_confidence,
+      race_id,
+      horse_id
+    FROM sectionsparsed
+    WHERE LOWER(TRIM(race_name)) = LOWER(TRIM(?))
+    ORDER BY horse_name ASC, section ASC
+  `;
+
+  db.query(query, [raceName], (err, results) => {
+    if (err) {
+      console.error("Error fetching sectionsparsed by race:", err);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    res.status(200).json({ data: results });
+  });
+});
+
 // PATCH /api/tarrersalls_ahit/:id/star
 app.patch('/api/tarrersalls_ahit/:id/star', (req, res) => {
   const rawParam = req.params.id;
@@ -4997,50 +5112,7 @@ app.patch("/api/daily_notifications_all_users/:id/invite", (req, res) => {
 });
 
 
-// ================================
-// sectionsparsed API routes
-// ================================
 
-// GET by horse name
-app.get("/api/sectionsparsed/horse/:horseName", (req, res) => {
-  const horseName = req.params.horseName;
-
-  const query = `
-    SELECT *
-    FROM sectionsparsed
-    WHERE LOWER(TRIM(horse_name)) = LOWER(TRIM(?))
-  `;
-
-  db.query(query, [horseName], (err, results) => {
-    if (err) {
-      console.error("Error fetching sectionsparsed by horse:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
-
-    res.status(200).json({ data: results });
-  });
-});
-
-
-// GET by race name
-app.get("/api/sectionsparsed/race/:raceName", (req, res) => {
-  const raceName = req.params.raceName;
-
-  const query = `
-    SELECT *
-    FROM sectionsparsed
-    WHERE LOWER(TRIM(race_name)) = LOWER(TRIM(?))
-  `;
-
-  db.query(query, [raceName], (err, results) => {
-    if (err) {
-      console.error("Error fetching sectionsparsed by race:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
-
-    res.status(200).json({ data: results });
-  });
-});
 
 app.post("/api/daily_notifications_all_users", (req, res) => {
   const data = req.body;
