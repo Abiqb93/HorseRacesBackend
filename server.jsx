@@ -1379,6 +1379,40 @@ app.get('/api/RacesAndEntries', (req, res) => {
   });
 });
 
+app.get("/api/RacesAndEntries/horse/:horseName", (req, res) => {
+  const horseName = req.params.horseName;
+
+  const columnQuery = `
+    SHOW COLUMNS FROM RacesAndEntries 
+    WHERE Field IN ('Horse', 'horse', 'horseName', 'HorseName')
+  `;
+
+  db.query(columnQuery, (colErr, columns) => {
+    if (colErr) {
+      console.error("Error checking RacesAndEntries columns:", colErr);
+      return res.status(500).json({ error: "Database error" });
+    }
+
+    const preferred = ["Horse", "horse", "horseName", "HorseName"];
+    const horseColumn = preferred.find((c) => columns.some((x) => x.Field === c));
+
+    if (!horseColumn) {
+      return res.status(500).json({ error: "No horse name column found" });
+    }
+
+    const query = `SELECT * FROM RacesAndEntries WHERE LOWER(TRIM(??)) = LOWER(TRIM(?))`;
+
+    db.query(query, [horseColumn, horseName], (err, results) => {
+      if (err) {
+        console.error("Error fetching RacesAndEntries by horse:", err);
+        return res.status(500).json({ error: "Database error" });
+      }
+
+      res.status(200).json({ data: results });
+    });
+  });
+});
+
 
 app.get('/api/racingpost', (req, res) => {
   const { horseName } = req.query;
