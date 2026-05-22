@@ -6620,6 +6620,31 @@ app.patch('/api/potential_stallion/:id/tagged_users', (req, res) => {
   });
 });
 
+// GET horses tagged for a specific user
+app.get("/api/review_horses/tagged_for/:userId", (req, res) => {
+  const userId = decodeURIComponent(req.params.userId || "").trim();
+
+  if (!userId) {
+    return res.status(400).json({ error: "Missing userId parameter" });
+  }
+
+  const sql = `
+    SELECT *
+    FROM review_horses
+    WHERE tagged_for = ?
+    ORDER BY id DESC
+  `;
+
+  db.query(sql, [userId], (err, rows) => {
+    if (err) {
+      console.error("Error fetching tagged review horses:", err);
+      return res.status(500).json({ error: "Database query failed" });
+    }
+
+    return res.status(200).json({ data: rows });
+  });
+});
+
 // POST /api/notify_horses  -> insert (or touch updated_at if duplicate)
 app.post("/api/notify_horses", (req, res) => {
   const need = required(req.body, ["user_id", "rec_date", "rec_time", "track", "horse", "type", "race"]);
