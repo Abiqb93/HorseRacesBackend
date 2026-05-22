@@ -1826,7 +1826,12 @@ Add to Outlook Calendar: ${outlookUrl}
 });
 
 
-// ✅ GET: All tracking entries for a specific user
+// =====================================================
+// HORSE TRACKING ROUTES
+// Table: horse_tracking
+// =====================================================
+
+// ✅ GET: All active tracking entries for a specific user
 app.get("/api/horseTracking", (req, res) => {
   const { user } = req.query;
 
@@ -1834,19 +1839,25 @@ app.get("/api/horseTracking", (req, res) => {
     return res.status(400).json({ error: "Missing user parameter" });
   }
 
-  const query =
-    "SELECT * FROM horse_tracking WHERE User = ? ORDER BY trackingDate DESC";
+  const query = `
+    SELECT *
+    FROM horse_tracking
+    WHERE User = ?
+    ORDER BY trackingDate DESC, noteDateTime DESC
+  `;
 
   db.query(query, [user], (err, results) => {
     if (err) {
       console.error("Error fetching tracking:", err);
       return res.status(500).json({ error: "Database error" });
     }
+
     return res.status(200).json({ data: results });
   });
 });
 
-// ✅ GET: All tracking entries/categories for a specific horse and user
+
+// ✅ GET: All tracking/history rows for one horse and one user
 app.get("/api/horseTracking/:horseName", (req, res) => {
   const { horseName } = req.params;
   const { user } = req.query;
@@ -1859,7 +1870,7 @@ app.get("/api/horseTracking/:horseName", (req, res) => {
     SELECT *
     FROM horse_tracking
     WHERE horseName = ? AND User = ?
-    ORDER BY noteDateTime DESC
+    ORDER BY trackingDate DESC, noteDateTime DESC, id DESC
   `;
 
   db.query(query, [horseName, user], (err, results) => {
@@ -1873,7 +1884,7 @@ app.get("/api/horseTracking/:horseName", (req, res) => {
 });
 
 
-// ✅ POST: Add a new tracking category entry
+// ✅ POST: Add tracking row OR add private note row
 app.post("/api/horseTracking", (req, res) => {
   const {
     horseName,
@@ -1894,8 +1905,9 @@ app.post("/api/horseTracking", (req, res) => {
     silkCode,
   } = req.body;
 
-  const finalTrackingType = trackingType || TrackingType || null;
+  const finalTrackingType = trackingType || TrackingType || "Prospect";
   const finalUser = user || User;
+  const finalNote = note && String(note).trim() !== "" ? String(note).trim() : null;
 
   if (!horseName || !trackingDate || !finalUser || !finalTrackingType) {
     return res.status(400).json({
@@ -1903,101 +1915,118 @@ app.post("/api/horseTracking", (req, res) => {
     });
   }
 
-  // First check if this horse is already tracked in this category
-  const checkQuery = `
-    SELECT id
-    FROM horse_tracking
-    WHERE horseName = ? AND User = ? AND TrackingType = ?
-    LIMIT 1
-  `;
+  // Important:
+  // If finalNote exists, this is a private comment row.
+  // Allow multiple private comment rows.
+  // If finalNote is empty, this is a normal tracking row.
+  // Only block duplicate active tracking rows.
+  if (!finalNote) {
+    const checkQuery = `
+      SELECT id
+      FROM horse_tracking
+      WHERE horseName = ?
+        AND User = ?
+        AND TrackingType = ?
+        AND (note IS NULL OR TRIM(note) = '')
+      LIMIT 1
+    `;
 
-  db.query(
-    checkQuery,
-    [horseName, finalUser, finalTrackingType],
-    (checkErr, existingRows) => {
-      if (checkErr) {
-        console.error("Error checking horseTracking:", checkErr);
-        return res.status(500).json({ error: "Database error" });
-      }
-
-      if (existingRows.length > 0) {
-        return res.status(409).json({
-          error: "This horse is already tracked under this category.",
-          id: existingRows[0].id,
-        });
-      }
-
-      const insertQuery = `
-        INSERT INTO horse_tracking (
-          horseName,
-          note,
-          noteDateTime,
-          trackingDate,
-          TrackingType,
-          User,
-          sireName,
-          damName,
-          ownerFullName,
-          trainerFullName,
-          horseAge,
-          horseGender,
-          horseColour,
-          silkCode
-        ) VALUES (
-          ?,
-          ?,
-          COALESCE(?, NOW()),
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?,
-          ?
-        )
-      `;
-
-      const values = [
-        horseName,
-        note || null,
-        noteDateTime || null,
-        trackingDate,
-        finalTrackingType,
-        finalUser,
-        sireName || null,
-        damName || null,
-        ownerFullName || null,
-        trainerFullName || null,
-        horseAge || null,
-        horseGender || null,
-        horseColour || null,
-        silkCode || null,
-      ];
-
-      db.query(insertQuery, values, (insertErr, result) => {
-        if (insertErr) {
-          console.error("Error inserting horseTracking:", insertErr);
+    db.query(
+      checkQuery,
+      [horseName, finalUser, finalTrackingType],
+      (checkErr, existingRows) => {
+        if (checkErr) {
+          console.error("Error checking horseTracking:", checkErr);
           return res.status(500).json({ error: "Database error" });
         }
 
-        return res.status(201).json({
-          message: "Horse tracking category added.",
-          id: result.insertId,
-          horseName,
-          user: finalUser,
-          TrackingType: finalTrackingType,
-        });
+        if (existingRows.length > 0) {
+          return res.status(409).json({
+            error: "This horse is already tracked under this category.",
+            id: existingRows[0].id,
+          });
+        }
+
+        insertHorseTrackingRow();
+      }
+    );
+  } else {
+    insertHorseTrackingRow();
+  }
+
+  function insertHorseTrackingRow() {
+    const insertQuery = `
+      INSERT INTO horse_tracking (
+        horseName,
+        note,
+        noteDateTime,
+        trackingDate,
+        TrackingType,
+        User,
+        sireName,
+        damName,
+        ownerFullName,
+        trainerFullName,
+        horseAge,
+        horseGender,
+        horseColour,
+        silkCode
+      ) VALUES (
+        ?,
+        ?,
+        COALESCE(?, NOW()),
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?
+      )
+    `;
+
+    const values = [
+      horseName,
+      finalNote,
+      noteDateTime || null,
+      trackingDate,
+      finalTrackingType,
+      finalUser,
+      sireName || null,
+      damName || null,
+      ownerFullName || null,
+      trainerFullName || null,
+      horseAge || null,
+      horseGender || null,
+      horseColour || null,
+      silkCode || null,
+    ];
+
+    db.query(insertQuery, values, (insertErr, result) => {
+      if (insertErr) {
+        console.error("Error inserting horseTracking:", insertErr);
+        return res.status(500).json({ error: "Database error" });
+      }
+
+      return res.status(201).json({
+        message: finalNote
+          ? "Private note added."
+          : "Horse tracking category added.",
+        id: result.insertId,
+        horseName,
+        user: finalUser,
+        TrackingType: finalTrackingType,
       });
-    }
-  );
+    });
+  }
 });
 
 
-// ✅ DELETE: Remove all tracking entries for a horse/user
+// ✅ DELETE: Stop tracking historically instead of deleting rows
 app.delete("/api/horseTracking/:horseName", (req, res) => {
   const { horseName } = req.params;
   const { user } = req.query;
@@ -2006,31 +2035,95 @@ app.delete("/api/horseTracking/:horseName", (req, res) => {
     return res.status(400).json({ error: "Missing user parameter" });
   }
 
-  const query = `
-    DELETE FROM horse_tracking
-    WHERE horseName = ? AND User = ?
+  const findSql = `
+    SELECT *
+    FROM horse_tracking
+    WHERE horseName = ?
+      AND User = ?
+      AND TrackingType <> 'Stopped'
+    ORDER BY trackingDate DESC, noteDateTime DESC, id DESC
+    LIMIT 1
   `;
 
-  db.query(query, [horseName, user], (err, result) => {
-    if (err) {
-      console.error("Error deleting horseTracking:", err);
+  db.query(findSql, [horseName, user], (findErr, rows) => {
+    if (findErr) {
+      console.error("Error finding horseTracking row:", findErr);
       return res.status(500).json({ error: "Database error" });
     }
 
-    if (result.affectedRows === 0) {
+    if (!rows || rows.length === 0) {
       return res.status(404).json({
-        error: "No tracking entries found for that horse and user.",
+        error: "No active tracking entries found for that horse and user.",
       });
     }
 
-    return res.status(200).json({
-      message: `Deleted ${result.affectedRows} tracking entries.`,
+    const latest = rows[0];
+
+    const insertStoppedSql = `
+      INSERT INTO horse_tracking (
+        horseName,
+        note,
+        noteDateTime,
+        trackingDate,
+        TrackingType,
+        User,
+        sireName,
+        damName,
+        ownerFullName,
+        trainerFullName,
+        horseAge,
+        horseGender,
+        horseColour,
+        silkCode
+      ) VALUES (
+        ?,
+        ?,
+        NOW(),
+        NOW(),
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?
+      )
+    `;
+
+    const values = [
+      latest.horseName,
+      "Stopped tracking",
+      "Stopped",
+      user,
+      latest.sireName || null,
+      latest.damName || null,
+      latest.ownerFullName || null,
+      latest.trainerFullName || null,
+      latest.horseAge || null,
+      latest.horseGender || null,
+      latest.horseColour || null,
+      latest.silkCode || null,
+    ];
+
+    db.query(insertStoppedSql, values, (insertErr, result) => {
+      if (insertErr) {
+        console.error("Error inserting stopped tracking row:", insertErr);
+        return res.status(500).json({ error: "Database error" });
+      }
+
+      return res.status(200).json({
+        message: "Stopped tracking recorded historically.",
+        id: result.insertId,
+      });
     });
   });
 });
 
 
-// ✅ DELETE: Remove only one tracking category for a horse/user
+// ✅ DELETE: Stop/remove one tracking category historically
 app.delete("/api/horseTracking/:horseName/type", (req, res) => {
   const { horseName } = req.params;
   const { user, trackingType } = req.query;
@@ -2043,28 +2136,89 @@ app.delete("/api/horseTracking/:horseName/type", (req, res) => {
     return res.status(400).json({ error: "Missing trackingType parameter" });
   }
 
-  const query = `
-    DELETE FROM horse_tracking
-    WHERE horseName = ? AND User = ? AND TrackingType = ?
+  const findSql = `
+    SELECT *
+    FROM horse_tracking
+    WHERE horseName = ?
+      AND User = ?
+      AND TrackingType = ?
+    ORDER BY trackingDate DESC, noteDateTime DESC, id DESC
+    LIMIT 1
   `;
 
-  db.query(query, [horseName, user, trackingType], (err, result) => {
-    if (err) {
-      console.error("Error deleting horseTracking category:", err);
+  db.query(findSql, [horseName, user, trackingType], (findErr, rows) => {
+    if (findErr) {
+      console.error("Error finding tracking category:", findErr);
       return res.status(500).json({ error: "Database error" });
     }
 
-    if (result.affectedRows === 0) {
+    if (!rows || rows.length === 0) {
       return res.status(404).json({
-        error: "No matching tracking category found for that horse and user.",
+        error: "No tracking category found for that horse and user.",
       });
     }
 
-    return res.status(200).json({
-      message: "Tracking category removed.",
-      horseName,
+    const latest = rows[0];
+
+    const insertStoppedSql = `
+      INSERT INTO horse_tracking (
+        horseName,
+        note,
+        noteDateTime,
+        trackingDate,
+        TrackingType,
+        User,
+        sireName,
+        damName,
+        ownerFullName,
+        trainerFullName,
+        horseAge,
+        horseGender,
+        horseColour,
+        silkCode
+      ) VALUES (
+        ?,
+        ?,
+        NOW(),
+        NOW(),
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?
+      )
+    `;
+
+    const values = [
+      latest.horseName,
+      `Stopped tracking category: ${trackingType}`,
+      "Stopped",
       user,
-      TrackingType: trackingType,
+      latest.sireName || null,
+      latest.damName || null,
+      latest.ownerFullName || null,
+      latest.trainerFullName || null,
+      latest.horseAge || null,
+      latest.horseGender || null,
+      latest.horseColour || null,
+      latest.silkCode || null,
+    ];
+
+    db.query(insertStoppedSql, values, (insertErr, result) => {
+      if (insertErr) {
+        console.error("Error inserting stopped category row:", insertErr);
+        return res.status(500).json({ error: "Database error" });
+      }
+
+      return res.status(200).json({
+        message: "Tracking category stop recorded historically.",
+        id: result.insertId,
+      });
     });
   });
 });
