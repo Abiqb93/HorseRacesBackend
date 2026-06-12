@@ -5410,6 +5410,75 @@ app.patch('/api/review_horses/:id/notes', (req, res) => {
   });
 });
 
+// PATCH: Update Reason_to_track for a review horse
+app.patch('/api/review_horses/:id/reason_to_track', (req, res) => {
+  const horseId = parseInt(req.params.id);
+  const { Reason_to_track } = req.body;
+
+  console.log("🔄 PATCH Reason_to_track request received:", {
+    horseId,
+    Reason_to_track,
+  });
+
+  if (!Number.isInteger(horseId)) {
+    return res.status(400).json({ error: 'Invalid horse ID' });
+  }
+
+  const sql = `
+    UPDATE review_horses
+    SET Reason_to_track = ?
+    WHERE id = ?
+  `;
+
+  db.query(sql, [Reason_to_track || "", horseId], (err, result) => {
+    if (err) {
+      console.error('❌ Error updating Reason_to_track:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Review horse not found' });
+    }
+
+    res.json({ message: '✅ Reason_to_track updated successfully' });
+  });
+});
+
+
+// PATCH: Update Assign_Action for a review horse
+app.patch('/api/review_horses/:id/assign_action', (req, res) => {
+  const horseId = parseInt(req.params.id);
+  const { Assign_Action } = req.body;
+
+  console.log("🔄 PATCH Assign_Action request received:", {
+    horseId,
+    Assign_Action,
+  });
+
+  if (!Number.isInteger(horseId)) {
+    return res.status(400).json({ error: 'Invalid horse ID' });
+  }
+
+  const sql = `
+    UPDATE review_horses
+    SET Assign_Action = ?
+    WHERE id = ?
+  `;
+
+  db.query(sql, [Assign_Action || "", horseId], (err, result) => {
+    if (err) {
+      console.error('❌ Error updating Assign_Action:', err);
+      return res.status(500).json({ error: 'Database update failed' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Review horse not found' });
+    }
+
+    res.json({ message: '✅ Assign_Action updated successfully' });
+  });
+});
+
 
 // PATCH: per-user review status using JSON array (reviewStatus holds userIds)
 app.patch('/api/review_horses/:id/reviewStatus', (req, res) => {
