@@ -1,6 +1,9 @@
+<<<<<<< HEAD
 // require("./emailNotifier");
 
 // Import required modules
+=======
+>>>>>>> b03fbd2d4c5ef4f3fb09c51fc5775734e48aab17
 const express = require('express');
 const mysql = require('mysql');
 const cors = require('cors');
@@ -12,7 +15,10 @@ const app = express();
 const port = process.env.PORT || 8080;
 
 const allowedOrigins = [
+<<<<<<< HEAD
   'http://localhost:5173', // Local frontend
+=======
+>>>>>>> b03fbd2d4c5ef4f3fb09c51fc5775734e48aab17
   'http://localhost:3000', // Local frontend
   'https://horses-website-deployed-production.up.railway.app', // Deployed frontend
   'https://abiqb93.github.io', // GitHub Pages
@@ -20,6 +26,7 @@ const allowedOrigins = [
   'http://www.blandfordbloodstock.tech'  
 ];
 
+<<<<<<< HEAD
 const GMAIL_USER = "bloodstockblandford@gmail.com";
 const GMAIL_PASS = "bhnf jsgm gpwd jhjo"; // 🔴 MUST be Gmail App Password (16 chars)
 
@@ -27,27 +34,38 @@ const GMAIL_PASS = "bhnf jsgm gpwd jhjo"; // 🔴 MUST be Gmail App Password (16
 app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (like mobile apps or Postman) or from allowed origins
+=======
+const corsOptions = {
+  origin: function (origin, callback) {
+>>>>>>> b03fbd2d4c5ef4f3fb09c51fc5775734e48aab17
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
     }
   },
+<<<<<<< HEAD
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', "PATCH"], // Allow all HTTP methods you need
   allowedHeaders: ['Content-Type', 'Authorization'], // Specify allowed headers
   credentials: true, // Allow cookies or credentials
 }));
+=======
+};
 
-// MySQL database connection configuration
+app.use(cors(corsOptions));
+app.use(express.json());
+>>>>>>> b03fbd2d4c5ef4f3fb09c51fc5775734e48aab17
+
 const db = mysql.createPool({
   host: "horseprofileshub.czyece6mq0kn.eu-north-1.rds.amazonaws.com",
   user: "abiqb93",
   password: "Saps123$#",
   database: "horseprofileshub",
-  port: 3306,
+  port: 3307,
   connectionLimit: 10,
 });
 
+<<<<<<< HEAD
 // Centralized list of valid tables
 const validTables = [
   'sire_profile', 'sire_profile_three', 'sire_profile_one',
@@ -2932,19 +2950,34 @@ app.get('/api/APIData_Table2', (req, res) => {
 
   if (!meetingDate) {
     return res.status(400).json({ error: "meetingDate is required" });
+=======
+// Search companies by any field dynamically
+app.get('/api/companies', (req, res) => {
+  const { query } = req.query;
+  if (!query) {
+    return res.status(400).json({ error: "Search query is required" });
+>>>>>>> b03fbd2d4c5ef4f3fb09c51fc5775734e48aab17
   }
 
-  // Append "00:00:00" to meetingDate to ensure it includes time
-  meetingDate = `${meetingDate} 00:00:00`;
+  const searchQuery = `%${query}%`;
+  const sql = `
+    SELECT * FROM Companies 
+    WHERE first_name LIKE ? 
+    OR last_name LIKE ? 
+    OR company_name LIKE ? 
+    OR category LIKE ? 
+    OR country LIKE ? 
+    OR city LIKE ? 
+    OR email LIKE ? 
+    OR phone LIKE ? 
+    OR website LIKE ? 
+    OR description LIKE ?`;
 
-  const dataQuery = `
-    SELECT * 
-    FROM APIData_Table2
-    WHERE meetingDate = ?;
-  `;
+  const params = new Array(10).fill(searchQuery);
 
-  db.query(dataQuery, [meetingDate], (err, rows) => {
+  db.query(sql, params, (err, results) => {
     if (err) {
+<<<<<<< HEAD
       console.error(err);
       return res.status(500).json({ error: "Database error" });
     }
@@ -3297,6 +3330,9 @@ app.get("/api/jockey_tracking", (req, res) => {
   db.query(query, [user], (err, results) => {
     if (err) {
       console.error("Error fetching jockey tracking:", err);
+=======
+      console.error("Error fetching companies:", err);
+>>>>>>> b03fbd2d4c5ef4f3fb09c51fc5775734e48aab17
       return res.status(500).json({ error: "Database error" });
     }
     res.status(200).json({ data: results });
@@ -3379,6 +3415,7 @@ app.get("/api/timeform/jockey", (req, res) => {
   });
 });
 
+<<<<<<< HEAD
 
 
 // Dynamic field mapping based on table name
@@ -7136,6 +7173,8 @@ app.get('/api/chat/conversations/:userId', (req, res) => {
   });
 });
 // Start the server
+=======
+>>>>>>> b03fbd2d4c5ef4f3fb09c51fc5775734e48aab17
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
