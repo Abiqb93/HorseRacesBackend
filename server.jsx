@@ -2636,35 +2636,157 @@ app.get('/api/companies', (req, res) => {
 });
 
 
-app.get('/api/APIData_Table2/horse', (req, res) => {
-  const { horseName } = req.query;
+// =======================================================
+// APIData_Table2 fast lookup routes
+// Supports:
+//   - single date:        /api/APIData_Table2?meetingDate=2026-06-18
+//   - date range:         /api/APIData_Table2?startDate=2026-06-01&endDate=2026-06-18
+//   - horse records:      /api/APIData_Table2/horse?horseName=Frankel&startDate=...&endDate=...
+//   - sire records:       /api/APIData_Table2/sire?sireName=Galileo&startDate=...&endDate=...
+//   - dam records:        /api/APIData_Table2/dam?damName=Kind&startDate=...&endDate=...
+// Optional on all: limit, offset, order=asc|desc
+// =======================================================
 
-  if (!horseName) {
+const normalizeApiDataDate = (value, endOfDay = false) => {
+  if (!value) return null;
+
+  const raw = String(value).trim();
+
+  // YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return `${raw} ${endOfDay ? "23:59:59" : "00:00:00"}`;
+  }
+
+  // YYYY-MM-DD HH:mm:ss already
+  if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}$/.test(raw)) {
+    return raw;
+  }
+
+  // ISO string fallback
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    const yyyy = parsed.getFullYear();
+    const mm = String(parsed.getMonth() + 1).padStart(2, "0");
+    const dd = String(parsed.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd} ${endOfDay ? "23:59:59" : "00:00:00"}`;
+  }
+
+  return null;
+};
+
+const getApiDataPaging = (req) => {
+  const rawLimit = req.query.limit;
+  const rawOffset = req.query.offset;
+
+  const limit =
+    rawLimit === undefined
+      ? null
+      : Math.max(1, Math.min(parseInt(rawLimit, 10) || 500, 5000));
+
+  const offset =
+    rawOffset === undefined ? 0 : Math.max(0, parseInt(rawOffset, 10) || 0);
+
+  return { limit, offset };
+};
+
+const runApiDataTable2Query = ({
+  res,
+  label,
+  whereParts = [],
+  params = [],
+  startDate,
+  endDate,
+  limit,
+  offset = 0,
+  order = "desc",
+}) => {
+  const startTime = Date.now();
+
+  const normalizedStartDate = normalizeApiDataDate(startDate, false);
+  const normalizedEndDate = normalizeApiDataDate(endDate, true);
+
+  if (startDate && !normalizedStartDate) {
+    return res.status(400).json({ error: "Invalid startDate. Use YYYY-MM-DD." });
+  }
+
+  if (endDate && !normalizedEndDate) {
+    return res.status(400).json({ error: "Invalid endDate. Use YYYY-MM-DD." });
+  }
+
+  if (normalizedStartDate) {
+    whereParts.push("meetingDate >= ?");
+    params.push(normalizedStartDate);
+  }
+
+  if (normalizedEndDate) {
+    whereParts.push("meetingDate <= ?");
+    params.push(normalizedEndDate);
+  }
+
+  const safeOrder = String(order || "").toLowerCase() === "asc" ? "ASC" : "DESC";
+
+  let query = `
+    SELECT *
+    FROM APIData_Table2
+  `;
+
+  if (whereParts.length) {
+    query += ` WHERE ${whereParts.join(" AND ")} `;
+  }
+
+  query += ` ORDER BY meetingDate ${safeOrder}, scheduledTimeOfRaceLocal ${safeOrder}, raceNumber ${safeOrder} `;
+
+  if (limit !== null && limit !== undefined) {
+    query += ` LIMIT ? OFFSET ? `;
+    params.push(limit, offset);
+  }
+
+  db.query(query, params, (err, rows) => {
+    const elapsed = (Date.now() - startTime) / 1000;
+    console.log(`[APIData_Table2] ${label} returned ${rows?.length || 0} rows in ${elapsed.toFixed(3)}s`);
+
+    if (err) {
+      console.error(`[APIData_Table2] ${label} error:`, err);
+      return res.status(500).json({ error: "Database error", details: err.message });
+    }
+
+    return res.status(200).json({
+      data: rows,
+      count: rows.length,
+      page: {
+        limit: limit ?? rows.length,
+        offset,
+        hasMore: limit !== null && limit !== undefined ? rows.length === limit : false,
+        nextOffset: limit !== null && limit !== undefined ? offset + rows.length : rows.length,
+      },
+      filters: {
+        startDate: normalizedStartDate,
+        endDate: normalizedEndDate,
+      },
+    });
+  });
+};
+
+app.get('/api/APIData_Table2/horse', (req, res) => {
+  const { horseName, startDate, endDate, order = "desc" } = req.query;
+  const { limit, offset } = getApiDataPaging(req);
+
+  if (!horseName || !String(horseName).trim()) {
     return res.status(400).json({ error: "Missing required query parameter: horseName" });
   }
 
-  const startTime = Date.now();
-
-  // Case-insensitive WHERE clause using collation — this **may** still use index
-  const query = `
-    SELECT * 
-    FROM APIData_Table2
-    WHERE horseName = ?;
-  `;
-
-  db.query(query, [horseName], (err, rows) => {
-    const elapsed = (Date.now() - startTime) / 1000;
-    console.log(`Query for horse "${horseName}" took ${elapsed.toFixed(2)} seconds`);
-
-    if (err) {
-      console.error("Error fetching records:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
-
-    res.status(200).json({ data: rows });
+  return runApiDataTable2Query({
+    res,
+    label: `horseName=${horseName}`,
+    whereParts: ["horseName = ?"],
+    params: [String(horseName).trim()],
+    startDate,
+    endDate,
+    limit,
+    offset,
+    order,
   });
 });
-
 
 app.get('/api/entries_timeform/horse', (req, res) => {
   const { horseName } = req.query;
@@ -2736,222 +2858,169 @@ app.patch('/api/APIData_Table2/public_comments', (req, res) => {
 });
 
 app.get('/api/APIData_Table2/sire', (req, res) => {
-  const { sireName } = req.query;
+  const { sireName, startDate, endDate, order = "desc" } = req.query;
+  const { limit, offset } = getApiDataPaging(req);
 
-  if (!sireName) {
+  if (!sireName || !String(sireName).trim()) {
     return res.status(400).json({ error: "Missing required query parameter: sireName" });
   }
 
-  const startTime = Date.now();
-
-  const query = `
-    SELECT horseName 
-    FROM APIData_Table2
-    WHERE sireName = ?;
-  `;
-
-  db.query(query, [sireName], (err, rows) => {
-    const elapsed = (Date.now() - startTime) / 1000;
-    console.log(`Query for sire "${sireName}" took ${elapsed.toFixed(2)} seconds`);
-
-    if (err) {
-      console.error("Error fetching records:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
-
-    res.status(200).json({ data: rows });
+  return runApiDataTable2Query({
+    res,
+    label: `sireName=${sireName}`,
+    whereParts: ["sireName = ?"],
+    params: [String(sireName).trim()],
+    startDate,
+    endDate,
+    limit,
+    offset,
+    order,
   });
 });
 
-
-
 app.get('/api/APIData_Table2/dam', (req, res) => {
-  const { damName } = req.query;
+  const { damName, startDate, endDate, order = "desc" } = req.query;
+  const { limit, offset } = getApiDataPaging(req);
 
-  if (!damName) {
+  if (!damName || !String(damName).trim()) {
     return res.status(400).json({ error: "Missing required query parameter: damName" });
   }
 
-  const startTime = Date.now();
-
-  const query = `
-    SELECT horseName 
-    FROM APIData_Table2
-    WHERE damName = ?;
-  `;
-
-  db.query(query, [damName], (err, rows) => {
-    const elapsed = (Date.now() - startTime) / 1000;
-    console.log(`Query for sire "${damName}" took ${elapsed.toFixed(2)} seconds`);
-
-    if (err) {
-      console.error("Error fetching records:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
-
-    res.status(200).json({ data: rows });
+  return runApiDataTable2Query({
+    res,
+    label: `damName=${damName}`,
+    whereParts: ["damName = ?"],
+    params: [String(damName).trim()],
+    startDate,
+    endDate,
+    limit,
+    offset,
+    order,
   });
 });
 
-
-// app.get('/api/APIData_Table2/owner', (req, res) => {
-//   const { ownerFullName } = req.query;
-
-//   if (!ownerFullName) {
-//     return res.status(400).json({ error: "Missing required query parameter: ownerFullName" });
-//   }
-
-//   const startTime = Date.now();
-
-//   const query = `
-//     SELECT horseName 
-//     FROM APIData_Table2
-//     WHERE ownerFullName = ?;
-//   `;
-
-//   db.query(query, [ownerFullName], (err, rows) => {
-//     const elapsed = (Date.now() - startTime) / 1000;
-//     console.log(`Query for sire "${ownerFullName}" took ${elapsed.toFixed(2)} seconds`);
-
-//     if (err) {
-//       console.error("Error fetching records:", err);
-//       return res.status(500).json({ error: "Database error" });
-//     }
-
-//     res.status(200).json({ data: rows });
-//   });
-// });
-
-
 app.get('/api/APIData_Table2/owner', (req, res) => {
-  const { ownerLatest } = req.query;
+  const { ownerLatest, startDate, endDate, order = "desc" } = req.query;
+  const { limit, offset } = getApiDataPaging(req);
 
-  if (!ownerLatest) {
+  if (!ownerLatest || !String(ownerLatest).trim()) {
     return res.status(400).json({
       error: "Missing required query parameter: ownerLatest"
     });
   }
 
-  const startTime = Date.now();
-
-  const query = `
-    SELECT horseName
-    FROM APIData_Table2
-    WHERE ownerLatest = ?;
-  `;
-
-  db.query(query, [ownerLatest], (err, rows) => {
-    const elapsed = (Date.now() - startTime) / 1000;
-    console.log(
-      `Query for ownerLatest "${ownerLatest}" took ${elapsed.toFixed(2)} seconds`
-    );
-
-    if (err) {
-      console.error("Error fetching records:", err);
-      return res.status(500).json({
-        error: "Database error"
-      });
-    }
-
-    res.status(200).json({
-      data: rows
-    });
+  return runApiDataTable2Query({
+    res,
+    label: `ownerLatest=${ownerLatest}`,
+    whereParts: ["ownerLatest = ?"],
+    params: [String(ownerLatest).trim()],
+    startDate,
+    endDate,
+    limit,
+    offset,
+    order,
   });
 });
 
 app.get('/api/APIData_Table2/jockey', (req, res) => {
-  const { jockeyLatest } = req.query;
+  const { jockeyLatest, startDate, endDate, order = "desc" } = req.query;
+  const { limit, offset } = getApiDataPaging(req);
 
-  if (!jockeyLatest) {
+  if (!jockeyLatest || !String(jockeyLatest).trim()) {
     return res.status(400).json({
       error: "Missing required query parameter: jockeyLatest"
     });
   }
 
-  const startTime = Date.now();
-
-  const query = `
-    SELECT horseName
-    FROM APIData_Table2
-    WHERE jockeyLatest = ?;
-  `;
-
-  db.query(query, [jockeyLatest], (err, rows) => {
-    const elapsed = (Date.now() - startTime) / 1000;
-    console.log(
-      `Query for jockeyLatest "${jockeyLatest}" took ${elapsed.toFixed(2)} seconds`
-    );
-
-    if (err) {
-      console.error("Error fetching records:", err);
-      return res.status(500).json({
-        error: "Database error"
-      });
-    }
-
-    res.status(200).json({
-      data: rows
-    });
+  return runApiDataTable2Query({
+    res,
+    label: `jockeyLatest=${jockeyLatest}`,
+    whereParts: ["jockeyLatest = ?"],
+    params: [String(jockeyLatest).trim()],
+    startDate,
+    endDate,
+    limit,
+    offset,
+    order,
   });
 });
-
-
-// app.get('/api/APIData_Table2/jockey', (req, res) => {
-//   const { jockeyFullName } = req.query;
-
-//   if (!jockeyFullName) {
-//     return res.status(400).json({
-//       error: "Missing required query parameter: jockeyFullName"
-//     });
-//   }
-
-//   const startTime = Date.now();
-
-//   const query = `
-//     SELECT horseName
-//     FROM APIData_Table2
-//     WHERE jockeyFullName = ?;
-//   `;
-
-//   db.query(query, [jockeyFullName], (err, rows) => {
-//     const elapsed = (Date.now() - startTime) / 1000;
-//     console.log(`Query for jockey "${jockeyFullName}" took ${elapsed.toFixed(2)} seconds`);
-
-//     if (err) {
-//       console.error("Error fetching jockey records:", err);
-//       return res.status(500).json({ error: "Database error" });
-//     }
-
-//     res.status(200).json({ data: rows });
-//   });
-// });
-
 
 app.get('/api/APIData_Table2', (req, res) => {
-  let { meetingDate } = req.query;
+  const {
+    meetingDate,
+    startDate,
+    endDate,
+    horseName,
+    sireName,
+    damName,
+    courseName,
+    countryCode,
+    order = "desc",
+  } = req.query;
 
-  if (!meetingDate) {
-    return res.status(400).json({ error: "meetingDate is required" });
-  }
+  const { limit, offset } = getApiDataPaging(req);
 
-  // Append "00:00:00" to meetingDate to ensure it includes time
-  meetingDate = `${meetingDate} 00:00:00`;
+  const whereParts = [];
+  const params = [];
 
-  const dataQuery = `
-    SELECT * 
-    FROM APIData_Table2
-    WHERE meetingDate = ?;
-  `;
+  if (meetingDate) {
+    const normalizedMeetingDateStart = normalizeApiDataDate(meetingDate, false);
+    const normalizedMeetingDateEnd = normalizeApiDataDate(meetingDate, true);
 
-  db.query(dataQuery, [meetingDate], (err, rows) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json({ error: "Database error" });
+    if (!normalizedMeetingDateStart || !normalizedMeetingDateEnd) {
+      return res.status(400).json({ error: "Invalid meetingDate. Use YYYY-MM-DD." });
     }
 
-    res.json({ data: rows });
+    whereParts.push("meetingDate BETWEEN ? AND ?");
+    params.push(normalizedMeetingDateStart, normalizedMeetingDateEnd);
+  }
+
+  if (horseName && String(horseName).trim()) {
+    whereParts.push("horseName = ?");
+    params.push(String(horseName).trim());
+  }
+
+  if (sireName && String(sireName).trim()) {
+    whereParts.push("sireName = ?");
+    params.push(String(sireName).trim());
+  }
+
+  if (damName && String(damName).trim()) {
+    whereParts.push("damName = ?");
+    params.push(String(damName).trim());
+  }
+
+  if (courseName && String(courseName).trim()) {
+    whereParts.push("courseName = ?");
+    params.push(String(courseName).trim());
+  }
+
+  if (countryCode && String(countryCode).trim()) {
+    whereParts.push("countryCode = ?");
+    params.push(String(countryCode).trim());
+  }
+
+  // Keep the old behavior safe: require at least one filter.
+  // This prevents accidentally returning the full APIData_Table2 table.
+  if (!whereParts.length && !startDate && !endDate) {
+    return res.status(400).json({
+      error: "Provide at least one filter: meetingDate, startDate/endDate, horseName, sireName, damName, courseName, or countryCode",
+    });
+  }
+
+  return runApiDataTable2Query({
+    res,
+    label: "generic-filter",
+    whereParts,
+    params,
+    startDate,
+    endDate,
+    limit,
+    offset,
+    order,
   });
 });
+
 
 
 app.get('/api/APIData_Table2/previousPerformance', (req, res) => {
