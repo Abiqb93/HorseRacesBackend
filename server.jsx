@@ -6646,6 +6646,127 @@ app.get("/api/review_horse_actions/:horseName", (req, res) => {
   });
 });
 
+app.post("/api/review_horse_actions", (req, res) => {
+  const body = req.body || {};
+
+  const userId = body.user_id || body.userId || body.assignedBy || "Unknown";
+  const reviewHorseId = body.review_horse_id || body.reviewHorseId || null;
+  const horseName = body.horse_name || body.horseName || "";
+  const horseCode = body.horse_code || body.horseCode || null;
+
+  const actionAssigned =
+    body.action_assigned ||
+    body.actionAssigned ||
+    body.action ||
+    "";
+
+  const actionStatus =
+    body.action_status ||
+    body.actionStatus ||
+    "Assigned";
+
+  const actionNote =
+    body.action_note ||
+    body.actionNote ||
+    body.notes ||
+    null;
+
+  const assignedAt =
+    body.assigned_at ||
+    body.assignedAt ||
+    new Date();
+
+  const reasonToTrack =
+    body.reason_to_track ||
+    body.reasonToTrack ||
+    null;
+
+  const qualifyingReason =
+    body.qualifying_reason ||
+    body.qualifyingReason ||
+    null;
+
+  if (!horseName) {
+    return res.status(400).json({ error: "horse_name / horseName is required." });
+  }
+
+  if (!actionAssigned) {
+    return res.status(400).json({ error: "action_assigned / action is required." });
+  }
+
+  const sql = `
+    INSERT INTO review_horse_actions (
+      user_id,
+      review_horse_id,
+      horse_name,
+      horse_code,
+      action_assigned,
+      action_status,
+      action_note,
+      assigned_at,
+      reason_to_track,
+      qualifying_reason,
+      source,
+      meetingDate,
+      raceTitle,
+      courseName,
+      scheduledTimeOfRaceLocal,
+      performanceRating,
+      sireName,
+      damName,
+      ownerFullName,
+      trainerFullName,
+      horseAge,
+      horseGender,
+      horseColour,
+      silkCode
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+
+  const values = [
+    userId,
+    reviewHorseId,
+    horseName,
+    horseCode,
+    actionAssigned,
+    actionStatus,
+    actionNote,
+    assignedAt,
+    reasonToTrack,
+    qualifyingReason,
+    body.source || "review_horses",
+    body.meetingDate || null,
+    body.raceTitle || null,
+    body.courseName || null,
+    body.scheduledTimeOfRaceLocal || null,
+    body.performanceRating || null,
+    body.sireName || null,
+    body.damName || null,
+    body.ownerFullName || null,
+    body.trainerFullName || null,
+    body.horseAge || null,
+    body.horseGender || null,
+    body.horseColour || null,
+    body.silkCode || null,
+  ];
+
+  db.query(sql, values, (err, result) => {
+    if (err) {
+      console.error("❌ Error inserting review_horse_actions:", err);
+      return res.status(500).json({
+        error: "Database error",
+        details: err.message,
+      });
+    }
+
+    return res.status(201).json({
+      message: "Review horse action saved.",
+      id: result.insertId,
+    });
+  });
+});
+
 app.patch("/api/review_horse_actions/:id/status", (req, res) => {
   const id = req.params.id;
   const { status } = req.body || {};
