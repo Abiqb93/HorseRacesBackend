@@ -6591,10 +6591,6 @@ app.get("/api/review_horse_actions", (req, res) => {
 });
 
 
-// -----------------------------------------------------
-// GET /api/review_horse_actions/:horseName
-// Fetch action history for one horse.
-// -----------------------------------------------------
 app.get("/api/review_horse_actions/:horseName", (req, res) => {
   const horseName = decodeURIComponent(req.params.horseName || "").trim();
 
@@ -6605,13 +6601,17 @@ app.get("/api/review_horse_actions/:horseName", (req, res) => {
   const sql = `
     SELECT
       id,
-      reviewHorseId,
-      horseName,
-      horseCode,
-      action,
-      assignedBy,
-      DATE_FORMAT(assignedAt, '%Y-%m-%d %H:%i:%s') AS assignedAt,
-      reasonToTrack,
+      user_id AS userId,
+      user_id AS assignedBy,
+      review_horse_id AS reviewHorseId,
+      horse_name AS horseName,
+      horse_code AS horseCode,
+      action_assigned AS action,
+      action_status AS status,
+      action_note AS notes,
+      DATE_FORMAT(assigned_at, '%Y-%m-%d %H:%i:%s') AS assignedAt,
+      reason_to_track AS reasonToTrack,
+      qualifying_reason AS qualifyingReason,
       DATE_FORMAT(meetingDate, '%Y-%m-%d') AS meetingDate,
       raceTitle,
       courseName,
@@ -6626,13 +6626,11 @@ app.get("/api/review_horse_actions/:horseName", (req, res) => {
       horseColour,
       silkCode,
       source,
-      status,
-      notes,
-      DATE_FORMAT(createdAt, '%Y-%m-%d %H:%i:%s') AS createdAt,
-      DATE_FORMAT(updatedAt, '%Y-%m-%d %H:%i:%s') AS updatedAt
+      DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS createdAt,
+      DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updatedAt
     FROM review_horse_actions
-    WHERE LOWER(TRIM(horseName)) = LOWER(TRIM(?))
-    ORDER BY assignedAt DESC, id DESC
+    WHERE LOWER(TRIM(horse_name)) = LOWER(TRIM(?))
+    ORDER BY assigned_at DESC, id DESC
   `;
 
   db.query(sql, [horseName], (err, rows) => {
@@ -6648,13 +6646,6 @@ app.get("/api/review_horse_actions/:horseName", (req, res) => {
   });
 });
 
-
-// -----------------------------------------------------
-// PATCH /api/review_horse_actions/:id/status
-// Example body:
-// { "status": "done" }
-// Allowed: pending, done, cancelled
-// -----------------------------------------------------
 app.patch("/api/review_horse_actions/:id/status", (req, res) => {
   const id = req.params.id;
   const { status } = req.body || {};
@@ -6667,10 +6658,10 @@ app.patch("/api/review_horse_actions/:id/status", (req, res) => {
     return res.status(400).json({ error: "status is required." });
   }
 
-  const allowedStatuses = ["pending", "done", "cancelled"];
-  const cleanStatus = String(status).toLowerCase().trim();
+  const allowedStatuses = ["Assigned", "pending", "done", "cancelled"];
+  const cleanStatus = String(status).trim();
 
-  if (!allowedStatuses.includes(cleanStatus)) {
+  if (!allowedStatuses.map(s => s.toLowerCase()).includes(cleanStatus.toLowerCase())) {
     return res.status(400).json({
       error: `Invalid status. Allowed values: ${allowedStatuses.join(", ")}`,
     });
@@ -6678,7 +6669,7 @@ app.patch("/api/review_horse_actions/:id/status", (req, res) => {
 
   const sql = `
     UPDATE review_horse_actions
-    SET status = ?, updatedAt = NOW()
+    SET action_status = ?, updated_at = NOW()
     WHERE id = ?
   `;
 
