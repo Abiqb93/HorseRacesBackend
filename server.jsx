@@ -6025,6 +6025,331 @@ app.patch("/api/RacesAndEntries/tag", (req, res) => {
   });
 });
 
+
+
+// =====================================================
+// REVIEW HORSE ACTIONS ROUTES
+// Table: review_horse_actions
+// =====================================================
+
+// ✅ POST: Save assigned action history for a horse
+app.post("/api/review_horse_actions", (req, res) => {
+  const {
+    reviewHorseId,
+    horseName,
+    horseCode,
+    action,
+    assignedBy,
+    reasonToTrack,
+    meetingDate,
+    raceTitle,
+    courseName,
+    scheduledTimeOfRaceLocal,
+    performanceRating,
+    sireName,
+    damName,
+    ownerFullName,
+    trainerFullName,
+    horseAge,
+    horseGender,
+    horseColour,
+    silkCode,
+    source,
+    notes,
+  } = req.body || {};
+
+  if (!horseName || !action || !assignedBy) {
+    return res.status(400).json({
+      error: "horseName, action, and assignedBy are required.",
+    });
+  }
+
+  const insertSql = `
+    INSERT INTO review_horse_actions (
+      reviewHorseId,
+      horseName,
+      horseCode,
+      action,
+      assignedBy,
+      assignedAt,
+      reasonToTrack,
+      meetingDate,
+      raceTitle,
+      courseName,
+      scheduledTimeOfRaceLocal,
+      performanceRating,
+      sireName,
+      damName,
+      ownerFullName,
+      trainerFullName,
+      horseAge,
+      horseGender,
+      horseColour,
+      silkCode,
+      source,
+      notes
+    ) VALUES (
+      ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    )
+  `;
+
+  const values = [
+    reviewHorseId || null,
+    horseName || null,
+    horseCode || null,
+    action || null,
+    assignedBy || null,
+    reasonToTrack || null,
+    meetingDate || null,
+    raceTitle || null,
+    courseName || null,
+    scheduledTimeOfRaceLocal || null,
+    performanceRating || null,
+    sireName || null,
+    damName || null,
+    ownerFullName || null,
+    trainerFullName || null,
+    horseAge || null,
+    horseGender || null,
+    horseColour || null,
+    silkCode || null,
+    source || "review_list",
+    notes || null,
+  ];
+
+  db.query(insertSql, values, (err, result) => {
+    if (err) {
+      console.error("❌ Error inserting review_horse_actions:", err);
+      return res.status(500).json({
+        error: "Database error",
+        details: err.message,
+      });
+    }
+
+    return res.status(201).json({
+      message: "Action saved successfully.",
+      id: result.insertId,
+      data: {
+        id: result.insertId,
+        reviewHorseId,
+        horseName,
+        horseCode,
+        action,
+        assignedBy,
+        reasonToTrack,
+        meetingDate,
+        raceTitle,
+        courseName,
+        scheduledTimeOfRaceLocal,
+        performanceRating,
+        sireName,
+        damName,
+        ownerFullName,
+        trainerFullName,
+        horseAge,
+        horseGender,
+        horseColour,
+        silkCode,
+        source: source || "review_list",
+        notes,
+      },
+    });
+  });
+});
+
+
+// ✅ GET: Fetch all action history, optionally filtered
+// Examples:
+// /api/review_horse_actions
+// /api/review_horse_actions?horseName=ABC
+// /api/review_horse_actions?assignedBy=Tom
+// /api/review_horse_actions?reviewHorseId=123
+app.get("/api/review_horse_actions", (req, res) => {
+  const {
+    horseName,
+    assignedBy,
+    reviewHorseId,
+    action,
+    limit,
+  } = req.query;
+
+  const where = [];
+  const params = [];
+
+  if (horseName) {
+    where.push("LOWER(TRIM(horseName)) = LOWER(TRIM(?))");
+    params.push(horseName);
+  }
+
+  if (assignedBy) {
+    where.push("LOWER(TRIM(assignedBy)) = LOWER(TRIM(?))");
+    params.push(assignedBy);
+  }
+
+  if (reviewHorseId) {
+    where.push("reviewHorseId = ?");
+    params.push(reviewHorseId);
+  }
+
+  if (action) {
+    where.push("action = ?");
+    params.push(action);
+  }
+
+  const safeLimit = Math.max(
+    1,
+    Math.min(parseInt(limit, 10) || 200, 1000)
+  );
+
+  const sql = `
+    SELECT
+      id,
+      reviewHorseId,
+      horseName,
+      horseCode,
+      action,
+      assignedBy,
+      DATE_FORMAT(assignedAt, '%Y-%m-%d %H:%i:%s') AS assignedAt,
+      reasonToTrack,
+      DATE_FORMAT(meetingDate, '%Y-%m-%d') AS meetingDate,
+      raceTitle,
+      courseName,
+      scheduledTimeOfRaceLocal,
+      performanceRating,
+      sireName,
+      damName,
+      ownerFullName,
+      trainerFullName,
+      horseAge,
+      horseGender,
+      horseColour,
+      silkCode,
+      source,
+      status,
+      notes,
+      DATE_FORMAT(createdAt, '%Y-%m-%d %H:%i:%s') AS createdAt,
+      DATE_FORMAT(updatedAt, '%Y-%m-%d %H:%i:%s') AS updatedAt
+    FROM review_horse_actions
+    ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY assignedAt DESC, id DESC
+    LIMIT ?
+  `;
+
+  params.push(safeLimit);
+
+  db.query(sql, params, (err, rows) => {
+    if (err) {
+      console.error("❌ Error fetching review_horse_actions:", err);
+      return res.status(500).json({
+        error: "Database error",
+        details: err.message,
+      });
+    }
+
+    return res.status(200).json({ data: rows });
+  });
+});
+
+
+// ✅ GET: Fetch action history for one horse
+app.get("/api/review_horse_actions/:horseName", (req, res) => {
+  const horseName = decodeURIComponent(req.params.horseName || "").trim();
+
+  if (!horseName) {
+    return res.status(400).json({ error: "horseName is required." });
+  }
+
+  const sql = `
+    SELECT
+      id,
+      reviewHorseId,
+      horseName,
+      horseCode,
+      action,
+      assignedBy,
+      DATE_FORMAT(assignedAt, '%Y-%m-%d %H:%i:%s') AS assignedAt,
+      reasonToTrack,
+      DATE_FORMAT(meetingDate, '%Y-%m-%d') AS meetingDate,
+      raceTitle,
+      courseName,
+      scheduledTimeOfRaceLocal,
+      performanceRating,
+      sireName,
+      damName,
+      ownerFullName,
+      trainerFullName,
+      horseAge,
+      horseGender,
+      horseColour,
+      silkCode,
+      source,
+      status,
+      notes,
+      DATE_FORMAT(createdAt, '%Y-%m-%d %H:%i:%s') AS createdAt,
+      DATE_FORMAT(updatedAt, '%Y-%m-%d %H:%i:%s') AS updatedAt
+    FROM review_horse_actions
+    WHERE LOWER(TRIM(horseName)) = LOWER(TRIM(?))
+    ORDER BY assignedAt DESC, id DESC
+  `;
+
+  db.query(sql, [horseName], (err, rows) => {
+    if (err) {
+      console.error("❌ Error fetching action history by horse:", err);
+      return res.status(500).json({
+        error: "Database error",
+        details: err.message,
+      });
+    }
+
+    return res.status(200).json({ data: rows });
+  });
+});
+
+
+// ✅ PATCH: Update action status
+// Example: pending, done, cancelled
+app.patch("/api/review_horse_actions/:id/status", (req, res) => {
+  const id = req.params.id;
+  const { status } = req.body || {};
+
+  if (!id) {
+    return res.status(400).json({ error: "Action id is required." });
+  }
+
+  if (!status) {
+    return res.status(400).json({ error: "status is required." });
+  }
+
+  const allowedStatuses = ["pending", "done", "cancelled"];
+
+  if (!allowedStatuses.includes(String(status).toLowerCase())) {
+    return res.status(400).json({
+      error: `Invalid status. Allowed values: ${allowedStatuses.join(", ")}`,
+    });
+  }
+
+  const sql = `
+    UPDATE review_horse_actions
+    SET status = ?, updatedAt = NOW()
+    WHERE id = ?
+  `;
+
+  db.query(sql, [String(status).toLowerCase(), id], (err, result) => {
+    if (err) {
+      console.error("❌ Error updating review_horse_actions status:", err);
+      return res.status(500).json({
+        error: "Database error",
+        details: err.message,
+      });
+    }
+
+    return res.status(200).json({
+      message: "Action status updated.",
+      affectedRows: result.affectedRows,
+    });
+  });
+});
+
 /**
  * 2) Insert notification rows for tagged users
  *    One row per tagged user
