@@ -6767,48 +6767,6 @@ app.post("/api/review_horse_actions", (req, res) => {
   });
 });
 
-app.patch("/api/review_horse_actions/:id/status", (req, res) => {
-  const id = req.params.id;
-  const { status } = req.body || {};
-
-  if (!id) {
-    return res.status(400).json({ error: "Action id is required." });
-  }
-
-  if (!status) {
-    return res.status(400).json({ error: "status is required." });
-  }
-
-  const allowedStatuses = ["Assigned", "pending", "done", "cancelled"];
-  const cleanStatus = String(status).trim();
-
-  if (!allowedStatuses.map(s => s.toLowerCase()).includes(cleanStatus.toLowerCase())) {
-    return res.status(400).json({
-      error: `Invalid status. Allowed values: ${allowedStatuses.join(", ")}`,
-    });
-  }
-
-  const sql = `
-    UPDATE review_horse_actions
-    SET action_status = ?, updated_at = NOW()
-    WHERE id = ?
-  `;
-
-  db.query(sql, [cleanStatus, id], (err, result) => {
-    if (err) {
-      console.error("❌ Error updating review_horse_actions status:", err);
-      return res.status(500).json({
-        error: "Database error",
-        details: err.message,
-      });
-    }
-
-    return res.status(200).json({
-      message: "Action status updated.",
-      affectedRows: result.affectedRows,
-    });
-  });
-});
 
 /**
  * 2) Insert notification rows for tagged users
