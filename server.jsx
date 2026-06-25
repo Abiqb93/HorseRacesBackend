@@ -6591,68 +6591,28 @@ app.get("/api/review_horse_actions", (req, res) => {
 });
 
 
-app.get("/api/review_horse_actions/:horseName", (req, res) => {
-  const horseName = decodeURIComponent(req.params.horseName || "").trim();
-
-  if (!horseName) {
-    return res.status(400).json({ error: "horseName is required." });
-  }
-
-  const sql = `
-    SELECT
-      id,
-      user_id AS userId,
-      user_id AS assignedBy,
-      review_horse_id AS reviewHorseId,
-      horse_name AS horseName,
-      horse_code AS horseCode,
-      action_assigned AS action,
-      action_status AS status,
-      action_note AS notes,
-      DATE_FORMAT(assigned_at, '%Y-%m-%d %H:%i:%s') AS assignedAt,
-      reason_to_track AS reasonToTrack,
-      qualifying_reason AS qualifyingReason,
-      DATE_FORMAT(meetingDate, '%Y-%m-%d') AS meetingDate,
-      raceTitle,
-      courseName,
-      scheduledTimeOfRaceLocal,
-      performanceRating,
-      sireName,
-      damName,
-      ownerFullName,
-      trainerFullName,
-      horseAge,
-      horseGender,
-      horseColour,
-      silkCode,
-      source,
-      DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS createdAt,
-      DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updatedAt
-    FROM review_horse_actions
-    WHERE LOWER(TRIM(horse_name)) = LOWER(TRIM(?))
-    ORDER BY assigned_at DESC, id DESC
-  `;
-
-  db.query(sql, [horseName], (err, rows) => {
-    if (err) {
-      console.error("❌ Error fetching action history by horse:", err);
-      return res.status(500).json({
-        error: "Database error",
-        details: err.message,
-      });
-    }
-
-    return res.status(200).json({ data: rows });
-  });
-});
-
+// -----------------------------------------------------
+// POST /api/review_horse_actions
+// Save action history into review_horse_actions table.
+// -----------------------------------------------------
 app.post("/api/review_horse_actions", (req, res) => {
   const body = req.body || {};
 
-  const userId = body.user_id || body.userId || body.assignedBy || "Unknown";
-  const reviewHorseId = body.review_horse_id || body.reviewHorseId || null;
-  const horseName = body.horse_name || body.horseName || "";
-  const horseCode = body.horse_code || body.horseCode || null;
+  const userId =
+    body.user_id ||
+    body.userId ||
+    body.assignedBy ||
+    "Unknown";
+
+  const horseName =
+    body.horse_name ||
+    body.horseName ||
+    "";
+
+  const horseCode =
+    body.horse_code ||
+    body.horseCode ||
+    null;
 
   const actionAssigned =
     body.action_assigned ||
@@ -6663,18 +6623,20 @@ app.post("/api/review_horse_actions", (req, res) => {
   const actionStatus =
     body.action_status ||
     body.actionStatus ||
+    body.status ||
     "Assigned";
 
   const actionNote =
     body.action_note ||
     body.actionNote ||
     body.notes ||
+    body.note ||
     null;
 
   const assignedAt =
     body.assigned_at ||
     body.assignedAt ||
-    new Date();
+    null;
 
   const reasonToTrack =
     body.reason_to_track ||
@@ -6687,17 +6649,26 @@ app.post("/api/review_horse_actions", (req, res) => {
     null;
 
   if (!horseName) {
-    return res.status(400).json({ error: "horse_name / horseName is required." });
+    return res.status(400).json({
+      error: "horseName is required.",
+    });
   }
 
   if (!actionAssigned) {
-    return res.status(400).json({ error: "action_assigned / action is required." });
+    return res.status(400).json({
+      error: "action is required.",
+    });
+  }
+
+  if (!userId) {
+    return res.status(400).json({
+      error: "assignedBy is required.",
+    });
   }
 
   const sql = `
     INSERT INTO review_horse_actions (
       user_id,
-      review_horse_id,
       horse_name,
       horse_code,
       action_assigned,
@@ -6721,12 +6692,35 @@ app.post("/api/review_horse_actions", (req, res) => {
       horseColour,
       silkCode
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      COALESCE(?, NOW()),
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?,
+      ?
+    )
   `;
 
   const values = [
     userId,
-    reviewHorseId,
     horseName,
     horseCode,
     actionAssigned,
@@ -6740,7 +6734,7 @@ app.post("/api/review_horse_actions", (req, res) => {
     body.raceTitle || null,
     body.courseName || null,
     body.scheduledTimeOfRaceLocal || null,
-    body.performanceRating || null,
+    body.performanceRating ?? null,
     body.sireName || null,
     body.damName || null,
     body.ownerFullName || null,
@@ -6767,6 +6761,68 @@ app.post("/api/review_horse_actions", (req, res) => {
   });
 });
 
+
+// -----------------------------------------------------
+// GET /api/review_horse_actions/:horseName
+// Fetch action history for one horse.
+// -----------------------------------------------------
+app.get("/api/review_horse_actions/:horseName", (req, res) => {
+  const horseName = decodeURIComponent(req.params.horseName || "").trim();
+
+  if (!horseName) {
+    return res.status(400).json({
+      error: "horseName is required.",
+    });
+  }
+
+  const sql = `
+    SELECT
+      id,
+      user_id AS userId,
+      user_id AS assignedBy,
+      horse_name AS horseName,
+      horse_code AS horseCode,
+      action_assigned AS action,
+      action_status AS status,
+      action_note AS notes,
+      DATE_FORMAT(assigned_at, '%Y-%m-%d %H:%i:%s') AS assignedAt,
+      reason_to_track AS reasonToTrack,
+      qualifying_reason AS qualifyingReason,
+      DATE_FORMAT(meetingDate, '%Y-%m-%d') AS meetingDate,
+      raceTitle,
+      courseName,
+      DATE_FORMAT(scheduledTimeOfRaceLocal, '%Y-%m-%d %H:%i:%s') AS scheduledTimeOfRaceLocal,
+      performanceRating,
+      sireName,
+      damName,
+      ownerFullName,
+      trainerFullName,
+      horseAge,
+      horseGender,
+      horseColour,
+      silkCode,
+      source,
+      DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS createdAt,
+      DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updatedAt
+    FROM review_horse_actions
+    WHERE LOWER(TRIM(horse_name)) = LOWER(TRIM(?))
+    ORDER BY assigned_at DESC, id DESC
+  `;
+
+  db.query(sql, [horseName], (err, rows) => {
+    if (err) {
+      console.error("❌ Error fetching review_horse_actions:", err);
+      return res.status(500).json({
+        error: "Database error",
+        details: err.message,
+      });
+    }
+
+    return res.status(200).json({
+      data: rows,
+    });
+  });
+});
 
 /**
  * 2) Insert notification rows for tagged users
