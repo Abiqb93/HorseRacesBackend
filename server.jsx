@@ -7341,6 +7341,36 @@ app.get('/api/chat/messages', (req, res) => {
 });
 
 
+app.patch("/api/review_horse_actions/:id/status", (req, res) => {
+  const id = req.params.id;
+  const actionStatus =
+    req.body.action_status ||
+    req.body.actionStatus ||
+    req.body.status ||
+    "Assigned";
+
+  const sql = `
+    UPDATE review_horse_actions
+    SET action_status = ?
+    WHERE id = ?
+  `;
+
+  db.query(sql, [actionStatus, id], (err, result) => {
+    if (err) {
+      console.error("❌ Error updating action status:", err);
+      return res.status(500).json({
+        error: "Database error",
+        details: err.message,
+      });
+    }
+
+    return res.status(200).json({
+      message: "Action status updated.",
+      affectedRows: result.affectedRows,
+    });
+  });
+});
+
 // PATCH: mark messages as read
 app.patch('/api/chat/messages/read', (req, res) => {
   const { sender_id, receiver_id } = req.body || {};
