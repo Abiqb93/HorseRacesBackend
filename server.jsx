@@ -7467,6 +7467,94 @@ app.get('/api/chat/conversations/:userId', (req, res) => {
     });
   });
 });
+
+app.get("/api/user-preps-reviewlist", (req, res) => {
+  const sql = `
+    SELECT *
+    FROM user_preps_reviewlist
+    ORDER BY updated_at DESC
+  `;
+
+  db.query(sql, (err, rows) => {
+    if (err) {
+      return res.status(500).json({
+        error: "Database fetch failed",
+        details: err.message,
+      });
+    }
+
+    return res.json({
+      data: rows,
+    });
+  });
+});
+
+app.post("/api/user-preps-reviewlist", (req, res) => {
+  const {
+    ratingLevelMin,
+    ratingLevelMax,
+    ground,
+    distance,
+    age,
+    user,
+  } = req.body;
+
+  if (
+    ratingLevelMin === undefined ||
+    ratingLevelMax === undefined ||
+    !ground ||
+    distance === undefined ||
+    age === undefined ||
+    !user
+  ) {
+    return res.status(400).json({
+      error: "All fields are required",
+    });
+  }
+
+  const sql = `
+    INSERT INTO user_preps_reviewlist (
+      rating_level_min,
+      rating_level_max,
+      ground,
+      distance,
+      age,
+      \`User\`
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE
+      rating_level_min = VALUES(rating_level_min),
+      rating_level_max = VALUES(rating_level_max),
+      ground = VALUES(ground),
+      distance = VALUES(distance),
+      age = VALUES(age),
+      updated_at = CURRENT_TIMESTAMP
+  `;
+
+  const values = [
+    ratingLevelMin,
+    ratingLevelMax,
+    ground,
+    distance,
+    age,
+    user,
+  ];
+
+  db.query(sql, values, (err, result) => {
+    if (err) {
+      return res.status(500).json({
+        error: "Database write failed",
+        details: err.message,
+      });
+    }
+
+    return res.status(200).json({
+      message: "Preferences saved successfully",
+      insertId: result.insertId,
+    });
+  });
+});
+
 // Start the server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
