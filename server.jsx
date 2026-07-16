@@ -6197,6 +6197,31 @@ app.post("/api/review_horse_actions", (req, res) => {
 });
 
 
+app.get("/api/stallion-fee", (req, res) => {
+  const sql = `
+    SELECT *
+    FROM stallion_fee
+    ORDER BY stallion ASC
+  `;
+
+  db.query(sql, (err, rows) => {
+    if (err) {
+      console.error("stallion_fee database error:", err);
+
+      return res.status(500).json({
+        error: "Database fetch failed",
+        details: err.message,
+      });
+    }
+
+    return res.status(200).json({
+      data: rows,
+      count: rows.length,
+    });
+  });
+});
+
+
 // -----------------------------------------------------
 // GET /api/review_horse_actions/:horseName
 // Fetch action history for one horse.
@@ -7468,26 +7493,6 @@ app.get('/api/chat/conversations/:userId', (req, res) => {
   });
 });
 
-app.get("/api/stallion-fee", (req, res) => {
-  const sql = `
-    SELECT *
-    FROM stallion_fee
-    ORDER BY stallion ASC
-  `;
-
-  db.query(sql, (err, rows) => {
-    if (err) {
-      return res.status(500).json({
-        error: "Database fetch failed",
-        details: err.message,
-      });
-    }
-
-    return res.json({
-      data: rows,
-    });
-  });
-});
 
 app.get("/api/user-preps-reviewlist", (req, res) => {
   const sql = `
