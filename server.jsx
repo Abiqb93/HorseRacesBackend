@@ -61,7 +61,7 @@ const validTables = [
   'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
   'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion', 'StrideParsPercentilesPerTrack', 
   'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift', 'foalSale_Dashboard', 'foalSale_Pedigree', 'foalSale_StallionStats', 'foalSale_Sales', 'foalSale_StudFeeAnalysis', 'jockey_tracking', 'report_potential_stallions',
-  'sectionsparsed'
+  'sectionsparsed', 'stallion-fee'
 ];
 
 
@@ -3690,6 +3690,30 @@ app.get('/api/dampedigree_ratings', (req, res) => {
   });
 });
 
+app.get("/api/stallion-fee", (req, res) => {
+  const sql = `
+    SELECT *
+    FROM stallion_fee
+    ORDER BY stallion ASC
+  `;
+
+  db.query(sql, (err, rows) => {
+    if (err) {
+      console.error("stallion_fee database error:", err);
+
+      return res.status(500).json({
+        error: "Database fetch failed",
+        details: err.message,
+      });
+    }
+
+    return res.status(200).json({
+      data: rows,
+      count: rows.length,
+    });
+  });
+});
+
 
 app.get('/api/:tableName', (req, res) => {
   const { tableName } = req.params;
@@ -6197,29 +6221,7 @@ app.post("/api/review_horse_actions", (req, res) => {
 });
 
 
-app.get("/api/stallion-fee", (req, res) => {
-  const sql = `
-    SELECT *
-    FROM stallion_fee
-    ORDER BY stallion ASC
-  `;
 
-  db.query(sql, (err, rows) => {
-    if (err) {
-      console.error("stallion_fee database error:", err);
-
-      return res.status(500).json({
-        error: "Database fetch failed",
-        details: err.message,
-      });
-    }
-
-    return res.status(200).json({
-      data: rows,
-      count: rows.length,
-    });
-  });
-});
 
 
 // -----------------------------------------------------
