@@ -2636,6 +2636,66 @@ app.get('/api/companies', (req, res) => {
 });
 
 
+
+// =======================================================
+// Racing Post results diagnostic endpoint
+// Example:
+//   /api/racingpost_results?raceDate=2026-08-19&horse=PIAZZA
+// =======================================================
+app.get('/api/racingpost_results', (req, res) => {
+  const raceDate = String(req.query.raceDate || '').trim();
+  const horse = String(req.query.horse || '').trim();
+
+  const where = [];
+  const params = [];
+
+  if (raceDate) {
+    where.push('DATE(RaceDate) = ?');
+    params.push(raceDate);
+  }
+
+  if (horse) {
+    where.push(`
+      UPPER(TRIM(REGEXP_REPLACE(Horse, '[[:space:]]*\\\\([A-Za-z]{2,4}\\\\)[[:space:]]*$', '')))
+      =
+      UPPER(TRIM(REGEXP_REPLACE(?, '[[:space:]]*\\\\([A-Za-z]{2,4}\\\\)[[:space:]]*$', '')))
+    `);
+    params.push(horse);
+  }
+
+  const sql = `
+    SELECT
+      RaceID,
+      RaceDate,
+      RaceTrack,
+      RaceTime,
+      RaceTitle,
+      Position,
+      Horse,
+      HorseCountry,
+      \`OR\`,
+      TS,
+      RPR,
+      URL
+    FROM racingpost_results
+    ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+    ORDER BY RaceDate DESC, RaceTime DESC, RaceID DESC, Position ASC
+    LIMIT 500
+  `;
+
+  db.query(sql, params, (err, rows) => {
+    if (err) {
+      console.error('GET /api/racingpost_results error:', err);
+      return res.status(500).json({ error: 'Database query failed' });
+    }
+
+    return res.status(200).json({
+      data: rows,
+      count: rows.length,
+    });
+  });
+});
+
 // =======================================================
 // APIData_Table2 fast lookup routes
 // Supports:
@@ -2725,15 +2785,16 @@ const runApiDataTable2Query = ({
 
   const safeOrder = String(order || "").toLowerCase() === "asc" ? "ASC" : "DESC";
 
-  // Enrich Timeform/APIData_Table2 rows with Racing Post result ratings.
+  // Add Racing Post result ratings to each Timeform/APIData_Table2 row.
   //
-  // Matching strategy:
-  //   1. normalized horse name
-  //   2. race date
-  //   3. finishing position when both sources contain it
+  // Match:
+  //   - normalized horse name
+  //   - race date
+  //   - official finishing position when available
   //
-  // racingpost_results can be appended to repeatedly, so the subquery groups
-  // duplicate uploads down to one rating row per horse/date/position.
+  // The subquery also collapses duplicate append uploads in
+  // racingpost_results so a repeated daily scrape does not duplicate
+  // Timeform rows in the API response.
   let query = `
     SELECT
       a.*,
@@ -2746,7 +2807,15 @@ const runApiDataTable2Query = ({
     FROM APIData_Table2 a
     LEFT JOIN (
       SELECT
-        UPPER(TRIM(Horse)) AS matchHorseName,
+        UPPER(
+          TRIM(
+            REGEXP_REPLACE(
+              Horse,
+              '[[:space:]]*\\\\([A-Za-z]{2,4}\\\\)[[:space:]]*$',
+              ''
+            )
+          )
+        ) AS matchHorseName,
         DATE(RaceDate) AS matchRaceDate,
         CAST(Position AS SIGNED) AS matchPosition,
         MAX(CAST(\`OR\` AS DECIMAL(10,2))) AS rpOR,
@@ -2759,11 +2828,27 @@ const runApiDataTable2Query = ({
       WHERE Horse IS NOT NULL
         AND RaceDate IS NOT NULL
       GROUP BY
-        UPPER(TRIM(Horse)),
+        UPPER(
+          TRIM(
+            REGEXP_REPLACE(
+              Horse,
+              '[[:space:]]*\\\\([A-Za-z]{2,4}\\\\)[[:space:]]*$',
+              ''
+            )
+          )
+        ),
         DATE(RaceDate),
         CAST(Position AS SIGNED)
     ) rp
-      ON rp.matchHorseName = UPPER(TRIM(a.horseName))
+      ON rp.matchHorseName = UPPER(
+        TRIM(
+          REGEXP_REPLACE(
+            a.horseName,
+            '[[:space:]]*\\\\([A-Za-z]{2,4}\\\\)[[:space:]]*$',
+            ''
+          )
+        )
+      )
      AND rp.matchRaceDate = DATE(a.meetingDate)
      AND (
        rp.matchPosition IS NULL
