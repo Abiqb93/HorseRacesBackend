@@ -4530,6 +4530,1829 @@ app.post('/api/reviewed_results', (req, res) => {
 });
 
 
+// ============================================================
+// DYNAMIC REVIEW CONDITIONS API
+// ============================================================
+//
+// Assumptions:
+//
+// 1. `app` is your Express app
+// 2. `db` is your existing MySQL connection
+// 3. review_conditions table already exists
+//
+// review_conditions expected columns:
+//
+// id
+// condition_name
+// userId
+// is_default
+// active
+// description
+// rule_json
+// created_at
+// updated_at
+//
+// This code also uses:
+//
+// review_rule_preferences
+//
+// to store whether each user wants:
+//
+// default_only
+// default_plus_defined
+// defined_only
+//
+// ============================================================
+
+
+// ============================================================
+// ENSURE review_rule_preferences EXISTS
+// ============================================================
+
+const ensureReviewRulePreferencesTable = () => {
+  const query = `
+    CREATE TABLE IF NOT EXISTS review_rule_preferences (
+      id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+
+      userId VARCHAR(255) NOT NULL,
+
+      mode ENUM(
+        'default_only',
+        'default_plus_defined',
+        'defined_only'
+      ) NOT NULL DEFAULT 'default_plus_defined',
+
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                 ON UPDATE CURRENT_TIMESTAMP,
+
+      UNIQUE KEY uq_review_rule_preferences_user (userId),
+
+      INDEX idx_review_rule_preferences_user (userId)
+    )
+  `;
+
+  db.query(query, (err) => {
+    if (err) {
+      console.error(
+        "Error creating/checking review_rule_preferences:",
+        err
+      );
+      return;
+    }
+
+    console.log(
+      "✅ review_rule_preferences table ready."
+    );
+  });
+};
+
+
+// Run once when backend starts
+ensureReviewRulePreferencesTable();
+
+
+// ============================================================
+// CONSTANTS
+// ============================================================
+
+const VALID_REVIEW_RULE_MODES = new Set([
+  "default_only",
+  "default_plus_defined",
+  "defined_only",
+]);
+
+
+const VALID_RULE_METRICS = new Set([
+  "total_runs",
+
+  "latest",
+  "latest_value",
+
+  "latest_contains",
+  "latest_not_contains",
+
+  "latest_in",
+  "latest_not_in",
+
+  "previous_max",
+  "previous_min",
+
+  "previous_avg",
+  "previous_mean",
+
+  "latest_minus_previous_max",
+  "latest_minus_previous_min",
+
+  "latest_minus_previous_avg",
+  "latest_minus_previous_mean",
+
+  "previous_any",
+  "previous_all",
+
+  "count_previous",
+]);
+
+
+const VALID_RULE_OPERATORS = new Set([
+  ">",
+  ">=",
+  "<",
+  "<=",
+  "=",
+  "==",
+  "!=",
+  "<>",
+]);
+
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+const cleanUserId = (value) => {
+  return String(value || "").trim();
+};
+
+
+// ------------------------------------------------------------
+// Parse rule_json
+// ------------------------------------------------------------
+
+const parseRuleJson = (value) => {
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+  ) {
+    return value;
+  }
+
+  if (
+    typeof value === "string" &&
+    value.trim()
+  ) {
+    try {
+      const parsed = JSON.parse(value);
+
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed)
+      ) {
+        return parsed;
+      }
+    } catch (err) {
+      return null;
+    }
+  }
+
+  return null;
+};
+
+
+// ------------------------------------------------------------
+// Validate a complete rule tree
+//
+// Supports:
+//
+// {
+//   "all": [
+//      {...},
+//      {...}
+//   ]
+// }
+//
+// {
+//   "any": [
+//      {...},
+//      {...}
+//   ]
+// }
+//
+// {
+//   "not": {...}
+// }
+//
+// ------------------------------------------------------------
+
+const validateRuleNode = (
+  node,
+  depth = 0
+) => {
+
+  if (
+    !node ||
+    typeof node !== "object" ||
+    Array.isArray(node)
+  ) {
+    return "Each rule must be a JSON object.";
+  }
+
+
+  if (depth > 10) {
+    return "Rule nesting is too deep.";
+  }
+
+
+  // ==========================================================
+  // ALL
+  // ==========================================================
+
+  if (
+    Object.prototype.hasOwnProperty.call(
+      node,
+      "all"
+    )
+  ) {
+
+    if (
+      !Array.isArray(node.all) ||
+      node.all.length === 0
+    ) {
+      return "'all' must contain at least one rule.";
+    }
+
+
+    for (const child of node.all) {
+
+      const error = validateRuleNode(
+        child,
+        depth + 1
+      );
+
+      if (error) {
+        return error;
+      }
+    }
+
+
+    return null;
+  }
+
+
+  // ==========================================================
+  // ANY
+  // ==========================================================
+
+  if (
+    Object.prototype.hasOwnProperty.call(
+      node,
+      "any"
+    )
+  ) {
+
+    if (
+      !Array.isArray(node.any) ||
+      node.any.length === 0
+    ) {
+      return "'any' must contain at least one rule.";
+    }
+
+
+    for (const child of node.any) {
+
+      const error = validateRuleNode(
+        child,
+        depth + 1
+      );
+
+      if (error) {
+        return error;
+      }
+    }
+
+
+    return null;
+  }
+
+
+  // ==========================================================
+  // NOT
+  // ==========================================================
+
+  if (
+    Object.prototype.hasOwnProperty.call(
+      node,
+      "not"
+    )
+  ) {
+
+    return validateRuleNode(
+      node.not,
+      depth + 1
+    );
+  }
+
+
+  // ==========================================================
+  // LEAF RULE
+  // ==========================================================
+
+  const metric = String(
+    node.metric || ""
+  ).trim();
+
+
+  if (
+    !VALID_RULE_METRICS.has(
+      metric
+    )
+  ) {
+    return `Unsupported metric: ${metric || "(blank)"}`;
+  }
+
+
+  // ==========================================================
+  // FIELD
+  // ==========================================================
+
+  if (
+    metric !== "total_runs"
+  ) {
+
+    const field = String(
+      node.field || ""
+    ).trim();
+
+
+    if (!field) {
+      return `Metric '${metric}' requires a field.`;
+    }
+
+
+    // Only permit normal dataframe-style
+    // column names.
+    if (
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(
+        field
+      )
+    ) {
+      return `Invalid field name: ${field}`;
+    }
+  }
+
+
+  // ==========================================================
+  // OPERATOR
+  // ==========================================================
+
+  const operatorNotRequired =
+    metric === "latest_contains" ||
+    metric === "latest_not_contains" ||
+    metric === "latest_in" ||
+    metric === "latest_not_in";
+
+
+  if (
+    !operatorNotRequired &&
+    metric !== "count_previous"
+  ) {
+
+    const operator = String(
+      node.operator || ""
+    ).trim();
+
+
+    if (
+      !VALID_RULE_OPERATORS.has(
+        operator
+      )
+    ) {
+      return `Unsupported operator: ${operator || "(blank)"}`;
+    }
+  }
+
+
+  // ==========================================================
+  // VALUE
+  // ==========================================================
+
+  if (
+    !Object.prototype.hasOwnProperty.call(
+      node,
+      "value"
+    )
+  ) {
+    return `Metric '${metric}' requires a value.`;
+  }
+
+
+  // ==========================================================
+  // COUNT PREVIOUS SPECIAL CASE
+  // ==========================================================
+
+  if (
+    metric === "count_previous"
+  ) {
+
+    const countOperator = String(
+      node.operator || ""
+    ).trim();
+
+
+    const fieldOperator = String(
+      node.field_operator || ""
+    ).trim();
+
+
+    if (
+      !VALID_RULE_OPERATORS.has(
+        countOperator
+      )
+    ) {
+      return "count_previous requires a valid operator.";
+    }
+
+
+    if (
+      !VALID_RULE_OPERATORS.has(
+        fieldOperator
+      )
+    ) {
+      return "count_previous requires a valid field_operator.";
+    }
+
+
+    if (
+      !Object.prototype.hasOwnProperty.call(
+        node,
+        "field_value"
+      )
+    ) {
+      return "count_previous requires field_value.";
+    }
+  }
+
+
+  return null;
+};
+
+
+// ============================================================
+// GET REVIEW CONDITIONS
+//
+// Returns:
+//
+// - all default conditions
+// - conditions created by this particular user
+//
+// Does NOT expose other users' rules.
+// ============================================================
+
+app.get(
+  "/api/review_conditions",
+  (req, res) => {
+
+    const userId = cleanUserId(
+      req.query.user_id
+    );
+
+
+    if (!userId) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "Missing user_id parameter",
+        });
+    }
+
+
+    const query = `
+      SELECT
+        id,
+        condition_name,
+        userId,
+        is_default,
+        active,
+        description,
+        rule_json,
+        created_at,
+        updated_at
+
+      FROM review_conditions
+
+      WHERE active = 1
+
+        AND (
+          is_default = 1
+          OR userId = ?
+        )
+
+      ORDER BY
+        is_default DESC,
+        condition_name ASC,
+        id ASC
+    `;
+
+
+    db.query(
+      query,
+      [userId],
+      (err, results) => {
+
+        if (err) {
+
+          console.error(
+            "Error fetching review conditions:",
+            err
+          );
+
+
+          return res
+            .status(500)
+            .json({
+              error:
+                "Database error",
+
+              details:
+                err.message,
+            });
+        }
+
+
+        const formattedResults = (
+          results || []
+        ).map((row) => {
+
+          let ruleJson =
+            row.rule_json;
+
+
+          // -----------------------------------------------
+          // Handle Buffer
+          // -----------------------------------------------
+
+          if (
+            Buffer.isBuffer(
+              ruleJson
+            )
+          ) {
+
+            ruleJson =
+              ruleJson.toString(
+                "utf8"
+              );
+          }
+
+
+          // -----------------------------------------------
+          // Handle JSON string
+          // -----------------------------------------------
+
+          if (
+            typeof ruleJson ===
+            "string"
+          ) {
+
+            try {
+
+              ruleJson =
+                JSON.parse(
+                  ruleJson
+                );
+
+            } catch (err) {
+
+              console.warn(
+                `Could not parse rule_json for condition ${row.id}`
+              );
+            }
+          }
+
+
+          return {
+
+            ...row,
+
+            is_default:
+              Number(
+                row.is_default || 0
+              ),
+
+            active:
+              Number(
+                row.active || 0
+              ),
+
+            rule_json:
+              ruleJson,
+          };
+        });
+
+
+        return res
+          .status(200)
+          .json({
+            data:
+              formattedResults,
+          });
+      }
+    );
+  }
+);
+
+
+// ============================================================
+// GET ONE REVIEW CONDITION
+// ============================================================
+
+app.get(
+  "/api/review_conditions/:id",
+  (req, res) => {
+
+    const conditionId =
+      Number(
+        req.params.id
+      );
+
+
+    const userId =
+      cleanUserId(
+        req.query.user_id
+      );
+
+
+    if (
+      !Number.isInteger(
+        conditionId
+      ) ||
+      conditionId <= 0
+    ) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "Invalid condition id",
+        });
+    }
+
+
+    if (!userId) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "Missing user_id parameter",
+        });
+    }
+
+
+    const query = `
+      SELECT
+        id,
+        condition_name,
+        userId,
+        is_default,
+        active,
+        description,
+        rule_json,
+        created_at,
+        updated_at
+
+      FROM review_conditions
+
+      WHERE id = ?
+
+        AND (
+          is_default = 1
+          OR userId = ?
+        )
+
+      LIMIT 1
+    `;
+
+
+    db.query(
+      query,
+      [
+        conditionId,
+        userId,
+      ],
+      (err, results) => {
+
+        if (err) {
+
+          console.error(
+            "Error fetching review condition:",
+            err
+          );
+
+
+          return res
+            .status(500)
+            .json({
+              error:
+                "Database error",
+
+              details:
+                err.message,
+            });
+        }
+
+
+        if (
+          !results ||
+          results.length === 0
+        ) {
+
+          return res
+            .status(404)
+            .json({
+              error:
+                "Review condition not found",
+            });
+        }
+
+
+        const row =
+          results[0];
+
+
+        try {
+
+          if (
+            Buffer.isBuffer(
+              row.rule_json
+            )
+          ) {
+
+            row.rule_json =
+              row.rule_json.toString(
+                "utf8"
+              );
+          }
+
+
+          if (
+            typeof row.rule_json ===
+            "string"
+          ) {
+
+            row.rule_json =
+              JSON.parse(
+                row.rule_json
+              );
+          }
+
+        } catch (err) {
+
+          console.warn(
+            "Could not parse rule_json:",
+            err
+          );
+        }
+
+
+        return res
+          .status(200)
+          .json({
+            data:
+              row,
+          });
+      }
+    );
+  }
+);
+
+
+// ============================================================
+// CREATE REVIEW CONDITION
+//
+// Creates USER condition only.
+//
+// Frontend users are NOT allowed to create
+// is_default = 1 conditions.
+// ============================================================
+
+app.post(
+  "/api/review_conditions",
+  (req, res) => {
+
+    const userId =
+      cleanUserId(
+        req.body.user_id ??
+        req.body.userId
+      );
+
+
+    const conditionName =
+      String(
+        req.body.condition_name ??
+        req.body.conditionName ??
+        ""
+      ).trim();
+
+
+    const description =
+      String(
+        req.body.description ??
+        ""
+      ).trim();
+
+
+    const active =
+      req.body.active === undefined
+        ? 1
+        : Number(
+            Boolean(
+              Number(
+                req.body.active
+              )
+            )
+          );
+
+
+    const ruleJson =
+      parseRuleJson(
+        req.body.rule_json ??
+        req.body.ruleJson
+      );
+
+
+    // ========================================================
+    // VALIDATION
+    // ========================================================
+
+    if (!userId) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "Missing user_id",
+        });
+    }
+
+
+    if (!conditionName) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "condition_name is required",
+        });
+    }
+
+
+    if (
+      conditionName.length >
+      255
+    ) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "condition_name cannot exceed 255 characters",
+        });
+    }
+
+
+    if (!ruleJson) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "rule_json must be a valid JSON object",
+        });
+    }
+
+
+    const validationError =
+      validateRuleNode(
+        ruleJson
+      );
+
+
+    if (
+      validationError
+    ) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "Invalid rule",
+
+          details:
+            validationError,
+        });
+    }
+
+
+    // ========================================================
+    // CHECK SAME USER / SAME NAME
+    // ========================================================
+
+    const duplicateQuery = `
+      SELECT id
+
+      FROM review_conditions
+
+      WHERE userId = ?
+        AND condition_name = ?
+
+      LIMIT 1
+    `;
+
+
+    db.query(
+      duplicateQuery,
+      [
+        userId,
+        conditionName,
+      ],
+      (
+        duplicateErr,
+        duplicateResults
+      ) => {
+
+        if (
+          duplicateErr
+        ) {
+
+          console.error(
+            "Error checking duplicate review rule:",
+            duplicateErr
+          );
+
+
+          return res
+            .status(500)
+            .json({
+              error:
+                "Database error",
+
+              details:
+                duplicateErr.message,
+            });
+        }
+
+
+        if (
+          duplicateResults &&
+          duplicateResults.length > 0
+        ) {
+
+          return res
+            .status(409)
+            .json({
+              error:
+                "You already have a rule with this name",
+            });
+        }
+
+
+        // ====================================================
+        // INSERT
+        // ====================================================
+
+        const insertQuery = `
+          INSERT INTO review_conditions
+          (
+            condition_name,
+            userId,
+            is_default,
+            active,
+            description,
+            rule_json
+          )
+
+          VALUES
+          (
+            ?,
+            ?,
+            0,
+            ?,
+            ?,
+            ?
+          )
+        `;
+
+
+        db.query(
+          insertQuery,
+          [
+            conditionName,
+            userId,
+            active,
+            description,
+            JSON.stringify(
+              ruleJson
+            ),
+          ],
+          (
+            insertErr,
+            result
+          ) => {
+
+            if (
+              insertErr
+            ) {
+
+              console.error(
+                "Error creating review condition:",
+                insertErr
+              );
+
+
+              return res
+                .status(500)
+                .json({
+                  error:
+                    "Database error",
+
+                  details:
+                    insertErr.message,
+                });
+            }
+
+
+            return res
+              .status(201)
+              .json({
+
+                message:
+                  "Review condition created",
+
+                data: {
+
+                  id:
+                    result.insertId,
+
+                  condition_name:
+                    conditionName,
+
+                  userId,
+
+                  is_default:
+                    0,
+
+                  active,
+
+                  description,
+
+                  rule_json:
+                    ruleJson,
+                },
+              });
+          }
+        );
+      }
+    );
+  }
+);
+
+
+// ============================================================
+// UPDATE REVIEW CONDITION
+//
+// User can ONLY update:
+//
+// their own rule
+//
+// AND
+//
+// is_default = 0
+//
+// Default rules therefore cannot be changed.
+// ============================================================
+
+app.put(
+  "/api/review_conditions/:id",
+  (req, res) => {
+
+    const conditionId =
+      Number(
+        req.params.id
+      );
+
+
+    const userId =
+      cleanUserId(
+        req.body.user_id ??
+        req.body.userId
+      );
+
+
+    const conditionName =
+      String(
+        req.body.condition_name ??
+        req.body.conditionName ??
+        ""
+      ).trim();
+
+
+    const description =
+      String(
+        req.body.description ??
+        ""
+      ).trim();
+
+
+    const active =
+      req.body.active === undefined
+        ? 1
+        : Number(
+            Boolean(
+              Number(
+                req.body.active
+              )
+            )
+          );
+
+
+    const ruleJson =
+      parseRuleJson(
+        req.body.rule_json ??
+        req.body.ruleJson
+      );
+
+
+    // ========================================================
+    // VALIDATION
+    // ========================================================
+
+    if (
+      !Number.isInteger(
+        conditionId
+      ) ||
+      conditionId <= 0
+    ) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "Invalid condition id",
+        });
+    }
+
+
+    if (!userId) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "Missing user_id",
+        });
+    }
+
+
+    if (!conditionName) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "condition_name is required",
+        });
+    }
+
+
+    if (!ruleJson) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "rule_json must be a valid JSON object",
+        });
+    }
+
+
+    const validationError =
+      validateRuleNode(
+        ruleJson
+      );
+
+
+    if (
+      validationError
+    ) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "Invalid rule",
+
+          details:
+            validationError,
+        });
+    }
+
+
+    // ========================================================
+    // CHECK OWNERSHIP
+    // ========================================================
+
+    const ownershipQuery = `
+      SELECT id
+
+      FROM review_conditions
+
+      WHERE id = ?
+        AND userId = ?
+        AND is_default = 0
+
+      LIMIT 1
+    `;
+
+
+    db.query(
+      ownershipQuery,
+      [
+        conditionId,
+        userId,
+      ],
+      (
+        ownershipErr,
+        ownershipResults
+      ) => {
+
+        if (
+          ownershipErr
+        ) {
+
+          console.error(
+            "Error checking review-rule ownership:",
+            ownershipErr
+          );
+
+
+          return res
+            .status(500)
+            .json({
+              error:
+                "Database error",
+
+              details:
+                ownershipErr.message,
+            });
+        }
+
+
+        if (
+          !ownershipResults ||
+          ownershipResults.length === 0
+        ) {
+
+          return res
+            .status(404)
+            .json({
+              error:
+                "Rule not found or you are not allowed to edit it",
+            });
+        }
+
+
+        // ====================================================
+        // CHECK DUPLICATE NAME
+        // ====================================================
+
+        const duplicateQuery = `
+          SELECT id
+
+          FROM review_conditions
+
+          WHERE userId = ?
+            AND condition_name = ?
+            AND id <> ?
+
+          LIMIT 1
+        `;
+
+
+        db.query(
+          duplicateQuery,
+          [
+            userId,
+            conditionName,
+            conditionId,
+          ],
+          (
+            duplicateErr,
+            duplicateResults
+          ) => {
+
+            if (
+              duplicateErr
+            ) {
+
+              console.error(
+                "Error checking duplicate review-rule name:",
+                duplicateErr
+              );
+
+
+              return res
+                .status(500)
+                .json({
+                  error:
+                    "Database error",
+
+                  details:
+                    duplicateErr.message,
+                });
+            }
+
+
+            if (
+              duplicateResults &&
+              duplicateResults.length > 0
+            ) {
+
+              return res
+                .status(409)
+                .json({
+                  error:
+                    "You already have another rule with this name",
+                });
+            }
+
+
+            // =================================================
+            // UPDATE
+            // =================================================
+
+            const updateQuery = `
+              UPDATE review_conditions
+
+              SET
+                condition_name = ?,
+                active = ?,
+                description = ?,
+                rule_json = ?
+
+              WHERE id = ?
+                AND userId = ?
+                AND is_default = 0
+            `;
+
+
+            db.query(
+              updateQuery,
+              [
+                conditionName,
+                active,
+                description,
+
+                JSON.stringify(
+                  ruleJson
+                ),
+
+                conditionId,
+                userId,
+              ],
+              (
+                updateErr,
+                result
+              ) => {
+
+                if (
+                  updateErr
+                ) {
+
+                  console.error(
+                    "Error updating review condition:",
+                    updateErr
+                  );
+
+
+                  return res
+                    .status(500)
+                    .json({
+                      error:
+                        "Database error",
+
+                      details:
+                        updateErr.message,
+                    });
+                }
+
+
+                if (
+                  !result.affectedRows
+                ) {
+
+                  return res
+                    .status(404)
+                    .json({
+                      error:
+                        "Rule was not updated",
+                    });
+                }
+
+
+                return res
+                  .status(200)
+                  .json({
+
+                    message:
+                      "Review condition updated",
+
+                    data: {
+
+                      id:
+                        conditionId,
+
+                      condition_name:
+                        conditionName,
+
+                      userId,
+
+                      is_default:
+                        0,
+
+                      active,
+
+                      description,
+
+                      rule_json:
+                        ruleJson,
+                    },
+                  });
+              }
+            );
+          }
+        );
+      }
+    );
+  }
+);
+
+
+// ============================================================
+// DELETE REVIEW CONDITION
+//
+// User can ONLY delete:
+//
+// own rule
+//
+// AND
+//
+// is_default = 0
+//
+// ============================================================
+
+app.delete(
+  "/api/review_conditions/:id",
+  (req, res) => {
+
+    const conditionId =
+      Number(
+        req.params.id
+      );
+
+
+    const userId =
+      cleanUserId(
+        req.query.user_id ??
+        req.body?.user_id ??
+        req.body?.userId
+      );
+
+
+    if (
+      !Number.isInteger(
+        conditionId
+      ) ||
+      conditionId <= 0
+    ) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "Invalid condition id",
+        });
+    }
+
+
+    if (!userId) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "Missing user_id",
+        });
+    }
+
+
+    const query = `
+      DELETE FROM review_conditions
+
+      WHERE id = ?
+        AND userId = ?
+        AND is_default = 0
+    `;
+
+
+    db.query(
+      query,
+      [
+        conditionId,
+        userId,
+      ],
+      (
+        err,
+        result
+      ) => {
+
+        if (err) {
+
+          console.error(
+            "Error deleting review condition:",
+            err
+          );
+
+
+          return res
+            .status(500)
+            .json({
+              error:
+                "Database error",
+
+              details:
+                err.message,
+            });
+        }
+
+
+        if (
+          !result.affectedRows
+        ) {
+
+          return res
+            .status(404)
+            .json({
+              error:
+                "Rule not found or you are not allowed to delete it",
+            });
+        }
+
+
+        return res
+          .status(200)
+          .json({
+
+            message:
+              "Review condition deleted",
+
+            id:
+              conditionId,
+          });
+      }
+    );
+  }
+);
+
+
+// ============================================================
+// GET USER RULE MODE
+//
+// default_only
+// default_plus_defined
+// defined_only
+//
+// ============================================================
+
+app.get(
+  "/api/review_rule_preferences",
+  (req, res) => {
+
+    const userId =
+      cleanUserId(
+        req.query.user_id
+      );
+
+
+    if (!userId) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "Missing user_id parameter",
+        });
+    }
+
+
+    const query = `
+      SELECT
+        userId,
+        mode,
+        created_at,
+        updated_at
+
+      FROM review_rule_preferences
+
+      WHERE userId = ?
+
+      LIMIT 1
+    `;
+
+
+    db.query(
+      query,
+      [userId],
+      (
+        err,
+        results
+      ) => {
+
+        if (err) {
+
+          console.error(
+            "Error fetching review rule preferences:",
+            err
+          );
+
+
+          return res
+            .status(500)
+            .json({
+              error:
+                "Database error",
+
+              details:
+                err.message,
+            });
+        }
+
+
+        // User never saved a preference.
+        // Default to default + defined.
+        if (
+          !results ||
+          results.length === 0
+        ) {
+
+          return res
+            .status(200)
+            .json({
+
+              data: {
+
+                userId,
+
+                mode:
+                  "default_plus_defined",
+              },
+            });
+        }
+
+
+        return res
+          .status(200)
+          .json({
+
+            data:
+              results[0],
+          });
+      }
+    );
+  }
+);
+
+
+// ============================================================
+// SAVE / UPDATE USER RULE MODE
+// ============================================================
+
+app.put(
+  "/api/review_rule_preferences",
+  (req, res) => {
+
+    const userId =
+      cleanUserId(
+        req.body.user_id ??
+        req.body.userId
+      );
+
+
+    const mode =
+      String(
+        req.body.mode ||
+        ""
+      ).trim();
+
+
+    if (!userId) {
+
+      return res
+        .status(400)
+        .json({
+          error:
+            "Missing user_id",
+        });
+    }
+
+
+    if (
+      !VALID_REVIEW_RULE_MODES.has(
+        mode
+      )
+    ) {
+
+      return res
+        .status(400)
+        .json({
+
+          error:
+            "Invalid mode",
+
+          allowed: [
+            "default_only",
+            "default_plus_defined",
+            "defined_only",
+          ],
+        });
+    }
+
+
+    const query = `
+      INSERT INTO review_rule_preferences
+      (
+        userId,
+        mode
+      )
+
+      VALUES
+      (
+        ?,
+        ?
+      )
+
+      ON DUPLICATE KEY UPDATE
+
+        mode =
+          VALUES(mode),
+
+        updated_at =
+          CURRENT_TIMESTAMP
+    `;
+
+
+    db.query(
+      query,
+      [
+        userId,
+        mode,
+      ],
+      (err) => {
+
+        if (err) {
+
+          console.error(
+            "Error saving review rule preference:",
+            err
+          );
+
+
+          return res
+            .status(500)
+            .json({
+              error:
+                "Database error",
+
+              details:
+                err.message,
+            });
+        }
+
+
+        return res
+          .status(200)
+          .json({
+
+            message:
+              "Review rule preference saved",
+
+            data: {
+
+              userId,
+
+              mode,
+            },
+          });
+      }
+    );
+  }
+);
+
+
 app.post('/api/race_watchlist', (req, res) => {
   const {
     user_id,
