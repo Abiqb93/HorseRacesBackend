@@ -61,7 +61,7 @@ const validTables = [
   'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
   'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion', 'StrideParsPercentilesPerTrack', 
   'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift', 'foalSale_Dashboard', 'foalSale_Pedigree', 'foalSale_StallionStats', 'foalSale_Sales', 'foalSale_StudFeeAnalysis', 'jockey_tracking', 'report_potential_stallions',
-  'sectionsparsed', 'stallion-fee'
+  'sectionsparsed', 'stallion-fee', 'racingpost_results'
 ];
 
 
@@ -2714,27 +2714,69 @@ const runApiDataTable2Query = ({
   }
 
   if (normalizedStartDate) {
-    whereParts.push("meetingDate >= ?");
+    whereParts.push("a.meetingDate >= ?");
     params.push(normalizedStartDate);
   }
 
   if (normalizedEndDate) {
-    whereParts.push("meetingDate <= ?");
+    whereParts.push("a.meetingDate <= ?");
     params.push(normalizedEndDate);
   }
 
   const safeOrder = String(order || "").toLowerCase() === "asc" ? "ASC" : "DESC";
 
+  // Enrich Timeform/APIData_Table2 rows with Racing Post result ratings.
+  //
+  // Matching strategy:
+  //   1. normalized horse name
+  //   2. race date
+  //   3. finishing position when both sources contain it
+  //
+  // racingpost_results can be appended to repeatedly, so the subquery groups
+  // duplicate uploads down to one rating row per horse/date/position.
   let query = `
-    SELECT *
-    FROM APIData_Table2
+    SELECT
+      a.*,
+      rp.rpOR AS racingPostOR,
+      rp.rpTS AS racingPostSpeedFig,
+      rp.rpRPR AS racingPostRPR,
+      rp.rpRaceID AS racingPostRaceID,
+      rp.rpRaceTrack AS racingPostRaceTrack,
+      rp.rpRaceTime AS racingPostRaceTime
+    FROM APIData_Table2 a
+    LEFT JOIN (
+      SELECT
+        UPPER(TRIM(Horse)) AS matchHorseName,
+        DATE(RaceDate) AS matchRaceDate,
+        CAST(Position AS SIGNED) AS matchPosition,
+        MAX(CAST(\`OR\` AS DECIMAL(10,2))) AS rpOR,
+        MAX(CAST(TS AS DECIMAL(10,2))) AS rpTS,
+        MAX(CAST(RPR AS DECIMAL(10,2))) AS rpRPR,
+        MAX(CAST(RaceID AS CHAR)) AS rpRaceID,
+        MAX(RaceTrack) AS rpRaceTrack,
+        MAX(RaceTime) AS rpRaceTime
+      FROM racingpost_results
+      WHERE Horse IS NOT NULL
+        AND RaceDate IS NOT NULL
+      GROUP BY
+        UPPER(TRIM(Horse)),
+        DATE(RaceDate),
+        CAST(Position AS SIGNED)
+    ) rp
+      ON rp.matchHorseName = UPPER(TRIM(a.horseName))
+     AND rp.matchRaceDate = DATE(a.meetingDate)
+     AND (
+       rp.matchPosition IS NULL
+       OR a.positionOfficial IS NULL
+       OR rp.matchPosition = CAST(a.positionOfficial AS SIGNED)
+     )
   `;
 
   if (whereParts.length) {
     query += ` WHERE ${whereParts.join(" AND ")} `;
   }
 
-  query += ` ORDER BY meetingDate ${safeOrder}, scheduledTimeOfRaceLocal ${safeOrder}, raceNumber ${safeOrder} `;
+  query += ` ORDER BY a.meetingDate ${safeOrder}, a.scheduledTimeOfRaceLocal ${safeOrder}, a.raceNumber ${safeOrder} `;
 
   if (limit !== null && limit !== undefined) {
     query += ` LIMIT ? OFFSET ? `;
@@ -2778,7 +2820,7 @@ app.get('/api/APIData_Table2/horse', (req, res) => {
   return runApiDataTable2Query({
     res,
     label: `horseName=${horseName}`,
-    whereParts: ["horseName = ?"],
+    whereParts: ["a.horseName = ?"],
     params: [String(horseName).trim()],
     startDate,
     endDate,
@@ -2868,7 +2910,7 @@ app.get('/api/APIData_Table2/sire', (req, res) => {
   return runApiDataTable2Query({
     res,
     label: `sireName=${sireName}`,
-    whereParts: ["sireName = ?"],
+    whereParts: ["a.sireName = ?"],
     params: [String(sireName).trim()],
     startDate,
     endDate,
@@ -2889,7 +2931,7 @@ app.get('/api/APIData_Table2/dam', (req, res) => {
   return runApiDataTable2Query({
     res,
     label: `damName=${damName}`,
-    whereParts: ["damName = ?"],
+    whereParts: ["a.damName = ?"],
     params: [String(damName).trim()],
     startDate,
     endDate,
@@ -2912,7 +2954,7 @@ app.get('/api/APIData_Table2/owner', (req, res) => {
   return runApiDataTable2Query({
     res,
     label: `ownerLatest=${ownerLatest}`,
-    whereParts: ["ownerLatest = ?"],
+    whereParts: ["a.ownerLatest = ?"],
     params: [String(ownerLatest).trim()],
     startDate,
     endDate,
@@ -2935,7 +2977,7 @@ app.get('/api/APIData_Table2/jockey', (req, res) => {
   return runApiDataTable2Query({
     res,
     label: `jockeyLatest=${jockeyLatest}`,
-    whereParts: ["jockeyLatest = ?"],
+    whereParts: ["a.jockeyLatest = ?"],
     params: [String(jockeyLatest).trim()],
     startDate,
     endDate,
@@ -2971,32 +3013,32 @@ app.get('/api/APIData_Table2', (req, res) => {
       return res.status(400).json({ error: "Invalid meetingDate. Use YYYY-MM-DD." });
     }
 
-    whereParts.push("meetingDate BETWEEN ? AND ?");
+    whereParts.push("a.meetingDate BETWEEN ? AND ?");
     params.push(normalizedMeetingDateStart, normalizedMeetingDateEnd);
   }
 
   if (horseName && String(horseName).trim()) {
-    whereParts.push("horseName = ?");
+    whereParts.push("a.horseName = ?");
     params.push(String(horseName).trim());
   }
 
   if (sireName && String(sireName).trim()) {
-    whereParts.push("sireName = ?");
+    whereParts.push("a.sireName = ?");
     params.push(String(sireName).trim());
   }
 
   if (damName && String(damName).trim()) {
-    whereParts.push("damName = ?");
+    whereParts.push("a.damName = ?");
     params.push(String(damName).trim());
   }
 
   if (courseName && String(courseName).trim()) {
-    whereParts.push("courseName = ?");
+    whereParts.push("a.courseName = ?");
     params.push(String(courseName).trim());
   }
 
   if (countryCode && String(countryCode).trim()) {
-    whereParts.push("countryCode = ?");
+    whereParts.push("a.countryCode = ?");
     params.push(String(countryCode).trim());
   }
 
