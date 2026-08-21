@@ -4773,6 +4773,22 @@ const ensureReviewRulePreferencesTable = () => {
 ensureReviewRulePreferencesTable();
 
 
+
+// Prevent browser / proxy caching of dynamic review rules
+app.use("/api/review_conditions", (req, res, next) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  next();
+});
+
+app.use("/api/review_rule_preferences", (req, res, next) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  next();
+});
+
 // ============================================================
 // GET REVIEW CONDITIONS
 //
