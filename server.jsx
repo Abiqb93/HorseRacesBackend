@@ -4949,22 +4949,17 @@ app.get(
 
 
 // ============================================================
-// MANAGE REVIEW CONDITIONS FOR ONE USER
+// GET REVIEW CONDITIONS FOR MANAGEMENT
 //
-// Dedicated endpoint used by the frontend Manage Rules panel.
-// This intentionally avoids query-param ambiguity and returns:
-//   - every default rule
-//   - every custom rule whose userId matches :userId
+// Returns:
+//   - all shared default rules
+//   - all personal rules owned by :userId
 //
-// Example:
-//   GET /api/review_conditions/manage/Tom
+// Used by the frontend "Manage Rules" panel.
 // ============================================================
 
 app.get("/api/review_conditions/manage/:userId", (req, res) => {
-  res.setHeader(
-    "Cache-Control",
-    "no-store, no-cache, must-revalidate, proxy-revalidate"
-  );
+  res.setHeader("Cache-Control", "no-store");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
 
@@ -4992,7 +4987,7 @@ app.get("/api/review_conditions/manage/:userId", (req, res) => {
     FROM review_conditions
     WHERE
       is_default = 1
-      OR userId = ?
+      OR LOWER(TRIM(userId)) = LOWER(TRIM(?))
     ORDER BY
       is_default DESC,
       id ASC
@@ -5001,15 +4996,12 @@ app.get("/api/review_conditions/manage/:userId", (req, res) => {
   db.query(sql, [userId], (err, rows) => {
     if (err) {
       console.error(
-        "❌ GET /api/review_conditions/manage/:userId failed:",
-        {
-          requestedUser: userId,
-          error: err,
-        }
+        "GET /api/review_conditions/manage/:userId failed:",
+        err
       );
 
       return res.status(500).json({
-        error: "Failed to fetch review conditions for management",
+        error: "Failed to fetch review conditions",
         details: err.message,
       });
     }
@@ -5017,24 +5009,12 @@ app.get("/api/review_conditions/manage/:userId", (req, res) => {
     const data = (rows || []).map(normalizeReviewConditionRow);
 
     console.log(
-      `[review_conditions/manage] requested user=${userId}; ` +
-      `returned=${data.length}; ids=${data.map((r) => r.id).join(",")}`
-    );
-
-    console.log(
-      "[review_conditions/manage] rows:",
-      data.map((row) => ({
-        id: row.id,
-        condition_name: row.condition_name,
-        userId: row.userId,
-        is_default: row.is_default,
-        active: row.active,
-      }))
+      `[review_conditions/manage] user=${userId}; ` +
+      `count=${data.length}; ` +
+      `ids=${data.map((row) => row.id).join(",")}`
     );
 
     return res.status(200).json({
-      requestedUser: userId,
-      count: data.length,
       data,
     });
   });
