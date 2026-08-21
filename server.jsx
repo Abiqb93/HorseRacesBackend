@@ -4555,6 +4555,35 @@ app.post('/api/reviewed_results', (req, res) => {
 
 
 // ============================================================
+// REVIEW RULE RESPONSE CACHE CONTROL
+//
+// Do this on the RESPONSE side only.
+// Frontend does not need to send Cache-Control/Pragma request headers,
+// so this does not create a CORS preflight-header problem.
+// ============================================================
+
+app.use("/api/review_conditions", (req, res, next) => {
+  res.setHeader(
+    "Cache-Control",
+    "no-store, no-cache, must-revalidate, proxy-revalidate"
+  );
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
+
+app.use("/api/review_rule_preferences", (req, res, next) => {
+  res.setHeader(
+    "Cache-Control",
+    "no-store, no-cache, must-revalidate, proxy-revalidate"
+  );
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
+
+
+// ============================================================
 // CONSTANTS
 // ============================================================
 
@@ -4804,20 +4833,44 @@ app.get(
   "/api/review_conditions",
   (req, res) => {
 
+    // These rule definitions are user-specific and can change at any time.
+    // Never allow the browser / proxy to serve a stale copy.
+    res.setHeader(
+      "Cache-Control",
+      "no-store, no-cache, must-revalidate, proxy-revalidate"
+    );
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+
     const userId =
       cleanReviewUserId(
         req.query.user_id ??
         req.query.userId
       );
 
-
     if (!userId) {
       return res.status(400).json({
-        error:
-          "Missing user_id parameter",
+        error: "Missing user_id parameter",
       });
     }
 
+    /*
+      IMPORTANT:
+
+      This endpoint is the authoritative source for the Manage Rules UI.
+
+      It must return:
+        1) all shared default rules
+        2) every personal rule owned by the requesting user
+
+      Example for Tom:
+        Condition1 / default
+        Condition2 / default
+        Condition3 / default
+        Tom's own custom rules
+
+      Rules owned by other users must NOT be returned.
+    */
 
     const sql = `
       SELECT
@@ -4835,17 +4888,13 @@ app.get(
 
       WHERE
         is_default = 1
-
-        OR LOWER(TRIM(userId))
-           = LOWER(TRIM(?))
+        OR TRIM(LOWER(CAST(userId AS CHAR))) =
+           TRIM(LOWER(CAST(? AS CHAR)))
 
       ORDER BY
         is_default DESC,
-        active DESC,
-        condition_name ASC,
         id ASC
     `;
-
 
     db.query(
       sql,
@@ -4854,30 +4903,40 @@ app.get(
 
         if (err) {
           console.error(
-            "❌ GET /api/review_conditions:",
-            err
+            "❌ GET /api/review_conditions failed:",
+            {
+              requestedUser: userId,
+              error: err,
+            }
           );
 
           return res.status(500).json({
-            error:
-              "Failed to fetch review conditions",
-
-            details:
-              err.message,
+            error: "Failed to fetch review conditions",
+            details: err.message,
           });
         }
-
 
         const data =
           (rows || []).map(
             normalizeReviewConditionRow
           );
 
+        const debugRows = data.map((row) => ({
+          id: row.id,
+          name: row.condition_name,
+          userId: row.userId,
+          is_default: row.is_default,
+          active: row.active,
+        }));
 
         console.log(
-          `✅ Review conditions fetched for ${userId}: ${data.length}`
+          `[review_conditions] requested user: ${userId}`
         );
 
+        console.log(
+          `[review_conditions] returned ${data.length} rows:`,
+          debugRows
+        );
 
         return res.status(200).json({
           data,
@@ -5786,6 +5845,13 @@ app.delete(
 app.get(
   "/api/review_rule_preferences",
   (req, res) => {
+
+    res.setHeader(
+      "Cache-Control",
+      "no-store, no-cache, must-revalidate, proxy-revalidate"
+    );
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
 
     const userId =
       cleanReviewUserId(
@@ -8804,28 +8870,174 @@ app.patch('/api/potential_stallion/:id/tagged_users', (req, res) => {
 
 // GET horses tagged for a specific user
 app.get("/api/review_horses/tagged_for/:userId", (req, res) => {
-  const userId = decodeURIComponent(req.params.userId || "").trim();
+  const userId =
+    decodeURIComponent(
+      req.params.userId || ""
+    ).trim();
 
   if (!userId) {
-    return res.status(400).json({ error: "Missing userId parameter" });
+    return res.status(400).json({
+      error: "Missing userId parameter",
+    });
   }
+
+  /*
+    `review_horses` currently stores tagging metadata in `tagged_users`.
+
+    Historical rows may contain:
+      - NULL
+      - ""
+      - []
+      - JSON text
+      - a JSON array of objects such as:
+        [
+          {
+            "taggedBy": "SomeUser",
+            "taggedUsers": ["Tom"],
+            "reason": "..."
+          }
+        ]
+
+    Do not use the old `tagged_for` column here.
+    Fetch rows that actually have tagging metadata and safely parse them
+    in Node so one malformed legacy row cannot crash the endpoint.
+  */
 
   const sql = `
     SELECT *
     FROM review_horses
-    WHERE tagged_for = ?
+    WHERE tagged_users IS NOT NULL
+      AND TRIM(CAST(tagged_users AS CHAR)) <> ''
+      AND TRIM(CAST(tagged_users AS CHAR)) <> '[]'
     ORDER BY id DESC
   `;
 
-  db.query(sql, [userId], (err, rows) => {
-    if (err) {
-      console.error("Error fetching tagged review horses:", err);
-      return res.status(500).json({ error: "Database query failed" });
-    }
+  db.query(
+    sql,
+    (err, rows) => {
 
-    return res.status(200).json({ data: rows });
-  });
+      if (err) {
+        console.error(
+          "❌ GET /api/review_horses/tagged_for/:userId failed:",
+          {
+            requestedUser: userId,
+            error: err,
+          }
+        );
+
+        return res.status(500).json({
+          error: "Failed to fetch tagged review horses",
+          details: err.message,
+        });
+      }
+
+      const wantedUser =
+        String(userId)
+          .trim()
+          .replace(/^@+/, "")
+          .toLowerCase();
+
+      const safeParseTaggedUsers = (value) => {
+        if (
+          value === null ||
+          value === undefined ||
+          value === ""
+        ) {
+          return [];
+        }
+
+        let parsed = value;
+
+        if (Buffer.isBuffer(parsed)) {
+          parsed =
+            parsed.toString("utf8");
+        }
+
+        if (typeof parsed === "string") {
+          try {
+            parsed =
+              JSON.parse(parsed);
+          } catch {
+            return [];
+          }
+        }
+
+        return Array.isArray(parsed)
+          ? parsed
+          : [];
+      };
+
+      const taggedRows =
+        (rows || []).filter((row) => {
+
+          const tags =
+            safeParseTaggedUsers(
+              row.tagged_users
+            );
+
+          return tags.some((tag) => {
+
+            // Legacy possibility:
+            // ["Tom", "Fred"]
+            if (
+              typeof tag === "string"
+            ) {
+              return (
+                tag
+                  .trim()
+                  .replace(/^@+/, "")
+                  .toLowerCase()
+                ===
+                wantedUser
+              );
+            }
+
+            if (
+              !tag ||
+              typeof tag !== "object"
+            ) {
+              return false;
+            }
+
+            const rawTaggedUsers =
+              tag.taggedUsers ??
+              tag.tagged_users ??
+              tag.users ??
+              tag.usernames ??
+              [];
+
+            const taggedUsers =
+              Array.isArray(
+                rawTaggedUsers
+              )
+                ? rawTaggedUsers
+                : typeof rawTaggedUsers === "string"
+                ? [rawTaggedUsers]
+                : [];
+
+            return taggedUsers.some(
+              (taggedUser) =>
+                String(taggedUser || "")
+                  .trim()
+                  .replace(/^@+/, "")
+                  .toLowerCase()
+                ===
+                wantedUser
+            );
+          });
+        });
+
+      console.log(
+        `[tagged_for] requested user: ${userId} | returned: ${taggedRows.length}`
+      );
+
+      return res.status(200).json({
+        data: taggedRows,
+      });
+    }
+  );
 });
+
 
 // POST /api/notify_horses  -> insert (or touch updated_at if duplicate)
 app.post("/api/notify_horses", (req, res) => {
