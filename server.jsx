@@ -9627,6 +9627,11 @@ app.post("/api/user-preps-reviewlist", (req, res) => {
 });
 
 // Start the server
+// France Galop import (racecards / entries / results via the parse.bot
+// scraper) — see franceGalop.js for routes, identity matching and env.
+const { registerFranceGalop } = require("./franceGalop");
+registerFranceGalop(app, db);
+
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
