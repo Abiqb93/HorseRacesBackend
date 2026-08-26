@@ -2,10 +2,17 @@
  * France Galop import via the parse.bot scraper (france-galop.com API).
  *
  * Endpoints (GET, query-string params, X-API-Key auth):
- *   list_races?date=YYYY-MM-DD      every meeting/race for a date with race_ids
- *   get_race_results?race_id=...    race meta + runners (results)
- *   get_race_entries?race_id=...    race meta + declared runners (cards/entries)
- *   search_horse?query=...          identity lookup: name, sex, country, birth_year
+ *   list_meeting_races?meeting_url=...  races (with race_ids) for one meeting page
+ *   get_race_results?race_id=...        race meta + runners (results)
+ *   get_race_entries?race_id=...        race meta + declared runners (cards/entries)
+ *   search_horse?query=...              identity lookup: name, sex, country, birth_year
+ *
+ * Day enumeration: france-galop.com gates arbitrary-date browsing behind its
+ * Azure AD B2C login, but /en/racing/today and /en/racing/tomorrow are public.
+ * We scrape those two pages directly for meeting URLs, expand each through
+ * list_meeting_races, and persist every race id in france_race_index — so
+ * results for a past date are fetched by the ids captured while that date
+ * was still "today"/"tomorrow" (race detail pages stay public by direct id).
  *
  * Results flow into APIData_Table2 and entries into RacesAndEntries — the
  * same tables the platform's pages and horse profiles already read, so
@@ -25,8 +32,10 @@
  *   PARSEBOT_API_KEY    pmx_... (never committed)
  *   PARSEBOT_FG_SCRAPER scraper id (defaults to the France Galop scraper)
  *   FG_SYNC_TOKEN       shared secret guarding the sync route
- *   FG_AUTOSYNC=1       nightly self-sync (21:30 UTC: yesterday's results,
- *                       tomorrow's entries)
+ *   FG_AUTOSYNC=1       nightly self-sync (21:30 UTC: today's results,
+ *                       tomorrow's entries, catch-up on yesterday's results)
+ *   FG_SKIP_COURSES     extra comma-separated course names to skip (the FG
+ *                       day pages also list partner meetings abroad)
  *
  * Routes:
  *   POST /api/francegalop/sync { date, kinds?: ["results","entries"], dryRun? }
@@ -37,7 +46,23 @@
 const SCRAPER_ID = process.env.PARSEBOT_FG_SCRAPER || "717461ba-b59b-4471-b5d9-d3bfee8ced54";
 const API_BASE = "https://api.parse.bot/scraper";
 
-const LIST_ENDPOINTS = ["list_races", "get_races", "list_meetings"];
+const FG_PUBLIC_BASE = "https://www.france-galop.com";
+
+// Partner meetings abroad appear on the FG day pages; skip the recurring ones.
+const FOREIGN_COURSES = new Set(
+  [
+    "SARATOGA", "DEL MAR", "BELMONT", "BELMONT PARK", "AQUEDUCT", "KEENELAND",
+    "CHURCHILL DOWNS", "SANTA ANITA", "GULFSTREAM", "GULFSTREAM PARK", "WOODBINE",
+    "MEYDAN", "JEBEL ALI", "ABU DHABI", "SHARJAH", "KING ABDULAZIZ",
+    ...String(process.env.FG_SKIP_COURSES || "").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
+  ]
+);
+
+/** YYYY-MM-DD in Europe/Paris, offset by `plusDays`. */
+function parisDate(plusDays = 0) {
+  const d = new Date(Date.now() + plusDays * 24 * 3600 * 1000);
+  return d.toLocaleDateString("en-CA", { timeZone: "Europe/Paris" });
+}
 
 async function callScraper(endpoint, params) {
   const key = process.env.PARSEBOT_API_KEY;
@@ -141,6 +166,18 @@ async function ensureAuxTables(db) {
   );
   await query(
     db,
+    `CREATE TABLE IF NOT EXISTS france_race_index (
+       id INT AUTO_INCREMENT PRIMARY KEY,
+       raceDate VARCHAR(10) NOT NULL, courseName VARCHAR(80),
+       raceId VARCHAR(120) NOT NULL, raceTitle VARCHAR(200), raceTime VARCHAR(20),
+       meetingUrl VARCHAR(300),
+       createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+       UNIQUE KEY uq_race (raceId),
+       KEY idx_date (raceDate)
+     )`
+  );
+  await query(
+    db,
     `CREATE TABLE IF NOT EXISTS france_sync_log (
        id INT AUTO_INCREMENT PRIMARY KEY,
        runAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -223,7 +260,7 @@ function mapRace(race, raceMeta) {
       return m ? Number(m[1]) : (race.runners || []).length;
     })(),
     winnerTimeSeconds: winnerTimeSeconds(race.winner_time),
-    scheduledTimeOfRaceLocal: raceMeta?.time || null,
+    scheduledTimeOfRaceLocal: String(raceMeta?.scheduled_time || raceMeta?.time || "").replace(/(\d{1,2})h(\d{2})/, "$1:$2") || null,
     sectionalPdf: race.sectional_times_pdf_url || null,
     raceId: raceMeta?.race_id || null,
   };
@@ -305,23 +342,73 @@ async function upsertEntryRow(db, race, runner, canonicalName) {
  * Sync driver
  * ---------------------------------------------------------------- */
 
-async function listRaces(date) {
-  let lastErr = null;
-  for (const name of LIST_ENDPOINTS) {
+/** Meeting URLs on a public FG day page ("today" | "tomorrow"). */
+async function fetchDayMeetingUrls(page) {
+  const res = await fetch(`${FG_PUBLIC_BASE}/en/racing/${page}`, {
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; BlandfordBloodstock/1.0)" },
+  });
+  if (!res.ok) throw new Error(`france-galop.com /en/racing/${page} HTTP ${res.status}`);
+  const html = await res.text();
+  const urls = new Set();
+  for (const m of html.matchAll(/href="(\/en\/racing\/meeting\/\d{8}\/[^"]+)"/g)) {
+    urls.add(`${FG_PUBLIC_BASE}${m[1]}`);
+  }
+  return [...urls];
+}
+
+/**
+ * Races for a date. FG only serves today/tomorrow anonymously, so those are
+ * enumerated live (and indexed); any other date must come from the index
+ * captured while it was current.
+ */
+async function listRaces(db, date) {
+  const stored = await query(
+    db,
+    `SELECT raceId, courseName, raceTitle, raceTime FROM france_race_index WHERE raceDate = ?`,
+    [date]
+  ).catch(() => []);
+  if (stored.length) {
+    return stored.map((r) => ({
+      race_id: r.raceId, course: r.courseName, race_name: r.raceTitle, scheduled_time: r.raceTime,
+    }));
+  }
+
+  const page = date === parisDate(0) ? "today" : date === parisDate(1) ? "tomorrow" : null;
+  if (!page) {
+    throw new Error(
+      `no indexed races for ${date} and france-galop.com only lists today/tomorrow publicly ` +
+      `(older days need ids captured while current — run the nightly sync)`
+    );
+  }
+
+  const races = [];
+  for (const meetingUrl of await fetchDayMeetingUrls(page)) {
+    if (!meetingUrl.includes(`/meeting/${date.replace(/-/g, "")}/`)) continue;
+    let data;
     try {
-      const data = await callScraper(name, { date });
-      const races = data?.races || data?.meetings?.flatMap((m) => m.races || []) || (Array.isArray(data) ? data : []);
-      return races;
+      data = await callScraper("list_meeting_races", { meeting_url: meetingUrl });
     } catch (err) {
-      lastErr = err;
-      if (!/Unknown endpoint/.test(String(err))) throw err;
+      console.error(`[francegalop] list_meeting_races ${meetingUrl}: ${err.message}`);
+      continue;
+    }
+    const course = String(data?.course || "").toUpperCase().trim();
+    if (FOREIGN_COURSES.has(course)) continue;
+    for (const r of data?.races || []) {
+      if (!r?.race_id) continue;
+      races.push({ ...r, course });
+      await query(
+        db,
+        `INSERT IGNORE INTO france_race_index (raceDate, courseName, raceId, raceTitle, raceTime, meetingUrl)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [date, course, String(r.race_id), r.race_name || null, r.scheduled_time || null, meetingUrl]
+      ).catch(() => {});
     }
   }
-  throw lastErr || new Error("no race-listing endpoint available on the scraper");
+  return races;
 }
 
 async function syncDate(db, date, kind, dryRun) {
-  const races = await listRaces(date);
+  const races = await listRaces(db, date);
   const stats = { races: races.length, fetched: 0, inserted: 0, updated: 0, conflicts: 0, skippedRaces: [] };
   const samples = [];
   const raceYear = Number(String(date).slice(0, 4));
@@ -400,17 +487,17 @@ function registerFranceGalop(app, db) {
   });
 
   if (process.env.FG_AUTOSYNC === "1") {
-    // nightly ~21:30 UTC: yesterday's results and tomorrow's entries
+    // nightly ~21:30 UTC (23:30 Paris — racing done): today's results,
+    // tomorrow's entries, and a catch-up pass on yesterday via the index.
     let lastRunDay = null;
     setInterval(() => {
       const now = new Date();
       const day = now.toISOString().slice(0, 10);
       if (now.getUTCHours() === 21 && now.getUTCMinutes() >= 30 && lastRunDay !== day) {
         lastRunDay = day;
-        const y = new Date(now.getTime() - 24 * 3600 * 1000).toISOString().slice(0, 10);
-        const t = new Date(now.getTime() + 24 * 3600 * 1000).toISOString().slice(0, 10);
-        syncDate(db, y, "results", false).catch((e) => console.error("[francegalop] results:", e.message));
-        syncDate(db, t, "entries", false).catch((e) => console.error("[francegalop] entries:", e.message));
+        syncDate(db, parisDate(0), "results", false).catch((e) => console.error("[francegalop] results:", e.message));
+        syncDate(db, parisDate(1), "entries", false).catch((e) => console.error("[francegalop] entries:", e.message));
+        syncDate(db, parisDate(-1), "results", false).catch((e) => console.error("[francegalop] catch-up:", e.message));
       }
     }, 10 * 60 * 1000);
   }
