@@ -1,5 +1,3 @@
-require("dotenv").config();
-
 // require("./emailNotifier");
 
 // Import required modules
@@ -22,15 +20,8 @@ const allowedOrigins = [
   'http://www.blandfordbloodstock.tech'  
 ];
 
-const GMAIL_USER = process.env.GMAIL_USER;
-const GMAIL_PASS = process.env.GMAIL_PASS; // Gmail App Password, 16 chars
-
-if (!GMAIL_USER || !GMAIL_PASS) {
-  console.warn(
-    "GMAIL_USER / GMAIL_PASS are not set - outbound email is disabled. " +
-    "Everything else runs normally."
-  );
-}
+const GMAIL_USER = "bloodstockblandford@gmail.com";
+const GMAIL_PASS = "bhnf jsgm gpwd jhjo"; // 🔴 MUST be Gmail App Password (16 chars)
 
 // Updated CORS middleware
 app.use(cors({
@@ -47,31 +38,14 @@ app.use(cors({
   credentials: true, // Allow cookies or credentials
 }));
 
-// MySQL database connection configuration.
-//
-// Credentials come from the environment. Railway holds them as service
-// variables; locally they come from a .env file, which is gitignored. There is
-// deliberately no fallback literal here - a missing variable must fail loudly
-// at boot rather than quietly connect somewhere unexpected.
-const requiredDbVars = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"];
-const missingDbVars = requiredDbVars.filter((name) => !process.env[name]);
-
-if (missingDbVars.length) {
-  console.error(
-    `Cannot start: missing database environment variable(s) ${missingDbVars.join(", ")}. ` +
-    "Set them on the Railway service (or in a local .env) and restart. " +
-    "See .env.example for the full list."
-  );
-  process.exit(1);
-}
-
+// MySQL database connection configuration
 const db = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  port: Number(process.env.DB_PORT) || 3306,
-  connectionLimit: Number(process.env.DB_CONNECTION_LIMIT) || 10,
+  host: "horseprofileshub.czyece6mq0kn.eu-north-1.rds.amazonaws.com",
+  user: "abiqb93",
+  password: "Saps123$#",
+  database: "horseprofileshub",
+  port: 3306,
+  connectionLimit: 10,
 });
 
 // Centralized list of valid tables
@@ -4606,8 +4580,8 @@ app.post('/api/forgot-password', async (req, res) => {
         const transporter = nodemailer.createTransport({
           service: 'gmail',
           auth: {
-            user: GMAIL_USER,
-            pass: GMAIL_PASS,
+            user: 'bloodstockblandford@gmail.com', // ✅ your Gmail
+            pass: 'bhnf jsgm gpwd jhjo',    // ✅ your 16-character app password
           },
         });
 
