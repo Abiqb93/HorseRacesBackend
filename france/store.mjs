@@ -28,6 +28,9 @@
  */
 
 import mysql from "mysql2/promise";
+import dbConfig from "../dbConfig.cjs";
+
+const { resolveDbConfig, missingCredentials } = dbConfig;
 
 /** Tables this module owns outright and may create. */
 export const SCHEMA = [
@@ -112,18 +115,23 @@ export const FRANCE_SOURCE = "FRANCE";
  * database -- only the driver differs.
  */
 export function createFrancePool() {
-  const missing = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"].filter((n) => !process.env[n]);
+  // The same resolver server.jsx uses. Keeping a second opinion here is how
+  // France came to demand DB_NAME on a service that never had it, while the
+  // rest of the API ran fine with a defaulted database name.
+  const config = resolveDbConfig();
+  const missing = missingCredentials(config);
   if (missing.length) {
     throw new Error(
-      `France ingestion needs database environment variable(s): ${missing.join(", ")}`,
+      `France ingestion has no database credentials: ${missing.join(", ")}. ` +
+        "Set DB_HOST, DB_USER and DB_PASSWORD on the service (or DATABASE_URL).",
     );
   }
   return mysql.createPool({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    port: Number(process.env.DB_PORT) || 3306,
+    host: config.host,
+    user: config.user,
+    password: config.password,
+    database: config.database,
+    port: config.port,
     waitForConnections: true,
     connectionLimit: Number(process.env.FRANCE_DB_CONNECTION_LIMIT) || 4,
     charset: "utf8mb4",
