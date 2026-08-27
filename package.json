@@ -16,6 +16,10 @@
   "author": "",
   "license": "ISC",
   "description": "",
+  "engines": {
+    "node": "22.x",
+    "npm": ">=10"
+  },
   "dependencies": {
     "bcrypt": "^6.0.0",
     "cheerio": "^1.2.0",
@@ -30,8 +34,5 @@
     "openai": "^6.26.0",
     "redis": "^4.7.0",
     "sqlite3": "^5.1.7"
-  },
-  "engines": {
-    "node": ">=18"
   }
 }
