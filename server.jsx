@@ -1,3 +1,5 @@
+require("dotenv").config();
+
 // require("./emailNotifier");
 
 // Import required modules
@@ -20,8 +22,15 @@ const allowedOrigins = [
   'http://www.blandfordbloodstock.tech'  
 ];
 
-const GMAIL_USER = "bloodstockblandford@gmail.com";
-const GMAIL_PASS = "bhnf jsgm gpwd jhjo"; // 🔴 MUST be Gmail App Password (16 chars)
+const GMAIL_USER = process.env.GMAIL_USER;
+const GMAIL_PASS = process.env.GMAIL_PASS; // Gmail App Password, 16 chars
+
+if (!GMAIL_USER || !GMAIL_PASS) {
+  console.warn(
+    "GMAIL_USER / GMAIL_PASS are not set - outbound email is disabled. " +
+    "Everything else runs normally."
+  );
+}
 
 // Updated CORS middleware
 app.use(cors({
@@ -38,14 +47,42 @@ app.use(cors({
   credentials: true, // Allow cookies or credentials
 }));
 
-// MySQL database connection configuration
+// MySQL database connection configuration.
+//
+// Credentials come from the environment. Railway holds them as service
+// variables; locally they come from a .env file, which is gitignored. There is
+// deliberately no fallback literal here - a missing variable must fail loudly
+// at boot rather than quietly connect somewhere unexpected.
+const requiredDbVars = ["DB_HOST", "DB_USER", "DB_PASSWORD"];
+const missingDbVars = requiredDbVars.filter((name) => !process.env[name]);
+
+if (missingDbVars.length) {
+  console.error(
+    `Cannot start: missing database environment variable(s) ${missingDbVars.join(", ")}. ` +
+    "Set them on the Railway service (or in a local .env) and restart. " +
+    "See .env.example for the full list."
+  );
+  process.exit(1);
+}
+
 const db = mysql.createPool({
-  host: "horseprofileshub.czyece6mq0kn.eu-north-1.rds.amazonaws.com",
-  user: "abiqb93",
-  password: "Saps123$#",
-  database: "horseprofileshub",
-  port: 3306,
-  connectionLimit: 10,
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  // The database name is not a secret; default it so a service that has
+  // only the three credential variables set still boots (DB_NAME was the
+  // one missing when the first version of this change took the API down).
+  database: process.env.DB_NAME || "horseprofileshub",
+  port: Number(process.env.DB_PORT) || 3306,
+  connectionLimit: Number(process.env.DB_CONNECTION_LIMIT) || 10,
+});
+
+// Which credential env vars are visible to the process - names and booleans
+// only, never values. Lets us verify the Railway variable configuration.
+app.get("/api/env-status", (req, res) => {
+  const names = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT",
+    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN"];
+  res.json({ set: Object.fromEntries(names.map((n) => [n, Boolean(process.env[n])])) });
 });
 
 // Which credential env vars are visible to the process - names and booleans
@@ -4588,8 +4625,8 @@ app.post('/api/forgot-password', async (req, res) => {
         const transporter = nodemailer.createTransport({
           service: 'gmail',
           auth: {
-            user: 'bloodstockblandford@gmail.com', // ✅ your Gmail
-            pass: 'bhnf jsgm gpwd jhjo',    // ✅ your 16-character app password
+            user: GMAIL_USER,
+            pass: GMAIL_PASS,
           },
         });
 
