@@ -53,7 +53,7 @@ app.use(cors({
 // variables; locally they come from a .env file, which is gitignored. There is
 // deliberately no fallback literal here - a missing variable must fail loudly
 // at boot rather than quietly connect somewhere unexpected.
-const requiredDbVars = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"];
+const requiredDbVars = ["DB_HOST", "DB_USER", "DB_PASSWORD"];
 const missingDbVars = requiredDbVars.filter((name) => !process.env[name]);
 
 if (missingDbVars.length) {
@@ -69,9 +69,20 @@ const db = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
+  // The database name is not a secret; default it so a service that has
+  // only the three credential variables set still boots (DB_NAME was the
+  // one missing when the first version of this change took the API down).
+  database: process.env.DB_NAME || "horseprofileshub",
   port: Number(process.env.DB_PORT) || 3306,
   connectionLimit: Number(process.env.DB_CONNECTION_LIMIT) || 10,
+});
+
+// Which credential env vars are visible to the process - names and booleans
+// only, never values. Lets us verify the Railway variable configuration.
+app.get("/api/env-status", (req, res) => {
+  const names = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT",
+    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN"];
+  res.json({ set: Object.fromEntries(names.map((n) => [n, Boolean(process.env[n])])) });
 });
 
 // Centralized list of valid tables
