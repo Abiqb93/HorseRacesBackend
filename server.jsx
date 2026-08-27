@@ -111,6 +111,85 @@ const validTables = [
   'sectionsparsed', 'stallion-fee', 'racingpost_results'
 ];
 
+// ---------------------------------------------------------------------------
+// Client List (bloodstock clients) - one row per client, scoped by user_id.
+// prefs / pipeline / suggestions are JSON blobs owned by the frontend; the
+// API stores them and scopes reads by user. Contract documented in the
+// frontend repo at docs/client-list.md.
+// ---------------------------------------------------------------------------
+db.query(
+  `CREATE TABLE IF NOT EXISTS bloodstock_clients (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    location VARCHAR(255),
+    email VARCHAR(255),
+    prefs JSON,
+    pipeline JSON,
+    suggestions JSON,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_user_client (user_id, name),
+    KEY idx_bc_user (user_id)
+  )`,
+  (err) => { if (err) console.error("bloodstock_clients table check failed:", err.message); }
+);
+
+const jsonOrNull = (v) => (v === undefined || v === null ? null : JSON.stringify(v));
+
+app.get("/api/bloodstock_clients/:userId", (req, res) => {
+  db.query(
+    "SELECT * FROM bloodstock_clients WHERE user_id = ? ORDER BY name",
+    [String(req.params.userId)],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ data: rows });
+    }
+  );
+});
+
+app.post("/api/bloodstock_clients", (req, res) => {
+  const { user_id, name, location, email, prefs, pipeline, suggestions } = req.body || {};
+  if (!user_id || !name) return res.status(400).json({ error: "user_id and name are required" });
+  db.query(
+    `INSERT INTO bloodstock_clients (user_id, name, location, email, prefs, pipeline, suggestions)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE location = VALUES(location), email = VALUES(email),
+       prefs = VALUES(prefs), pipeline = VALUES(pipeline), suggestions = VALUES(suggestions)`,
+    [String(user_id), String(name), location || null, email || null,
+     jsonOrNull(prefs), jsonOrNull(pipeline), jsonOrNull(suggestions)],
+    (err, result) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ id: result.insertId || null, ok: true });
+    }
+  );
+});
+
+app.patch("/api/bloodstock_clients/:id", (req, res) => {
+  const { user_id, name, location, email, prefs, pipeline, suggestions } = req.body || {};
+  db.query(
+    `UPDATE bloodstock_clients SET name = COALESCE(?, name), location = ?, email = ?,
+       prefs = ?, pipeline = ?, suggestions = ?
+     WHERE id = ? AND user_id = ?`,
+    [name || null, location || null, email || null,
+     jsonOrNull(prefs), jsonOrNull(pipeline), jsonOrNull(suggestions),
+     Number(req.params.id), String(user_id || "")],
+    (err, result) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!result.affectedRows) return res.status(404).json({ error: "No such client for this user." });
+      res.json({ ok: true });
+    }
+  );
+});
+
+app.delete("/api/bloodstock_clients/:id", (req, res) => {
+  db.query("DELETE FROM bloodstock_clients WHERE id = ?", [Number(req.params.id)], (err, result) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!result.affectedRows) return res.status(404).json({ error: "No such client." });
+    res.json({ ok: true });
+  });
+});
+
 
 // Minimal iCalendar (ICS) meeting request
 function buildICSInvite({
