@@ -49,28 +49,79 @@ app.use(cors({
 
 // MySQL database connection configuration.
 //
-// Credentials come from the environment. Railway holds them as service
-// variables; locally they come from a .env file, which is gitignored. There is
-// deliberately no fallback literal here - a missing variable must fail loudly
-// at boot rather than quietly connect somewhere unexpected.
-const requiredDbVars = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"];
-const missingDbVars = requiredDbVars.filter((name) => !process.env[name]);
+// Credentials come from the environment - Railway service variables in
+// production, a gitignored .env locally. There are deliberately no fallback
+// literals: this file is public.
+//
+// Names are read generously. A service may already carry the connection under
+// Railway's MySQL plugin names, or as a single URL, and a variable that exists
+// under a name we did not think to look for is indistinguishable from one that
+// was never set.
+function resolveDbConfig() {
+  const first = (...names) => {
+    for (const name of names) {
+      const value = process.env[name];
+      if (value) return value;
+    }
+    return undefined;
+  };
 
+  const url = first("DATABASE_URL", "MYSQL_URL", "DB_URL", "MYSQL_PUBLIC_URL");
+  if (url) {
+    try {
+      const u = new URL(url);
+      return {
+        host: decodeURIComponent(u.hostname),
+        user: decodeURIComponent(u.username),
+        password: decodeURIComponent(u.password),
+        database: decodeURIComponent(u.pathname.replace(/^\//, "")),
+        port: Number(u.port) || 3306,
+        from: "connection URL",
+      };
+    } catch {
+      console.error("A database URL is set but could not be parsed; falling back to individual variables.");
+    }
+  }
+
+  return {
+    host: first("DB_HOST", "MYSQLHOST", "MYSQL_HOST", "DB_HOSTNAME"),
+    user: first("DB_USER", "MYSQLUSER", "MYSQL_USER", "DB_USERNAME"),
+    password: first("DB_PASSWORD", "MYSQLPASSWORD", "MYSQL_PASSWORD", "DB_PASS"),
+    database: first("DB_NAME", "MYSQLDATABASE", "MYSQL_DATABASE", "DB_DATABASE"),
+    port: Number(first("DB_PORT", "MYSQLPORT", "MYSQL_PORT")) || 3306,
+    from: "individual variables",
+  };
+}
+
+const dbConfig = resolveDbConfig();
+const missingDbVars = ["host", "user", "password", "database"].filter((k) => !dbConfig[k]);
+
+// A missing variable is loud but not fatal.
+//
+// Exiting here took the whole API down rather than the database-backed part of
+// it, and a process that never listens gives a bare 502 with nothing in it to
+// diagnose from. Booting keeps the logs readable and lets everything that does
+// not touch the database keep serving; the database routes return their usual
+// error until the configuration is fixed.
 if (missingDbVars.length) {
   console.error(
-    `Cannot start: missing database environment variable(s) ${missingDbVars.join(", ")}. ` +
-    "Set them on the Railway service (or in a local .env) and restart. " +
-    "See .env.example for the full list."
+    "=".repeat(72) + "\n" +
+    `DATABASE NOT CONFIGURED - missing: ${missingDbVars.join(", ")}\n` +
+    "Set DB_HOST, DB_USER, DB_PASSWORD and DB_NAME on the Railway service\n" +
+    "(or supply DATABASE_URL). Database-backed routes will fail until then.\n" +
+    "See .env.example for the full list.\n" +
+    "=".repeat(72)
   );
-  process.exit(1);
+} else {
+  console.log(`Database configured from ${dbConfig.from}: ${dbConfig.user}@${dbConfig.host}/${dbConfig.database}`);
 }
 
 const db = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  port: Number(process.env.DB_PORT) || 3306,
+  host: dbConfig.host,
+  user: dbConfig.user,
+  password: dbConfig.password,
+  database: dbConfig.database,
+  port: dbConfig.port,
   connectionLimit: Number(process.env.DB_CONNECTION_LIMIT) || 10,
 });
 
