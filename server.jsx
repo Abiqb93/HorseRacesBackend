@@ -48,6 +48,14 @@ const db = mysql.createPool({
   connectionLimit: 10,
 });
 
+// Which credential env vars are visible to the process - names and booleans
+// only, never values. Lets us verify the Railway variable configuration.
+app.get("/api/env-status", (req, res) => {
+  const names = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT",
+    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN"];
+  res.json({ set: Object.fromEntries(names.map((n) => [n, Boolean(process.env[n])])) });
+});
+
 // Centralized list of valid tables
 const validTables = [
   'sire_profile', 'sire_profile_three', 'sire_profile_one',
