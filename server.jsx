@@ -1135,248 +1135,110 @@ app.get("/api/sire_uplift/sire/:sireName", (req, res) => {
 
 
 // ===============================
-// Blacktype Fillies Reports Routes
+// Report Routes
 // ===============================
 
-// Utility: wraps a table and formats date columns stored as dd-mm-yyyy strings (VARCHAR)
-// IMPORTANT: Last_Stakes_Win_Date and Last_Run_Date are stored like "07-04-2024"
-const buildReportQuery = (tableName) => `
-  SELECT
-    r.horseName,
-    r.sireName,
-    r.damName,
-    r.ownerFullName,
-    r.trainerFullName,
-    r.Country_of_Origin,
-    r.Runs,
-    r.Wins,
-    r.WinPercent,
-    r.Stakes_Wins,
-    r.Highest_Stakes_Position,
-
-    -- ✅ FIX: parse dd-mm-yyyy string then format (prevents NULL)
-    DATE_FORMAT(STR_TO_DATE(r.Last_Stakes_Win_Date, '%d-%m-%Y'), '%d-%m-%Y') AS Last_Stakes_Win_Date,
-    DATE_FORMAT(STR_TO_DATE(r.Last_Run_Date, '%d-%m-%Y'), '%d-%m-%Y')        AS Last_Run_Date,
-
-    r.TF_Rating_Max,
-    r.TF_Rating_Current
-  FROM \`${tableName}\` r
-  ORDER BY
-    r.Stakes_Wins DESC,
-    r.Highest_Stakes_Position ASC,
-    r.WinPercent DESC,
-    r.Runs DESC
-`;
-
-// 1) GET full Blacktype Fillies report
+// 1) Blacktype ACTIVE Female Horses
 app.get("/api/reports/blacktype_fillies", (req, res) => {
-  // Optional but recommended: avoid stale cached responses
   res.setHeader("Cache-Control", "no-store");
 
-  const query = buildReportQuery("report_blacktype_fillies");
+  const query = `
+    SELECT *
+    FROM report_blacktype_fillies
+    ORDER BY
+      Stakes_Wins DESC,
+      Highest_Stakes_Position ASC,
+      TF_Rating_Max DESC,
+      WinPercent DESC,
+      Runs DESC
+  `;
 
   db.query(query, (err, results) => {
     if (err) {
-      console.error("Error fetching report_blacktype_fillies:", err);
-      return res.status(500).json({ error: "Database error" });
+      console.error("❌ Blacktype Fillies error:", err);
+      return res.status(500).json({
+        error: "Database error",
+        details: err.message,
+        code: err.code,
+      });
     }
 
-    if (!results || results.length === 0) {
-      return res.status(200).json({ data: [], message: "No Data Found" });
-    }
-
-    // Dates are already clean; just return as-is
-    return res.status(200).json({ data: results });
+    return res.status(200).json({ data: results || [] });
   });
 });
 
-// 2) GET full Out-of-Form Blacktype Fillies report
+
+// 2) Out-of-Form Blacktype ACTIVE Female Horses
 app.get("/api/reports/blacktype_fillies_out_of_form", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
 
-  const query = buildReportQuery("report_blacktype_fillies_out_of_form");
-
-  db.query(query, (err, results) => {
-    if (err) {
-      console.error("Error fetching report_blacktype_fillies_out_of_form:", err);
-      return res.status(500).json({ error: "Database error" });
-    }
-
-    if (!results || results.length === 0) {
-      return res.status(200).json({ data: [], message: "No Data Found" });
-    }
-
-    return res.status(200).json({ data: results });
-  });
-});
-
-app.get("/api/reports/female_under80_damvalue", (req, res) => {
-  res.setHeader("Cache-Control", "no-store");
-
   const query = `
-    SELECT
-      r.horseName,
-      r.sireName,
-      r.damName,
-      r.damName_clean,
-      r.ownerFullName,
-      r.trainerFullName,
-      r.Country,
-      r.Runs,
-
-      -- ✅ actual DB column (likely cleaned) -> nice output name
-      r.TF_Rating_Last_Run AS \`TF Rating Last Run\`,
-
-      DATE_FORMAT(
-        COALESCE(
-          STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d'),
-          STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d %H:%i:%s'),
-          STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%d-%m-%Y')
-        ),
-        '%Y-%m-%d'
-      ) AS CurrentRatingDate,
-
-      r.TFDamMaxRating_ifHorse,
-      r.TFBestProgenyRating,
-      r.DamRatedOver105,
-      r.ProducedOver105
-    FROM report_female_under80_damvalue r
-    WHERE
-      r.ownerFullName IS NOT NULL
-      AND TRIM(r.ownerFullName) <> ''
-      AND COALESCE(
-        STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d'),
-        STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d %H:%i:%s'),
-        STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%d-%m-%Y')
-      ) >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)
+    SELECT *
+    FROM report_blacktype_fillies_out_of_form
     ORDER BY
-      r.TF_Rating_Last_Run DESC,
-      r.TFBestProgenyRating DESC,
-      r.TFDamMaxRating_ifHorse DESC,
-      r.Runs DESC
+      Stakes_Wins DESC,
+      Highest_Stakes_Position ASC,
+      TF_Rating_Max DESC,
+      WinPercent DESC,
+      Runs DESC
   `;
 
   db.query(query, (err, results) => {
     if (err) {
-      console.error("Error fetching report_female_under80_damvalue:", err);
-      return res.status(500).json({ error: "Database error", details: err.message });
+      console.error("❌ Out-of-form Blacktype Fillies error:", err);
+      return res.status(500).json({
+        error: "Database error",
+        details: err.message,
+        code: err.code,
+      });
     }
 
-    if (!results || results.length === 0) {
-      return res.status(200).json({ data: [], message: "No Data Found" });
-    }
-
-    return res.status(200).json({ data: results });
+    return res.status(200).json({ data: results || [] });
   });
 });
 
 
-app.get("/api/reports/report_female_under90_damvalue_owners_filtered", (req, res) => {
-  res.setHeader("Cache-Control", "no-store");
-
-  const query = `
-    SELECT
-      r.horseName,
-      r.sireName,
-      r.damName,
-      r.damName_clean,
-      r.ownerFullName,
-      r.trainerFullName,
-      r.Country,
-      r.Runs,
-
-      r.TF_Rating_Last_Run AS \`TF Rating Last Run\`,
-
-      DATE_FORMAT(
-        COALESCE(
-          STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d'),
-          STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d %H:%i:%s'),
-          STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%d-%m-%Y')
-        ),
-        '%Y-%m-%d'
-      ) AS CurrentRatingDate,
-
-      r.TFDamMaxRating_ifHorse,
-      r.TFBestProgenyRating,
-      r.DamRatedOver105,
-      r.ProducedOver105
-    FROM report_female_under90_damvalue_owners_filtered r
-    WHERE
-      r.ownerFullName IS NOT NULL
-      AND TRIM(r.ownerFullName) <> ''
-      AND COALESCE(
-        STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d'),
-        STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%Y-%m-%d %H:%i:%s'),
-        STR_TO_DATE(NULLIF(TRIM(CAST(r.CurrentRatingDate AS CHAR)), ''), '%d-%m-%Y')
-      ) >= DATE_SUB(CURDATE(), INTERVAL 365 DAY)
-    ORDER BY
-      r.TF_Rating_Last_Run DESC,
-      r.TFBestProgenyRating DESC,
-      r.TFDamMaxRating_ifHorse DESC,
-      r.Runs DESC
-  `;
-
-  db.query(query, (err, results) => {
-    if (err) {
-      console.error("Error fetching report_female_under90_damvalue_owners_filtered:", err);
-      return res.status(500).json({ error: "Database error", details: err.message });
-    }
-
-    if (!results || results.length === 0) {
-      return res.status(200).json({ data: [], message: "No Data Found" });
-    }
-
-    return res.status(200).json({ data: results });
-  });
-});
-
-
-
+// 3) Potential Stallion Report
 app.get("/api/reports/potential_stallions", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
 
   const query = `
     SELECT
-      r.horseName,
-      r.sireName,
-      r.damName,
-      r.Runs,
-      r.Total_Wins,
-      r.Win_Percent AS \`Win_%\`,
-      r.Group_Wins,
-      r.Group1_Wins,
-      r.Stakes_Wins,
-      r.Max_Rating,
-      r.Last_Rating,
-      r.PrizeMoney
-    FROM report_potential_stallions r
+      horseName,
+      sireName,
+      damName,
+      Runs,
+      Total_Wins,
+      Win_Percent AS \`Win_%\`,
+      Group_Wins,
+      Group1_Wins,
+      Stakes_Wins,
+      Avg_Rating,
+      PrizeMoney,
+      Sire_Horses,
+      Sire_GroupWinners
+    FROM report_potential_stallions
     ORDER BY
-      r.Group1_Wins DESC,
-      r.Group_Wins DESC,
-      r.Stakes_Wins DESC,
-      r.Max_Rating DESC,
-      r.Last_Rating DESC,
-      r.PrizeMoney DESC,
-      r.Total_Wins DESC,
-      r.Runs DESC
+      Group_Wins DESC,
+      Group1_Wins DESC,
+      Avg_Rating DESC,
+      PrizeMoney DESC
   `;
 
   db.query(query, (err, results) => {
     if (err) {
-      console.error("Error fetching potential_stallions report:", err);
+      console.error("❌ Potential Stallions error:", err);
       return res.status(500).json({
         error: "Database error",
         details: err.message,
+        code: err.code,
       });
     }
 
-    if (!results || results.length === 0) {
-      return res.status(200).json({ data: [], message: "No Data Found" });
-    }
-
-    return res.status(200).json({ data: results });
+    return res.status(200).json({ data: results || [] });
   });
 });
+
 
 app.get("/api/attheraces/:racename/:date", (req, res) => {
   const raceName = req.params.racename; // e.g. "Newcastle"
