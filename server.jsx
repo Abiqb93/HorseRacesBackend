@@ -9626,6 +9626,223 @@ app.post("/api/user-preps-reviewlist", (req, res) => {
   });
 });
 
+
+// ---------------------------------------------------------------------------
+// France
+//
+// French racing is scraped from France Galop and fetched from PMU, merged, and
+// promoted into APIData_Table2 alongside the Timeform form. The pipeline lives
+// in ./france as ES modules and is imported lazily, so a problem there cannot
+// stop this server booting and cheerio is only loaded when France actually runs.
+//
+// Two deliberate defaults, because this writes to the production database:
+//
+//   - The schedule is OFF unless FRANCE_CRON=on. Merging this file should not
+//     start writing rows on its own.
+//   - Schema changes are an explicit call, never automatic at boot. Promotion
+//     needs four columns on APIData_Table2; POST /api/france/schema adds them.
+//
+// Guard the write routes in production by setting FRANCE_ADMIN_TOKEN; requests
+// must then carry a matching x-admin-token header.
+// ---------------------------------------------------------------------------
+
+let _france = null;
+async function loadFrance() {
+  if (!_france) {
+    const [ingest, store] = await Promise.all([
+      import("./france/ingest.mjs"),
+      import("./france/store.mjs"),
+    ]);
+    _france = { ...ingest, ...store, store: new store.FranceStore() };
+  }
+  return _france;
+}
+
+function franceAdminOk(req) {
+  const expected = process.env.FRANCE_ADMIN_TOKEN;
+  if (!expected) return true; // unguarded unless a token is configured
+  return req.get("x-admin-token") === expected;
+}
+
+function requireFranceAdmin(req, res) {
+  if (franceAdminOk(req)) return true;
+  res.status(401).json({ error: "x-admin-token required" });
+  return false;
+}
+
+const FRANCE_ISO = /^\d{4}-\d{2}-\d{2}$/;
+
+// Adds the columns APIData_Table2 needs and creates the France-owned tables.
+// Safe to call repeatedly: every step checks before it acts.
+app.post('/api/france/schema', async (req, res) => {
+  if (!requireFranceAdmin(req, res)) return;
+  try {
+    const { store } = await loadFrance();
+    res.status(200).json({ ok: true, ...(await store.ensureSchema()) });
+  } catch (err) {
+    console.error("[france] schema:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Run an ingest. Body: {day} | {date} | {from,to}, plus optional {dryRun}.
+//
+// A dry run does the whole pipeline -- fetch, merge, identity resolution
+// against real candidates -- and stops before writing to APIData_Table2, so
+// the counts it reports are the counts a live run would produce.
+app.post('/api/france/ingest', async (req, res) => {
+  if (!requireFranceAdmin(req, res)) return;
+
+  const { day, date, from, to, dryRun = false } = req.body || {};
+  try {
+    const france = await loadFrance();
+    const opts = { dryRun: Boolean(dryRun), log: (m) => console.log("[france]", m) };
+
+    if (from && to) {
+      if (!FRANCE_ISO.test(from) || !FRANCE_ISO.test(to)) {
+        return res.status(400).json({ error: "from and to must be YYYY-MM-DD" });
+      }
+      const days = await france.backfill(france.store, from, to, opts);
+      const runners = days.reduce((n, d) => n + (d.promoted?.inserted || 0), 0);
+      return res.status(200).json({ ok: true, days: days.length, runners, results: days });
+    }
+
+    if (date) {
+      if (!FRANCE_ISO.test(date)) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
+      return res.status(200).json({ ok: true, ...(await france.ingestDate(france.store, date, opts)) });
+    }
+
+    const target = day || "today";
+    if (!france.DAYS.includes(target)) {
+      return res.status(400).json({ error: `day must be one of ${france.DAYS.join(", ")}` });
+    }
+    return res.status(200).json({ ok: true, ...(await france.ingestDay(france.store, target, opts)) });
+  } catch (err) {
+    console.error("[france] ingest:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Re-pull the recent past. Not optional in practice: French results are amended
+// after the fact, so a single pass at result time drifts from the official record.
+app.post('/api/france/reconcile', async (req, res) => {
+  if (!requireFranceAdmin(req, res)) return;
+  try {
+    const france = await loadFrance();
+    const days = Number(req.body?.days) || 7;
+    const results = await france.reconcile(france.store, days, {
+      log: (m) => console.log("[france]", m),
+    });
+    res.status(200).json({ ok: true, days: results.length, results });
+  } catch (err) {
+    console.error("[france] reconcile:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/france/stats', async (req, res) => {
+  try {
+    const { store } = await loadFrance();
+    res.status(200).json(await store.stats());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/france/runs', async (req, res) => {
+  try {
+    const { store } = await loadFrance();
+    res.status(200).json({ data: await store.recentRuns(Number(req.query.limit) || 20) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Horses whose identity a person needs to settle -- roughly 8% of runners.
+// Typically a name we already hold attached to a different horse.
+app.get('/api/france/reviews', async (req, res) => {
+  try {
+    const { store } = await loadFrance();
+    res.status(200).json({ data: await store.pendingReviews(Number(req.query.limit) || 100) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// French racing as it now sits in APIData_Table2. This is the join the whole
+// exercise was for: the same table, the same shape, so the horse, sire and dam
+// pages pick French form up without knowing where it came from.
+app.get('/api/france/racecards', (req, res) => {
+  const { date, from, to, courseName } = req.query;
+  const where = ["a.raceCountry = 'FR'"];
+  const params = [];
+
+  if (date) {
+    if (!FRANCE_ISO.test(date)) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
+    where.push("DATE(a.meetingDate) = ?");
+    params.push(date);
+  } else if (from && to) {
+    if (!FRANCE_ISO.test(from) || !FRANCE_ISO.test(to)) {
+      return res.status(400).json({ error: "from and to must be YYYY-MM-DD" });
+    }
+    where.push("DATE(a.meetingDate) BETWEEN ? AND ?");
+    params.push(from, to);
+  } else {
+    return res.status(400).json({ error: "Provide date, or from and to" });
+  }
+
+  if (courseName) {
+    where.push("a.courseName = ?");
+    params.push(String(courseName).trim());
+  }
+
+  db.query(
+    `SELECT a.* FROM APIData_Table2 a
+      WHERE ${where.join(" AND ")}
+      ORDER BY a.courseName, a.raceNumber, a.positionOfficial
+      LIMIT 5000`,
+    params,
+    (err, rows) => {
+      if (err) {
+        console.error("[france] racecards:", err);
+        return res.status(500).json({ error: "Database error" });
+      }
+      res.status(200).json({ data: rows });
+    },
+  );
+});
+
+// The schedule. Europe/Paris throughout, because that is what the fixture list
+// is published in.
+if (String(process.env.FRANCE_CRON || "").toLowerCase() === "on") {
+  const cron = require("node-cron");
+  const paris = { timezone: "Europe/Paris" };
+  const run = (label, fn) => async () => {
+    try {
+      const france = await loadFrance();
+      await fn(france);
+    } catch (err) {
+      console.error(`[france] scheduled ${label} failed:`, err.message);
+    }
+  };
+
+  // Tomorrow's card, once declarations have published.
+  cron.schedule("30 18 * * *", run("tomorrow", (f) => f.ingestDay(f.store, "tomorrow")), paris);
+
+  // Today, through the afternoon and evening, picking up results as they settle.
+  cron.schedule("*/30 12-23 * * *", run("today", (f) => f.ingestDay(f.store, "today")), paris);
+
+  // Yesterday, after everything has settled.
+  cron.schedule("15 1 * * *", run("yesterday", (f) => f.ingestDay(f.store, "yesterday")), paris);
+
+  // And the last week again, to catch amendments.
+  cron.schedule("0 2 * * *", run("reconcile", (f) => f.reconcile(f.store, 7)), paris);
+
+  console.log("[france] schedule active (Europe/Paris)");
+} else {
+  console.log("[france] schedule off — set FRANCE_CRON=on to enable");
+}
+
 // Start the server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
