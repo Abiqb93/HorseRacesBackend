@@ -1135,108 +1135,68 @@ app.get("/api/sire_uplift/sire/:sireName", (req, res) => {
 
 
 // ===============================
-// Report Routes
+// Reports Routes
 // ===============================
+
+// Shared helper for generated report tables.
+// These tables are created by the Python/Colab report-generation pipeline.
+// Use SELECT * so the API stays compatible with the live generated schema.
+const fetchGeneratedReport = (res, tableName) => {
+  res.setHeader("Cache-Control", "no-store");
+
+  const query = `SELECT * FROM \`${tableName}\``;
+
+  console.log(`[REPORT] Fetching table: ${tableName}`);
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error(`Error fetching ${tableName}:`, err);
+      return res.status(500).json({
+        error: "Database error",
+        table: tableName,
+        details: err.message,
+        code: err.code,
+      });
+    }
+
+    return res.status(200).json({
+      data: results || [],
+      count: results?.length || 0,
+      ...(results?.length ? {} : { message: "No Data Found" }),
+    });
+  });
+};
 
 // 1) Blacktype ACTIVE Female Horses
 app.get("/api/reports/blacktype_fillies", (req, res) => {
-  res.setHeader("Cache-Control", "no-store");
-
-  const query = `
-    SELECT *
-    FROM report_blacktype_fillies
-    ORDER BY
-      Stakes_Wins DESC,
-      Highest_Stakes_Position ASC,
-      TF_Rating_Max DESC,
-      WinPercent DESC,
-      Runs DESC
-  `;
-
-  db.query(query, (err, results) => {
-    if (err) {
-      console.error("❌ Blacktype Fillies error:", err);
-      return res.status(500).json({
-        error: "Database error",
-        details: err.message,
-        code: err.code,
-      });
-    }
-
-    return res.status(200).json({ data: results || [] });
-  });
+  return fetchGeneratedReport(res, "report_blacktype_fillies");
 });
-
 
 // 2) Out-of-Form Blacktype ACTIVE Female Horses
 app.get("/api/reports/blacktype_fillies_out_of_form", (req, res) => {
-  res.setHeader("Cache-Control", "no-store");
-
-  const query = `
-    SELECT *
-    FROM report_blacktype_fillies_out_of_form
-    ORDER BY
-      Stakes_Wins DESC,
-      Highest_Stakes_Position ASC,
-      TF_Rating_Max DESC,
-      WinPercent DESC,
-      Runs DESC
-  `;
-
-  db.query(query, (err, results) => {
-    if (err) {
-      console.error("❌ Out-of-form Blacktype Fillies error:", err);
-      return res.status(500).json({
-        error: "Database error",
-        details: err.message,
-        code: err.code,
-      });
-    }
-
-    return res.status(200).json({ data: results || [] });
-  });
+  return fetchGeneratedReport(res, "report_blacktype_fillies_out_of_form");
 });
 
+// 3) Female Under 90 + Dam Value
+// Keep the existing frontend URL for compatibility.
+app.get("/api/reports/female_under80_damvalue", (req, res) => {
+  return fetchGeneratedReport(res, "report_female_under80_damvalue");
+});
 
-// 3) Potential Stallion Report
+// 4) Female Under 90 + Dam Value + Owners Filtered
+app.get(
+  "/api/reports/report_female_under90_damvalue_owners_filtered",
+  (req, res) => {
+    return fetchGeneratedReport(
+      res,
+      "report_female_under90_damvalue_owners_filtered"
+    );
+  }
+);
+
+// 5) Potential Stallion Report
 app.get("/api/reports/potential_stallions", (req, res) => {
-  res.setHeader("Cache-Control", "no-store");
-
-  const query = `
-    SELECT
-      horseName,
-      sireName,
-      damName,
-      Runs,
-      Total_Wins,
-      Win_Percent AS \`Win_%\`,
-      Group_Wins,
-      Group1_Wins,
-      Stakes_Wins,
-      Avg_Rating,
-      PrizeMoney,
-      Sire_Horses,
-      Sire_GroupWinners
-    FROM report_potential_stallions
-    ORDER BY
-      Group_Wins DESC,
-      Group1_Wins DESC,
-      Avg_Rating DESC,
-      PrizeMoney DESC
-  `;
-
-  db.query(query, (err, results) => {
-    if (err) {
-      console.error("❌ Potential Stallions error:", err);
-      return res.status(500).json({
-        error: "Database error",
-        details: err.message,
-        code: err.code,
-      });
-    }
-
-    return res.status(200).json({ data: results || [] });
-  });
+  return fetchGeneratedReport(res, "report_potential_stallions");
 });
 
 
