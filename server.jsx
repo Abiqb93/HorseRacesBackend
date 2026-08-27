@@ -79,6 +79,8 @@ const db = mysql.createPool({
 
 // Which credential env vars are visible to the process - names and booleans
 // only, never values. Lets us verify the Railway variable configuration.
+app.get("/api/version", (req, res) => res.json({ marker: "france-2cb2e46-trigger-1" }));
+
 app.get("/api/env-status", (req, res) => {
   const names = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT",
     "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN"];
