@@ -3,8 +3,14 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.jsx"
+    "test": "node --test france/*.test.mjs",
+    "start": "node server.jsx",
+    "france:schema": "node france/cli.mjs schema",
+    "france:ingest": "node france/cli.mjs ingest",
+    "france:backfill": "node france/cli.mjs backfill",
+    "france:reconcile": "node france/cli.mjs reconcile",
+    "france:stats": "node france/cli.mjs stats",
+    "france:test": "node --test france/normalize.test.mjs france/franceGalop.test.mjs france/mergeSources.test.mjs"
   },
   "keywords": [],
   "author": "",
@@ -12,6 +18,7 @@
   "description": "",
   "dependencies": {
     "bcrypt": "^6.0.0",
+    "cheerio": "^1.2.0",
     "compression": "^1.7.5",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
@@ -23,5 +30,8 @@
     "openai": "^6.26.0",
     "redis": "^4.7.0",
     "sqlite3": "^5.1.7"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
