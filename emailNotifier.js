@@ -1,10 +1,13 @@
+require("dotenv").config();
+
 const cron = require("node-cron");
 const nodemailer = require("nodemailer");
 const mysql = require("mysql2/promise");
 
 // === GMAIL CREDENTIALS ===
-const GMAIL_USER = "bloodstockblandford@gmail.com";
-const GMAIL_PASS = "bhnfjsgmgpwdjhjo"; // App password
+// From the environment - see .env.example. Never commit the app password.
+const GMAIL_USER = process.env.GMAIL_USER;
+const GMAIL_PASS = process.env.GMAIL_PASS;
 
 // === Set up reusable transporter ===
 const transporter = nodemailer.createTransport({
@@ -17,11 +20,11 @@ const transporter = nodemailer.createTransport({
 
 // === DB Config ===
 const dbConfig = {
-  host: "horseprofileshub.czyece6mq0kn.eu-north-1.rds.amazonaws.com",
-  user: "abiqb93",
-  password: "Saps123$#",
-  database: "horseprofileshub",
-  port: 3306,
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  port: Number(process.env.DB_PORT) || 3306,
 };
 
 // === Utility: Convert UK time string (e.g., 2.15pm) to minutes since midnight ===
