@@ -3832,6 +3832,13 @@ const HOT_FORM_CACHE_TTL_MS = 15 * 60 * 1000;
 const hotFormCache = new Map();
 const hotFormInFlight = new Map();
 
+// The newest stored result date changes at most when fresh result data is loaded.
+// Keep it separately cached so every Hot Form request does NOT scan/aggregate the
+// whole results table just to rediscover the same horizon.
+const HOT_FORM_HORIZON_CACHE_TTL_MS = 5 * 60 * 1000;
+let hotFormHorizonCache = { createdAt: 0, latestResultDate: null };
+let hotFormHorizonInFlight = null;
+
 const HOT_FORM_DEFAULT_SCORE_THRESHOLD = 4;
 const HOT_FORM_DEFAULT_MIN_RUNNERS_SINCE = 1;
 
@@ -3842,6 +3849,45 @@ const hotFormQuery = (sql, params = []) =>
       else resolve(rows || []);
     });
   });
+
+// Fast, index-backed result-data horizon lookup.
+// idx_apidata_meetingdate lets MySQL jump directly to the newest row instead of
+// calculating MAX(meetingDate) across the table. Concurrent callers share the
+// same promise and the result is cached for five minutes.
+const getHotFormLatestResultDate = async () => {
+  const now = Date.now();
+  if (
+    hotFormHorizonCache.latestResultDate &&
+    now - hotFormHorizonCache.createdAt < HOT_FORM_HORIZON_CACHE_TTL_MS
+  ) {
+    return hotFormHorizonCache.latestResultDate;
+  }
+
+  if (hotFormHorizonInFlight) return hotFormHorizonInFlight;
+
+  hotFormHorizonInFlight = (async () => {
+    const rows = await hotFormQuery(`
+      SELECT meetingDate
+      FROM \`${HOT_FORM_SOURCE_TABLE}\`
+      WHERE meetingDate IS NOT NULL
+      ORDER BY meetingDate DESC
+      LIMIT 1
+    `);
+
+    const latestResultDate = hotFormDateOnly(rows?.[0]?.meetingDate);
+    hotFormHorizonCache = {
+      createdAt: Date.now(),
+      latestResultDate: latestResultDate || null,
+    };
+    return latestResultDate || null;
+  })();
+
+  try {
+    return await hotFormHorizonInFlight;
+  } finally {
+    hotFormHorizonInFlight = null;
+  }
+};
 
 const hotFormCleanText = (value) => String(value ?? "").trim();
 
@@ -4257,20 +4303,10 @@ app.get("/api/hot_form", async (req, res) => {
   }
 
   const work = (async () => {
-    // First establish the REAL result-data horizon. Hot Form must be judged
-    // against the newest result stored in APIData_Table2, not against today's
-    // calendar date. If the selected race date is itself the latest result date,
-    // there is no subsequent evidence yet and the race day is PENDING, not 0-hot.
-    const latestResultSql = `
-      SELECT DATE_FORMAT(MAX(meetingDate), '%Y-%m-%d') AS latestResultDate
-      FROM \`${HOT_FORM_SOURCE_TABLE}\`
-      WHERE meetingDate IS NOT NULL
-        AND positionOfficial IS NOT NULL
-        AND positionOfficial <> 0
-    `;
-
-    const latestRows = await hotFormQuery(latestResultSql);
-    const latestResultDate = hotFormDateOnly(latestRows?.[0]?.latestResultDate);
+    // Establish the REAL result-data horizon using the cached, index-backed lookup.
+    // Hot Form is judged against the newest result stored in APIData_Table2, not
+    // today's calendar date.
+    const latestResultDate = await getHotFormLatestResultDate();
     const coverageDays = latestResultDate
       ? hotFormDaysBetween(rawMeetingDate, latestResultDate)
       : 0;
@@ -4278,6 +4314,38 @@ app.get("/api/hot_form", async (req, res) => {
       latestResultDate &&
       hotFormDateNumber(latestResultDate) > hotFormDateNumber(rawMeetingDate)
     );
+
+    // Critical fast path: if this is the newest stored result day (or a newer
+    // selected date), there cannot be any subsequent results yet. Return PENDING
+    // immediately. We do NOT query the day's runners and we do NOT query horse
+    // histories. The normal races endpoint already supplies the frontend race list.
+    if (latestResultDate && !hasLaterResults) {
+      return {
+        data: [],
+        meta: {
+          meetingDate: rawMeetingDate,
+          minRunners,
+          hotScoreThreshold,
+          minRunnersSince,
+          source: HOT_FORM_SOURCE_TABLE,
+          formula: "(3 * subsequentWins) + subsequentPlaces",
+          placeDefinition: "finish position 1-3 inclusive",
+          raceCount: null,
+          formSinceRaceCount: 0,
+          hotRaceCount: 0,
+          latestResultDate,
+          dataThroughDate: latestResultDate,
+          coverageDays,
+          hasLaterResults: false,
+          analysisStatus: "PENDING_NO_LATER_RESULTS",
+          sourceRows: 0,
+          subsequentRows: 0,
+          fastPath: true,
+          generatedAt: new Date().toISOString(),
+          cache: "MISS",
+        },
+      };
+    }
 
     // Query 1: only the original result rows for the selected race date.
     const sourceSql = `
