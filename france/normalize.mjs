@@ -262,6 +262,33 @@ export function deriveRaceFields(rows) {
 /** Every word PMU uses for jumps racing, at either level of the payload. */
 const JUMPS = new Set(["OBSTACLE", "HAIE", "HAIES", "STEEPLECHASE", "STEEPLE-CHASE", "CROSS"]);
 
+/**
+ * raceType in the platform's vocabulary, which is Flat / Hurdle / Chase /
+ * Bumper across every Timeform row on the site. Writing a French "Jumps" into
+ * it put French jumping outside every race-type filter on the platform while
+ * appearing to be populated.
+ *
+ * Cross-country races are filed as chases, which is how Timeform treats them:
+ * they are run over fixed obstacles, and there is no separate code for them.
+ */
+const RACE_TYPE = {
+  HAIE: "Hurdle",
+  HAIES: "Hurdle",
+  STEEPLECHASE: "Chase",
+  "STEEPLE-CHASE": "Chase",
+  CROSS: "Chase",
+};
+
+export function raceTypeOf(course) {
+  const specific = RACE_TYPE[course?.discipline] || RACE_TYPE[course?.specialite];
+  if (specific) return specific;
+  // A card that only says OBSTACLE has told us it is jumping but not which
+  // kind. Hurdle is the commoner of the two and is the safer default, but the
+  // exact word is kept on raceSubType either way.
+  if (JUMPS.has(course?.specialite) || JUMPS.has(course?.discipline)) return "Hurdle";
+  return "Flat";
+}
+
 export function normalizeRunner({ meeting, course, participant, isoDate }) {
   const p = participant;
   const { going, goingValue } = goingFrom(course);
@@ -319,7 +346,7 @@ export function normalizeRunner({ meeting, course, participant, isoDate }) {
     // Read off specialite, not discipline: a jumps race calls its discipline
     // HAIE or STEEPLECHASE, never OBSTACLE, so testing discipline filed every
     // French hurdle and chase as Flat.
-    raceType: JUMPS.has(course.specialite) || JUMPS.has(course.discipline) ? "Jumps" : "Flat",
+    raceType: raceTypeOf(course),
     raceSubType: course.discipline || null, // PLAT / HAIE / STEEPLECHASE / CROSS
     raceCategory: course.categorieParticularite || null, // HANDICAP_DIVISE, A_RECLAMER, GROUPE_I…
     raceSurfaceName: SURFACE[course.typePiste] || course.typePiste || null,
