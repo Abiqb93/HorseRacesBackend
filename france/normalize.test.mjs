@@ -238,3 +238,25 @@ test("passes through an all-weather surface state rather than mistranslating it"
   assert.equal(goingToEnglish("PSF STANDARD"), "PSF STANDARD");
   assert.equal(goingToEnglish(null), null);
 });
+
+/* ---------------------------------------------------- jumps racing */
+
+test("types a jumps race by its specialite, not its discipline", () => {
+  // PMU names a jumps race HAIE or STEEPLECHASE at race level and OBSTACLE
+  // only at meeting level, so testing discipline filed every French hurdle
+  // and chase as Flat.
+  const race = (course) =>
+    normalizeRunner({
+      meeting: { numOfficiel: 1, hippodrome: { libelleLong: "HIPPODROME DE CLAIREFONTAINE" } },
+      course: { numExterne: 1, libelle: "PRIX X", ...course },
+      participant: { nom: "A HORSE" },
+      isoDate: "2026-08-26",
+    });
+
+  assert.equal(race({ specialite: "OBSTACLE", discipline: "HAIE" }).raceType, "Jumps");
+  assert.equal(race({ specialite: "OBSTACLE", discipline: "STEEPLECHASE" }).raceType, "Jumps");
+  assert.equal(race({ specialite: "OBSTACLE", discipline: "CROSS" }).raceType, "Jumps");
+  assert.equal(race({ specialite: "PLAT", discipline: "PLAT" }).raceType, "Flat");
+  // The more specific of the two words is the one worth keeping.
+  assert.equal(race({ specialite: "OBSTACLE", discipline: "HAIE" }).raceSubType, "HAIE");
+});

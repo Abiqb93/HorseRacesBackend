@@ -17,8 +17,35 @@
 
 const HOST = "https://offline.turfinfo.api.pmu.fr/rest/client/7";
 
-/** Disciplines we care about. TROT is harness racing and is out of scope. */
-export const THOROUGHBRED_DISCIPLINES = new Set(["PLAT", "OBSTACLE"]);
+/**
+ * Disciplines we care about. TROT is harness racing and is out of scope.
+ *
+ * PMU names the discipline at two levels and they do not use the same words.
+ * A meeting's `disciplinesMere` says OBSTACLE; the races inside it say HAIE,
+ * STEEPLECHASE or CROSS. Matching a race against the meeting's vocabulary
+ * dropped every French jumps race ever run -- 40 of 341 thoroughbred races
+ * over a sample month, none of which reached the platform.
+ *
+ * `specialite` is the field that does not have this problem: it is a clean
+ * four-value enum (PLAT / OBSTACLE / TROT_ATTELE / TROT_MONTE) present on
+ * every race, so it is what decides inclusion, with `discipline` kept as a
+ * fallback for a payload that somehow lacks it.
+ */
+export const THOROUGHBRED_DISCIPLINES = new Set([
+  "PLAT",
+  "OBSTACLE",
+  "HAIE",
+  "STEEPLECHASE",
+  "CROSS",
+]);
+
+export const THOROUGHBRED_SPECIALITES = new Set(["PLAT", "OBSTACLE"]);
+
+/** Is this one race thoroughbred racing rather than trotting? */
+export function isThoroughbredRace(course) {
+  if (course?.specialite) return THOROUGHBRED_SPECIALITES.has(course.specialite);
+  return THOROUGHBRED_DISCIPLINES.has(course?.discipline);
+}
 
 /** PMU wants DDMMYYYY; we work in ISO everywhere else. */
 export function toPmuDate(iso) {
@@ -123,8 +150,8 @@ export async function fetchFrenchRunnersForDate(isoDate, { delayMs = 150 } = {})
   for (const meeting of meetings) {
     for (const course of meeting.courses || []) {
       // A meeting can mix disciplines (a mixed PLAT/OBSTACLE card), so the
-      // per-race discipline is what actually decides inclusion.
-      if (!THOROUGHBRED_DISCIPLINES.has(course.discipline)) continue;
+      // race decides inclusion, not the meeting.
+      if (!isThoroughbredRace(course)) continue;
 
       const participants = await fetchParticipants(
         isoDate,
