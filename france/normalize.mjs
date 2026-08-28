@@ -259,6 +259,9 @@ export function deriveRaceFields(rows) {
   return rows;
 }
 
+/** Every word PMU uses for jumps racing, at either level of the payload. */
+const JUMPS = new Set(["OBSTACLE", "HAIE", "HAIES", "STEEPLECHASE", "STEEPLE-CHASE", "CROSS"]);
+
 export function normalizeRunner({ meeting, course, participant, isoDate }) {
   const p = participant;
   const { going, goingValue } = goingFrom(course);
@@ -313,8 +316,11 @@ export function normalizeRunner({ meeting, course, participant, isoDate }) {
     courseName: normalizeCourseName(meeting.hippodrome?.libelleLong || meeting.hippodrome?.libelleCourt),
     raceNumber: course.numExterne ?? null,
     raceTitle: String(course.libelle || "").trim(),
-    raceType: course.discipline === "OBSTACLE" ? "Jumps" : "Flat",
-    raceSubType: course.specialite || null, // PLAT / HAIES / STEEPLE-CHASE / CROSS
+    // Read off specialite, not discipline: a jumps race calls its discipline
+    // HAIE or STEEPLECHASE, never OBSTACLE, so testing discipline filed every
+    // French hurdle and chase as Flat.
+    raceType: JUMPS.has(course.specialite) || JUMPS.has(course.discipline) ? "Jumps" : "Flat",
+    raceSubType: course.discipline || null, // PLAT / HAIE / STEEPLECHASE / CROSS
     raceCategory: course.categorieParticularite || null, // HANDICAP_DIVISE, A_RECLAMER, GROUPE_I…
     raceSurfaceName: SURFACE[course.typePiste] || course.typePiste || null,
     distance: toFurlongs(course.distance),
