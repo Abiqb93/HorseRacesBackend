@@ -28,10 +28,13 @@ test("pairs two spellings of one racecourse by their shared runners", () => {
   const fg = FIELD.map((h) => runner(FG_NAME, h));
   const pmu = FIELD.map((h) => runner(PMU_NAME, h));
 
+  // Keyed on PMU's normalised name. That is "LA TESTE" and not "TESTE DE
+  // BUCH": the normaliser keeps the article out of "HIPPODROME DE LA ...",
+  // which is what stops the platform filing this fixture under two names.
   const aliases = reconcileCourseNames(fg, pmu);
   assert.equal(aliases.size, 1);
-  assert.equal(aliases.get("TESTE DE BUCH").courseName, FG_NAME);
-  assert.equal(aliases.get("TESTE DE BUCH").containment, 1);
+  assert.equal(aliases.get("LA TESTE").courseName, FG_NAME);
+  assert.equal(aliases.get("LA TESTE").containment, 1);
 });
 
 test("still pairs when one source carries fewer races than the other", () => {
@@ -41,7 +44,7 @@ test("still pairs when one source carries fewer races than the other", () => {
   const pmu = FIELD.map((h) => runner(PMU_NAME, h));
 
   const aliases = reconcileCourseNames(fg, pmu);
-  assert.equal(aliases.get("TESTE DE BUCH").courseName, FG_NAME);
+  assert.equal(aliases.get("LA TESTE").courseName, FG_NAME);
 });
 
 test("does not pair two genuinely different meetings", () => {

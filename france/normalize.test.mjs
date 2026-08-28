@@ -9,7 +9,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blackTypeFrom, normalizeCourseName, toFurlongs, normalizeRunner, marginToLengths, deriveRaceFields } from "./normalize.mjs";
+import { blackTypeFrom, normalizeCourseName, toFurlongs, normalizeRunner, marginToLengths, goingToEnglish, deriveRaceFields } from "./normalize.mjs";
 import { matchHorse, DECISION, enrichmentFor } from "./matchHorse.mjs";
 
 test("black type reads categorieParticularite first", () => {
@@ -54,7 +54,7 @@ test("units: prize stays euros, career earnings convert from centimes, weight fr
       discipline: "PLAT",
       typePiste: "HERBE",
       nombreDeclaresPartants: 10,
-      penetrometre: { intitule: "Bon souple", valeurMesure: "3,4" },
+      penetrometre: { intitule: "Good To Soft", valeurMesure: "3,4" },
     },
     participant: {
       idCheval: 12345,
@@ -78,7 +78,7 @@ test("units: prize stays euros, career earnings convert from centimes, weight fr
   assert.equal(row.horseCountry, "GBR");
   assert.equal(row.courseName, "DEAUVILLE");
   assert.equal(row.Group, 1);
-  assert.equal(row.going, "Bon souple");
+  assert.equal(row.going, "Good To Soft", "French going is stored in the platform’s vocabulary");
   assert.equal(row.positionOfficial, 2);
 });
 
@@ -197,4 +197,44 @@ test("a handicap winner is a win but never black type", () => {
   assert.equal(rows[0].Stakes, 0);
   assert.equal(rows[0].Stakes_Win, 0);
   assert.equal(rows[0].Group_Win, 0);
+});
+
+/* ------------------------------------------------ course names & going */
+
+test("keeps the article French contracts into the preposition", () => {
+  // The platform stores LA TESTE, LE MANS, LE TOUQUET. Dropping the article
+  // filed each of those under two names at once.
+  assert.equal(normalizeCourseName("HIPPODROME DE LA TESTE DE BUCH"), "LA TESTE");
+  assert.equal(normalizeCourseName("HIPPODROME DU MANS"), "LE MANS");
+  assert.equal(normalizeCourseName("HIPPODROME DU TOUQUET"), "LE TOUQUET");
+  assert.equal(normalizeCourseName("HIPPODROME DES SABLES D OLONNE"), "LES SABLES-D'OLONNE");
+  assert.equal(normalizeCourseName("HIPPODROME DU LION D'ANGERS"), "LE LION-D'ANGERS");
+});
+
+test("strips a bare preposition, which carries no article", () => {
+  assert.equal(normalizeCourseName("HIPPODROME DE DEAUVILLE"), "DEAUVILLE");
+  assert.equal(normalizeCourseName("HIPPODROME D'ENGHIEN"), "ENGHIEN");
+});
+
+test("does not mistake a course name beginning in LA for the article", () => {
+  // "DE LA" matching inside "DE LANGON" turned Langon-Libourne into
+  // "LA NGON-LIBOURNE".
+  assert.equal(normalizeCourseName("HIPPODROME DE LANGON-LIBOURNE"), "LANGON-LIBOURNE");
+  assert.equal(normalizeCourseName("HIPPODROME DE LAVAL"), "LAVAL");
+  assert.equal(normalizeCourseName("HIPPODROME DE LISIEUX"), "LISIEUX");
+});
+
+test("states French going in the platform's own vocabulary", () => {
+  assert.equal(goingToEnglish("Bon"), "Good");
+  assert.equal(goingToEnglish("Bon souple"), "Good To Soft");
+  assert.equal(goingToEnglish("Souple"), "Soft");
+  assert.equal(goingToEnglish("Très souple"), "Soft To Heavy"); // accents and all
+  assert.equal(goingToEnglish("Lourd"), "Heavy");
+});
+
+test("passes through an all-weather surface state rather than mistranslating it", () => {
+  // "PSF STANDARD" describes a synthetic surface, and no British going means
+  // that, so inventing one would be worse than saying what France said.
+  assert.equal(goingToEnglish("PSF STANDARD"), "PSF STANDARD");
+  assert.equal(goingToEnglish(null), null);
 });
