@@ -408,12 +408,32 @@ export class FranceStore {
     );
   }
 
+  /**
+   * Queues a horse whose identity the matcher would not decide on its own.
+   *
+   * Once per horse per meeting, however many times the date is ingested. The
+   * insert used to be unconditional, and re-ingesting a date is routine --
+   * French results are amended after the fact, and any schema change means
+   * re-running the recent past. That had two costs. The queue filled with
+   * copies of the same horse, 315 reviews becoming 959 over an afternoon of
+   * re-runs. And, worse, a horse someone had already linked or rejected came
+   * back as pending on the next run, so the queue quietly asked again for a
+   * decision that had been made.
+   *
+   * The guard therefore matches on any existing review, not just a pending
+   * one: a decided horse must not be re-asked. NULL-safe equality on the date
+   * because a review can carry none.
+   */
   async queueReview(incoming, result) {
     await this.query(
       `INSERT INTO fr_match_review
          (horse_name, meeting_date, incoming, candidate_horse_code, score, max_score,
           evidence, reason, status, created_at)
-       VALUES (?,?,?,?,?,?,?,?, 'pending', NOW())`,
+       SELECT ?,?,?,?,?,?,?,?, 'pending', NOW()
+        WHERE NOT EXISTS (
+          SELECT 1 FROM fr_match_review r
+           WHERE r.horse_name = ? AND r.meeting_date <=> ?
+        )`,
       [
         incoming.horseName,
         isoOf(incoming.meetingDate),
@@ -423,8 +443,36 @@ export class FranceStore {
         result?.maxScore ?? null,
         JSON.stringify(result?.evidence ?? null),
         result?.reason ? String(result.reason).slice(0, 255) : null,
+        incoming.horseName,
+        isoOf(incoming.meetingDate),
       ],
     );
+  }
+
+  /**
+   * Collapses the duplicate reviews the unguarded insert already created.
+   *
+   * One row survives per horse per meeting, and a decided row always outlives
+   * a pending one -- someone's answer is worth more than a fresh question
+   * about the same horse.
+   */
+  async dedupeReviews() {
+    const [before] = await this.pool.query("SELECT COUNT(*) AS n FROM fr_match_review");
+    await this.pool.query(
+      `DELETE r FROM fr_match_review r
+         JOIN (
+           SELECT horse_name, meeting_date,
+                  MIN(CASE WHEN status <> 'pending' THEN id END) AS decided,
+                  MIN(id) AS earliest
+             FROM fr_match_review
+            GROUP BY horse_name, meeting_date
+         ) keep
+           ON keep.horse_name = r.horse_name
+          AND keep.meeting_date <=> r.meeting_date
+        WHERE r.id <> COALESCE(keep.decided, keep.earliest)`,
+    );
+    const [after] = await this.pool.query("SELECT COUNT(*) AS n FROM fr_match_review");
+    return { before: before[0].n, after: after[0].n, removed: before[0].n - after[0].n };
   }
 
   async pendingReviews(limit = 100) {
