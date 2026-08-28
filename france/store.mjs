@@ -112,7 +112,11 @@ export const FRANCE_SOURCE = "FRANCE";
  * database -- only the driver differs.
  */
 export function createFrancePool() {
-  const missing = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME"].filter((n) => !process.env[n]);
+  // Only the three credentials are genuinely required. The database name is
+  // not a secret and Railway does not set it, so default it exactly as the
+  // main pool in server.jsx does -- demanding it here is what left every
+  // France route erroring on a service that was otherwise healthy.
+  const missing = ["DB_HOST", "DB_USER", "DB_PASSWORD"].filter((n) => !process.env[n]);
   if (missing.length) {
     throw new Error(
       `France ingestion needs database environment variable(s): ${missing.join(", ")}`,
@@ -122,7 +126,7 @@ export function createFrancePool() {
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
+    database: process.env.DB_NAME || "horseprofileshub",
     port: Number(process.env.DB_PORT) || 3306,
     waitForConnections: true,
     connectionLimit: Number(process.env.FRANCE_DB_CONNECTION_LIMIT) || 4,
