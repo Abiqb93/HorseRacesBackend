@@ -108,7 +108,8 @@ const validTables = [
   'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
   'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion', 'StrideParsPercentilesPerTrack', 
   'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift', 'foalSale_Dashboard', 'foalSale_Pedigree', 'foalSale_StallionStats', 'foalSale_Sales', 'foalSale_StudFeeAnalysis', 'jockey_tracking', 'report_potential_stallions',
-  'sectionsparsed', 'stallion-fee', 'racingpost_results'
+  'sectionsparsed', 'stallion-fee', 'racingpost_results',
+  'report_trainer_uplift', 'report_trainer_uplift_summary'
 ];
 
 // ---------------------------------------------------------------------------
@@ -1197,6 +1198,16 @@ app.get(
 // 5) Potential Stallion Report
 app.get("/api/reports/potential_stallions", (req, res) => {
   return fetchGeneratedReport(res, "report_potential_stallions");
+});
+
+// 6) Trainer Uplift Report - horse-level
+app.get("/api/reports/trainer_uplift", (req, res) => {
+  return fetchGeneratedReport(res, "report_trainer_uplift");
+});
+
+// 7) Trainer Uplift Summary - trainer-level
+app.get("/api/reports/trainer_uplift_summary", (req, res) => {
+  return fetchGeneratedReport(res, "report_trainer_uplift_summary");
 });
 
 
