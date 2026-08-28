@@ -15,7 +15,12 @@ const METRES_PER_FURLONG = 201.168;
 
 /** PMU returns country display names, not codes, on the runner. */
 const COUNTRY_BY_FRENCH_NAME = {
-  France: "FR",
+  // ISO-3 throughout, matching countryCode across the rest of the platform
+  // (twenty years of French results are stored as "FRA"). France was the one
+  // ISO-2 entry here, which put every ingested French run outside every
+  // country filter on the site. `horseCountry` is separately ISO-2 -- see
+  // matchHorse.mjs -- and is unaffected.
+  France: "FRA",
   "Royaume-Uni": "GBR",
   Irlande: "IRE",
   Allemagne: "GER",
