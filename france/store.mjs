@@ -142,6 +142,20 @@ export function francePool() {
 
 const isoOf = (value) => String(value ?? "").slice(0, 10) || null;
 
+/**
+ * meetingDate as APIData_Table2 actually stores it: "YYYY-MM-DD 00:00:00".
+ * The column holds strings, and every query on the table filters with
+ * `meetingDate BETWEEN '<date> 00:00:00' AND '<date> 23:59:59'`. A bare
+ * "YYYY-MM-DD" sorts *below* that lower bound, so rows written in the short
+ * form are invisible to every date query the platform makes -- day pulls,
+ * the review list, the prospects index build -- even though they are in the
+ * table and readable by horse name.
+ */
+const apiDateOf = (value) => {
+  const iso = isoOf(value);
+  return iso ? `${iso} 00:00:00` : null;
+};
+
 export class FranceStore {
   constructor(pool = null) {
     this._pool = pool;
@@ -439,15 +453,18 @@ export class FranceStore {
     for (const group of byRace.values()) {
       const head = group[0];
 
+      // Match both date forms: earlier runs wrote a bare "YYYY-MM-DD", so
+      // deleting only the padded form would leave those rows behind and
+      // duplicate the race on re-run.
       const [del] = await this.pool.query(
         `DELETE FROM APIData_Table2
           WHERE sourceSystem = ?
-            AND meetingDate = ?
+            AND meetingDate IN (?, ?)
             AND courseName = ?
             AND ${head.raceNumber == null ? "raceNumber IS NULL" : "raceNumber = ?"}`,
         head.raceNumber == null
-          ? [FRANCE_SOURCE, isoOf(head.meetingDate), head.courseName]
-          : [FRANCE_SOURCE, isoOf(head.meetingDate), head.courseName, head.raceNumber],
+          ? [FRANCE_SOURCE, apiDateOf(head.meetingDate), isoOf(head.meetingDate), head.courseName]
+          : [FRANCE_SOURCE, apiDateOf(head.meetingDate), isoOf(head.meetingDate), head.courseName, head.raceNumber],
       );
       deleted += del.affectedRows || 0;
 
@@ -457,7 +474,7 @@ export class FranceStore {
 
         payload.sourceSystem = FRANCE_SOURCE;
         if (columns.has("raceCountry")) payload.raceCountry = "FRA";
-        if (columns.has("meetingDate")) payload.meetingDate = isoOf(row.meetingDate);
+        if (columns.has("meetingDate")) payload.meetingDate = apiDateOf(row.meetingDate);
 
         // A confident identity match writes the existing horse's code onto the
         // French row, which is the join that puts French form on that horse's
