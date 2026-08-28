@@ -214,10 +214,18 @@ export class FranceStore {
             AND INDEX_NAME = 'idx_country_date' LIMIT 1`,
       );
       if (!indexes.length) {
-        await this.query(
-          "ALTER TABLE APIData_Table2 ADD INDEX idx_country_date (raceCountry, meetingDate)",
-        );
-        added.push("idx_country_date");
+        // Adding this index to a table this size takes long enough that a
+        // caller can time out mid-ALTER while MySQL carries on. A retry then
+        // sees no index yet and tries again, so treat "already exists" as the
+        // success it is rather than failing the whole schema call.
+        try {
+          await this.query(
+            "ALTER TABLE APIData_Table2 ADD INDEX idx_country_date (raceCountry, meetingDate)",
+          );
+          added.push("idx_country_date");
+        } catch (err) {
+          if (!/Duplicate key name/i.test(err.message)) throw err;
+        }
       }
     }
 
@@ -474,9 +482,15 @@ export class FranceStore {
 
   /** Everything France holds in APIData_Table2, for an audit or a rollback. */
   async franceRowCount() {
+    // Lead with raceCountry so this uses idx_country_date. sourceSystem has
+    // no index of its own, and APIData_Table2 holds millions of rows going
+    // back to 2006 -- filtering on it alone is a full table scan that hangs
+    // the request and holds one of the few France pool connections open.
+    // Every row this ingest writes carries both columns, so the pair is
+    // equivalent to the sourceSystem filter it replaces.
     const rows = await this.query(
-      "SELECT COUNT(*) AS n FROM APIData_Table2 WHERE sourceSystem = ?",
-      [FRANCE_SOURCE],
+      "SELECT COUNT(*) AS n FROM APIData_Table2 WHERE raceCountry = ? AND sourceSystem = ?",
+      ["FRA", FRANCE_SOURCE],
     );
     return rows[0]?.n ?? 0;
   }
