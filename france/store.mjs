@@ -102,6 +102,30 @@ export const REQUIRED_API_COLUMNS = {
   sourceSystem: "VARCHAR(16) NULL",
   sourceRaceId: "VARCHAR(64) NULL",
   sourceHorseId: "VARCHAR(160) NULL",
+
+  // Metadata PMU supplies on every runner that the table had nowhere to put,
+  // so promoteToApiData was dropping it silently into skippedFields: a French
+  // row reached the site with no silks, no rating, no form and no career
+  // record, and read as a thinner horse than the Timeform rows beside it.
+  // Timeform's own columns are left alone -- these sit alongside them, so a
+  // French row answers the same questions without ever overwriting a
+  // Timeform-sourced value.
+  silkUrl: "VARCHAR(255) NULL",
+  officialRating: "SMALLINT NULL",
+  formString: "VARCHAR(64) NULL",
+  careerRuns: "SMALLINT NULL",
+  careerWins: "SMALLINT NULL",
+  careerPlaces: "SMALLINT NULL",
+  careerEarnings: "DECIMAL(12,2) NULL",
+  earningsThisYear: "DECIMAL(12,2) NULL",
+  breederName: "VARCHAR(160) NULL",
+  damsireName: "VARCHAR(120) NULL",
+  weightKg: "DECIMAL(5,2) NULL",
+  headGear: "VARCHAR(32) NULL",
+  clothNumber: "SMALLINT NULL",
+  raceCategory: "VARCHAR(64) NULL",
+  distanceMetres: "SMALLINT NULL",
+  nonRunner: "TINYINT NULL",
 };
 
 export const FRANCE_SOURCE = "FRANCE";
@@ -474,6 +498,20 @@ export class FranceStore {
 
         payload.sourceSystem = FRANCE_SOURCE;
         if (columns.has("raceCountry")) payload.raceCountry = "FRA";
+
+        // Two fields the platform already has a column for under another
+        // name. Renaming them here rather than in the normaliser keeps that
+        // module describing PMU's own vocabulary.
+        if (columns.has("finishingTime") && row.finishingTimeSeconds != null) {
+          payload.finishingTime = row.finishingTimeSeconds;
+        }
+        // French racing grades a race by its condition (HANDICAP_DIVISE,
+        // A_RECLAMER, GROUPE_I) where British racing grades it by class. It is
+        // the same column's job on the race card, so the category fills it
+        // when the row has no class of its own.
+        if (columns.has("raceClass") && !payload.raceClass && row.raceCategory) {
+          payload.raceClass = String(row.raceCategory).replace(/_/g, " ");
+        }
         if (columns.has("meetingDate")) payload.meetingDate = apiDateOf(row.meetingDate);
 
         // A confident identity match writes the existing horse's code onto the

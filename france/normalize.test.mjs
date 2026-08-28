@@ -9,8 +9,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-
-import { blackTypeFrom, normalizeCourseName, toFurlongs, normalizeRunner } from "./normalize.mjs";
+import { blackTypeFrom, normalizeCourseName, toFurlongs, normalizeRunner, marginToLengths, deriveRaceFields } from "./normalize.mjs";
 import { matchHorse, DECISION, enrichmentFor } from "./matchHorse.mjs";
 
 test("black type reads categorieParticularite first", () => {
@@ -130,4 +129,72 @@ test("name match with nothing else known goes to review, not link", () => {
 
 test("no candidate means create", () => {
   assert.equal(matchHorse(royallyIncoming, []).decision, DECISION.CREATE);
+});
+
+/* ---------------------------------------------- beaten margins & flags */
+
+test("reads French margin vocabulary, short heads and fractions alike", () => {
+  const lengths = (identifiant, libelleCourt) =>
+    marginToLengths({ identifiant, libelleCourt });
+  assert.equal(lengths("UN_NEZ", "NEZ"), 0.05);
+  assert.equal(lengths("ENCOLURE", "ENCOLURE"), 0.3);
+  assert.equal(lengths("TROIS_QUARTS_DE_LONGUEUR", "3/4 L"), 0.75);
+  assert.equal(lengths("UNE_LONGUEUR", "1 L"), 1);
+  assert.equal(lengths("UNE_LONGUEUR_ET_DEMIE", "1 L 1/2"), 1.5);
+  assert.equal(lengths("SEPT_LONGUEURS", "7 L"), 7);
+});
+
+test("leaves a distanced runner unmeasured rather than inventing a margin", () => {
+  assert.equal(marginToLengths({ identifiant: "LOIN", libelleCourt: "LOIN" }), null);
+  assert.equal(marginToLengths(null), null);
+});
+
+test("accumulates PMU's gap-to-the-horse-in-front into lengths behind the winner", () => {
+  const gap = (id, text) => ({ identifiant: id, libelleCourt: text });
+  const rows = [
+    { positionOfficial: 1, marginToPrevious: null },
+    { positionOfficial: 2, marginToPrevious: gap("UNE_LONGUEUR", "1 L") },
+    { positionOfficial: 3, marginToPrevious: gap("DEMI_LONGUEUR", "1/2 L") },
+    { positionOfficial: 4, marginToPrevious: gap("UNE_TETE", "TETE") },
+  ];
+  deriveRaceFields(rows);
+  assert.deepEqual(rows.map((r) => r.distanceBeaten), [0, 1, 1.5, 1.6]);
+});
+
+test("stops measuring once a gap is unmeasurable, rather than guessing past it", () => {
+  const rows = [
+    { positionOfficial: 1, marginToPrevious: null },
+    { positionOfficial: 2, marginToPrevious: { identifiant: "DEUX_LONGUEURS", libelleCourt: "2 L" } },
+    { positionOfficial: 3, marginToPrevious: { identifiant: "LOIN", libelleCourt: "LOIN" } },
+    { positionOfficial: 4, marginToPrevious: { identifiant: "UNE_LONGUEUR", libelleCourt: "1 L" } },
+  ];
+  deriveRaceFields(rows);
+  assert.deepEqual(rows.map((r) => r.distanceBeaten), [0, 2, null, null]);
+});
+
+test("derives the win and black-type flags the platform aggregates on", () => {
+  const rows = [
+    { positionOfficial: 1, Group: 1, Listed: 0 },
+    { positionOfficial: 2, Group: 1, Listed: 0 },
+    { positionOfficial: null, Group: 1, Listed: 0 },
+  ];
+  deriveRaceFields(rows);
+  assert.deepEqual(rows[0], {
+    positionOfficial: 1, Group: 1, Listed: 0, distanceBeaten: 0,
+    Win: 1, Group1: 1, Stakes: 1, Group_Win: 1, Group1_Win: 1, Stakes_Win: 1,
+  });
+  assert.equal(rows[1].Win, 0);
+  assert.equal(rows[1].Stakes, 1);
+  assert.equal(rows[1].Group1_Win, 0);
+  // A non-runner has no result, so it is not a loser either.
+  assert.equal(rows[2].Win, null);
+});
+
+test("a handicap winner is a win but never black type", () => {
+  const rows = [{ positionOfficial: 1, Group: 0, Listed: 0 }];
+  deriveRaceFields(rows);
+  assert.equal(rows[0].Win, 1);
+  assert.equal(rows[0].Stakes, 0);
+  assert.equal(rows[0].Stakes_Win, 0);
+  assert.equal(rows[0].Group_Win, 0);
 });
