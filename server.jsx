@@ -3803,7 +3803,7 @@ app.get("/api/stallion-fee", (req, res) => {
 
 
 // ============================================================
-// HOT FORM / HOT RACES — OPTIMIZED
+// HOT FORM / HOT RACES
 // ============================================================
 //
 // GET /api/hot_form?days=28&minRunners=6
@@ -3816,27 +3816,24 @@ app.get("/api/stallion-fee", (req, res) => {
 //     hotScore = (3 * subsequentWins) + subsequentPlaces
 //
 // IMPORTANT: subsequentPlaces includes finishing positions 1-3. Therefore a
-// subsequent winner is also a subsequent placer, matching the existing UI/spec.
+// subsequent winner is also a subsequent placer, which matches the feature
+// specification example where 2 subsequent runs can contain 1 win + 2 places.
 //
-// Performance:
-//   - Reads only the columns required by Hot Form (no SELECT *)
-//   - Uses an index-friendly meetingDate range predicate
-//   - Uses a 15-minute in-memory server cache keyed by days/minRunners
-//   - Coalesces simultaneous identical requests so only one calculation runs
-//
-// Recommended indexes on APIData_Table2:
-//   idx_apidata_meetingdate       (meetingDate)
-//   idx_apidata_horse_meetingdate (horseName, meetingDate)
-//   idx_apidata_race_lookup       (meetingDate, courseName, raceTitle)
-//
-// This is a derived API. There is NO `hot_form` MySQL table. Keep this route
-// BEFORE the generic /api/:tableName route below.
+// This is deliberately a derived API. There is NO `hot_form` MySQL table and
+// the generic /api/:tableName route must never handle this URL.
 // ============================================================
 
 const HOT_FORM_SOURCE_TABLE = "APIData_Table2";
-const HOT_FORM_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+
+// Date-specific Hot Form cache. Each selected result date gets its own cache
+// entry so moving between race days is fast without recalculating the same
+// subsequent form over and over.
+const HOT_FORM_CACHE_TTL_MS = 15 * 60 * 1000;
 const hotFormCache = new Map();
 const hotFormInFlight = new Map();
+
+const HOT_FORM_DEFAULT_SCORE_THRESHOLD = 6;
+const HOT_FORM_DEFAULT_MIN_RUNNERS_SINCE = 2;
 
 const hotFormQuery = (sql, params = []) =>
   new Promise((resolve, reject) => {
@@ -3892,36 +3889,110 @@ const hotFormNumber = (value) => {
   return Number.isFinite(n) ? n : null;
 };
 
-const hotFormPosition = (row = {}) => hotFormNumber(row.positionOfficial);
-const hotFormPerformanceRating = (row = {}) => hotFormNumber(row.performanceRating);
-const hotFormTimefigure = (row = {}) => hotFormNumber(row.timefigure);
-const hotFormHorseName = (row = {}) => hotFormCleanText(row.horseName);
-const hotFormHorseCode = (row = {}) => hotFormCleanText(row.horseCode);
-const hotFormCourseName = (row = {}) => hotFormCleanText(row.courseName);
-const hotFormRaceTitle = (row = {}) => hotFormCleanText(row.raceTitle);
-const hotFormMeetingDate = (row = {}) => hotFormDateOnly(row.meetingDate);
-const hotFormRaceTime = (row = {}) => hotFormCleanText(row.scheduledTimeOfRaceLocal);
+const hotFormPosition = (row = {}) =>
+  hotFormNumber(
+    row.positionOfficial ??
+      row.position ??
+      row.Position ??
+      row.finishingPosition ??
+      row.finishPos
+  );
 
-// APIData_Table2 does not currently expose a dedicated raceId in the supplied
-// schema, so use the stable race identity already available in the table.
-const hotFormRaceKey = (row = {}) =>
-  [
+const hotFormPerformanceRating = (row = {}) =>
+  hotFormNumber(
+    row.performanceRating ??
+      row.timeformRating ??
+      row.tfRating ??
+      row.timeform
+  );
+
+const hotFormTimefigure = (row = {}) =>
+  hotFormNumber(row.timefigure ?? row.TFig ?? row.tfig ?? row.timeformFigure);
+
+const hotFormHorseName = (row = {}) =>
+  hotFormCleanText(row.horseName ?? row.Horse ?? row.horse ?? row.HorseName);
+
+const hotFormHorseCode = (row = {}) =>
+  hotFormCleanText(
+    row.horseCode ??
+      row.horse_code ??
+      row.HorseCode ??
+      row.horseId ??
+      row.horseID ??
+      row.HorseID
+  );
+
+const hotFormRaceId = (row = {}) =>
+  hotFormCleanText(
+    row.raceId ??
+      row.raceID ??
+      row.RaceID ??
+      row.race_id ??
+      row.meetingRaceId
+  );
+
+const hotFormCourseName = (row = {}) =>
+  hotFormCleanText(
+    row.courseName ?? row.Course ?? row.course ?? row.raceTrack ?? row.Track
+  );
+
+const hotFormRaceTitle = (row = {}) =>
+  hotFormCleanText(row.raceTitle ?? row.RaceTitle ?? row.raceName ?? row.Type);
+
+const hotFormMeetingDate = (row = {}) =>
+  hotFormDateOnly(
+    row.meetingDate ?? row.raceDate ?? row.date ?? row.FixtureDate
+  );
+
+const hotFormRaceTime = (row = {}) =>
+  hotFormCleanText(
+    row.scheduledTimeOfRaceLocal ??
+      row.scheduledTime ??
+      row.raceTime ??
+      row.RaceTime ??
+      row.time
+  );
+
+const hotFormRaceKey = (row = {}) => {
+  const raceId = hotFormRaceId(row);
+  if (raceId) return `id:${raceId}`;
+
+  // Fallback keeps the endpoint compatible with historical rows where raceId
+  // is blank. Race time is included where available to avoid collisions.
+  return [
     hotFormMeetingDate(row).toLowerCase(),
     hotFormCourseName(row).toLowerCase(),
     hotFormRaceTime(row).toLowerCase(),
     hotFormRaceTitle(row).toLowerCase(),
   ].join("__");
+};
+
+const hotFormDistinctRunnerCount = (rows = []) =>
+  new Set(
+    rows
+      .map((row) => hotFormHorseKey(hotFormHorseName(row)))
+      .filter(Boolean)
+  ).size;
 
 const hotFormPickFirst = (...values) =>
   values.find((value) => value !== null && value !== undefined && value !== "");
 
-const buildHotFormData = (allRows = [], { minRunners = 6 } = {}) => {
+const buildHotFormData = (
+  allRows = [],
+  {
+    minRunners = 6,
+    sourceMeetingDate = null,
+    hotScoreThreshold = HOT_FORM_DEFAULT_SCORE_THRESHOLD,
+    minRunnersSince = HOT_FORM_DEFAULT_MIN_RUNNERS_SINCE,
+  } = {}
+) => {
   const rows = (Array.isArray(allRows) ? allRows : []).filter(
     (row) => hotFormMeetingDate(row) && hotFormHorseName(row)
   );
 
-  // Build each horse's history once. This avoids repeated full-array scans for
-  // every runner in every race.
+  // Every horse's runs in this 28-day (or requested) dataset, ordered oldest
+  // first. Since target races are inside the same window, these rows contain
+  // every possible subsequent run through today for those target races.
   const rowsByHorse = new Map();
   for (const row of rows) {
     const key = hotFormHorseKey(hotFormHorseName(row));
@@ -3932,13 +4003,11 @@ const buildHotFormData = (allRows = [], { minRunners = 6 } = {}) => {
 
   for (const horseRows of rowsByHorse.values()) {
     horseRows.sort(
-      (a, b) =>
-        hotFormDateNumber(hotFormMeetingDate(a)) -
-        hotFormDateNumber(hotFormMeetingDate(b))
+      (a, b) => hotFormDateNumber(hotFormMeetingDate(a)) - hotFormDateNumber(hotFormMeetingDate(b))
     );
   }
 
-  // Group result rows into original races.
+  // Group original result rows back into races.
   const races = new Map();
   for (const row of rows) {
     const key = hotFormRaceKey(row);
@@ -3950,7 +4019,7 @@ const buildHotFormData = (allRows = [], { minRunners = 6 } = {}) => {
   const output = [];
 
   for (const [raceKey, raceRowsRaw] of races.entries()) {
-    // Deduplicate any repeated runner row in the original race.
+    // Deduplicate any repeated copy of the same runner in the original race.
     const raceRunnerMap = new Map();
     for (const row of raceRowsRaw) {
       const horseKey = hotFormHorseKey(hotFormHorseName(row));
@@ -3962,6 +4031,8 @@ const buildHotFormData = (allRows = [], { minRunners = 6 } = {}) => {
         continue;
       }
 
+      // If duplicates exist, retain whichever row has the better usable TF
+      // performanceRating, otherwise keep the first row.
       const currentRating = hotFormPerformanceRating(current);
       const candidateRating = hotFormPerformanceRating(row);
       if (
@@ -3980,16 +4051,22 @@ const buildHotFormData = (allRows = [], { minRunners = 6 } = {}) => {
     const raceDateN = hotFormDateNumber(raceDate);
     if (!Number.isFinite(raceDateN)) continue;
 
-    const distinctRunners = raceRows.length;
+    // When the endpoint is called for one selected race day, histories from
+    // later dates are present only to calculate subsequent form. They must not
+    // themselves become returned source races.
+    if (sourceMeetingDate && raceDate !== sourceMeetingDate) continue;
+
+    const distinctRunners = hotFormDistinctRunnerCount(raceRows);
     const declaredRunnerCount = Math.max(
       0,
       ...raceRows
-        .map((row) => hotFormNumber(row.numberOfRunners))
+        .map((row) => hotFormNumber(row.numberOfRunners ?? row.runners ?? row.Runners))
         .filter((n) => n !== null)
     );
 
-    // Use actual runner rows where possible. The declared count remains useful
-    // as a fallback if historical data is incomplete.
+    // Use actual distinct result rows first because subsequent-form matching
+    // can only be performed for runners we actually hold. Fall back to the
+    // declared number only if necessary.
     const runnerCount = distinctRunners || declaredRunnerCount;
     if (runnerCount < minRunners) continue;
 
@@ -4003,6 +4080,9 @@ const buildHotFormData = (allRows = [], { minRunners = 6 } = {}) => {
         const horseKey = hotFormHorseKey(horseName);
         const history = rowsByHorse.get(horseKey) || [];
 
+        // Strictly AFTER the original race date. Same-day rows are deliberately
+        // excluded; horses should not receive subsequent-form credit on the same
+        // date as the source race.
         const laterRuns = history.filter((laterRow) => {
           const laterDateN = hotFormDateNumber(hotFormMeetingDate(laterRow));
           return Number.isFinite(laterDateN) && laterDateN > raceDateN;
@@ -4012,6 +4092,8 @@ const buildHotFormData = (allRows = [], { minRunners = 6 } = {}) => {
           (row) => hotFormPosition(row) === 1
         ).length;
 
+        // "Places" means finishing 1st, 2nd or 3rd. A winner is therefore also
+        // a placer, consistent with the supplied product specification example.
         const horseSubsequentPlaces = laterRuns.filter((row) => {
           const p = hotFormPosition(row);
           return p !== null && p >= 1 && p <= 3;
@@ -4047,24 +4129,36 @@ const buildHotFormData = (allRows = [], { minRunners = 6 } = {}) => {
     const topRating = ratings.length ? Math.max(...ratings) : null;
 
     const hotScore = 3 * subsequentWins + subsequentPlaces;
-    const normalizedHotScore =
-      runnersSinceRun > 0 ? hotScore / runnersSinceRun : 0;
+    const normalizedHotScore = runnersSinceRun > 0 ? hotScore / runnersSinceRun : 0;
+    const isHot =
+      hotScore >= hotScoreThreshold &&
+      runnersSinceRun >= minRunnersSince;
 
     output.push({
-      // Use the composite race key as raceId because the current source table
-      // does not contain a dedicated raceId column.
-      raceId: raceKey,
+      raceId: hotFormRaceId(first) || raceKey,
       raceTitle: hotFormRaceTitle(first),
       courseName: hotFormCourseName(first),
       meetingDate: raceDate,
-      distance: hotFormPickFirst(hotFormNumber(first.distance)) ?? null,
-      raceClass: hotFormPickFirst(first.raceClass) ?? null,
+      distance: hotFormPickFirst(
+        hotFormNumber(first.distance),
+        hotFormNumber(first.distanceFurlongs),
+        hotFormNumber(first.Distance)
+      ) ?? null,
+      raceClass: hotFormPickFirst(
+        first.raceClass,
+        first.class,
+        first.raceClassCode,
+        first.Class
+      ) ?? null,
       runners: runnerCount,
       runnersSinceRun,
       subsequentWins,
       subsequentPlaces,
       hotScore,
       normalizedHotScore: Number(normalizedHotScore.toFixed(3)),
+      isHot,
+      hotScoreThreshold,
+      minRunnersSince,
       winnerRating:
         winnerRating !== null && winnerRating !== 999 && winnerRating < 200
           ? winnerRating
@@ -4074,6 +4168,8 @@ const buildHotFormData = (allRows = [], { minRunners = 6 } = {}) => {
     });
   }
 
+  // Denominator-aware ranking: points per runner who has actually run since is
+  // the primary sort, then raw Hot Score, then number of runners who have run.
   return output.sort((a, b) => {
     if (b.normalizedHotScore !== a.normalizedHotScore) {
       return b.normalizedHotScore - a.normalizedHotScore;
@@ -4086,105 +4182,207 @@ const buildHotFormData = (allRows = [], { minRunners = 6 } = {}) => {
   });
 };
 
-const calculateHotFormResponse = async ({ days, minRunners }) => {
-  // IMPORTANT: no functions are wrapped around meetingDate in the WHERE clause,
-  // allowing idx_apidata_meetingdate to be used efficiently.
-  const sql = `
-    SELECT
-      horseName,
-      horseCode,
-      raceTitle,
-      courseName,
-      meetingDate,
-      scheduledTimeOfRaceLocal,
-      positionOfficial,
-      performanceRating,
-      timefigure,
-      numberOfRunners,
-      distance,
-      raceClass
-    FROM \`${HOT_FORM_SOURCE_TABLE}\`
-    WHERE meetingDate >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
-      AND meetingDate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
-    ORDER BY meetingDate ASC
-  `;
-
-  const rows = await hotFormQuery(sql, [days]);
-  const data = buildHotFormData(rows, { minRunners });
-
-  return {
-    data,
-    meta: {
-      days,
-      minRunners,
-      source: HOT_FORM_SOURCE_TABLE,
-      formula: "(3 * subsequentWins) + subsequentPlaces",
-      placeDefinition: "finish position 1-3 inclusive",
-      raceCount: data.length,
-      sourceRows: rows.length,
-      generatedAt: new Date().toISOString(),
-      cacheTtlMinutes: HOT_FORM_CACHE_TTL_MS / 60000,
-    },
-  };
-};
-
 app.get("/api/hot_form", async (req, res) => {
-  // Browser/proxy may revalidate, while the expensive server calculation is
-  // cached separately below. The frontend therefore receives fresh-enough data
-  // without forcing MySQL/Node to repeat the same work every page load.
-  res.setHeader("Cache-Control", "private, max-age=60");
-
-  const rawDays = Number.parseInt(req.query.days, 10);
+  // This endpoint is intentionally DATE-SPECIFIC. The races page already has a
+  // selected meetingDate, so loading the whole 28-day universe is unnecessary.
+  // One small response is returned for the races on that selected date.
+  const rawMeetingDate = String(req.query.meetingDate || "").trim();
   const rawMinRunners = Number.parseInt(req.query.minRunners, 10);
-
-  const days = Number.isFinite(rawDays)
-    ? Math.max(1, Math.min(rawDays, 120))
-    : 28;
+  const rawHotThreshold = Number.parseInt(req.query.hotThreshold, 10);
+  const rawMinRunnersSince = Number.parseInt(req.query.minRunnersSince, 10);
 
   const minRunners = Number.isFinite(rawMinRunners)
     ? Math.max(1, Math.min(rawMinRunners, 50))
     : 6;
 
-  const cacheKey = `${days}:${minRunners}`;
-  const now = Date.now();
-  const cached = hotFormCache.get(cacheKey);
+  const hotScoreThreshold = Number.isFinite(rawHotThreshold)
+    ? Math.max(0, Math.min(rawHotThreshold, 1000))
+    : HOT_FORM_DEFAULT_SCORE_THRESHOLD;
 
-  if (cached && now - cached.createdAt < HOT_FORM_CACHE_TTL_MS) {
+  const minRunnersSince = Number.isFinite(rawMinRunnersSince)
+    ? Math.max(0, Math.min(rawMinRunnersSince, 50))
+    : HOT_FORM_DEFAULT_MIN_RUNNERS_SINCE;
+
+  // Accept YYYY-MM-DD only. Keeping the column bare in SQL allows MySQL to use
+  // idx_apidata_meetingdate rather than wrapping meetingDate in DATE().
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(rawMeetingDate)) {
+    return res.status(400).json({
+      error: "meetingDate is required in YYYY-MM-DD format",
+    });
+  }
+
+  const cacheKey = [
+    rawMeetingDate,
+    minRunners,
+    hotScoreThreshold,
+    minRunnersSince,
+  ].join("|");
+
+  const cached = hotFormCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt < HOT_FORM_CACHE_TTL_MS) {
+    res.setHeader("Cache-Control", "private, max-age=60");
     return res.status(200).json({
       ...cached.payload,
       meta: {
         ...cached.payload.meta,
-        cached: true,
-        cacheAgeSeconds: Math.floor((now - cached.createdAt) / 1000),
+        cache: "HIT",
       },
     });
   }
 
-  try {
-    // If several users/page components request the same Hot Form data at once,
-    // all callers await the one calculation already running.
-    let pending = hotFormInFlight.get(cacheKey);
+  // If two browser requests arrive together, let them share one calculation.
+  if (hotFormInFlight.has(cacheKey)) {
+    try {
+      const payload = await hotFormInFlight.get(cacheKey);
+      res.setHeader("Cache-Control", "private, max-age=60");
+      return res.status(200).json({
+        ...payload,
+        meta: { ...payload.meta, cache: "SHARED" },
+      });
+    } catch (err) {
+      console.error("❌ shared GET /api/hot_form failed:", err);
+      return res.status(500).json({
+        error: "Failed to calculate Hot Form",
+        details: err.message,
+        code: err.code || null,
+      });
+    }
+  }
 
-    if (!pending) {
-      pending = calculateHotFormResponse({ days, minRunners });
-      hotFormInFlight.set(cacheKey, pending);
+  const work = (async () => {
+    // Query 1: only the original result rows for the selected race date.
+    const sourceSql = `
+      SELECT
+        horseName,
+        horseCode,
+        raceTitle,
+        courseName,
+        meetingDate,
+        scheduledTimeOfRaceLocal,
+        positionOfficial,
+        performanceRating,
+        timefigure,
+        numberOfRunners,
+        distance,
+        raceClass
+      FROM \`${HOT_FORM_SOURCE_TABLE}\`
+      WHERE meetingDate >= ?
+        AND meetingDate < DATE_ADD(?, INTERVAL 1 DAY)
+      ORDER BY meetingDate ASC, courseName ASC, raceTitle ASC
+    `;
+
+    const sourceRows = await hotFormQuery(sourceSql, [rawMeetingDate, rawMeetingDate]);
+
+    if (!sourceRows.length) {
+      return {
+        data: [],
+        meta: {
+          meetingDate: rawMeetingDate,
+          minRunners,
+          hotScoreThreshold,
+          minRunnersSince,
+          source: HOT_FORM_SOURCE_TABLE,
+          formula: "(3 * subsequentWins) + subsequentPlaces",
+          placeDefinition: "finish position 1-3 inclusive",
+          raceCount: 0,
+          hotRaceCount: 0,
+          sourceRows: 0,
+          subsequentRows: 0,
+          generatedAt: new Date().toISOString(),
+          cache: "MISS",
+        },
+      };
     }
 
-    const payload = await pending;
+    // Only horses from that day's qualifying source data can affect the answer.
+    // The composite index (horseName, meetingDate) makes this query efficient.
+    const horseNames = [
+      ...new Set(
+        sourceRows
+          .map((row) => hotFormHorseName(row))
+          .filter(Boolean)
+      ),
+    ];
 
+    let subsequentRows = [];
+
+    if (horseNames.length) {
+      // Chunk to keep the IN() list comfortably bounded on large race days.
+      const chunkSize = 250;
+      for (let i = 0; i < horseNames.length; i += chunkSize) {
+        const chunk = horseNames.slice(i, i + chunkSize);
+        const placeholders = chunk.map(() => "?").join(",");
+
+        const subsequentSql = `
+          SELECT
+            horseName,
+            horseCode,
+            raceTitle,
+            courseName,
+            meetingDate,
+            scheduledTimeOfRaceLocal,
+            positionOfficial,
+            performanceRating,
+            timefigure,
+            numberOfRunners,
+            distance,
+            raceClass
+          FROM \`${HOT_FORM_SOURCE_TABLE}\`
+          WHERE horseName IN (${placeholders})
+            AND meetingDate >= DATE_ADD(?, INTERVAL 1 DAY)
+            AND meetingDate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+          ORDER BY horseName ASC, meetingDate ASC
+        `;
+
+        const rows = await hotFormQuery(subsequentSql, [
+          ...chunk,
+          rawMeetingDate,
+        ]);
+        subsequentRows.push(...rows);
+      }
+    }
+
+    const data = buildHotFormData(
+      [...sourceRows, ...subsequentRows],
+      {
+        minRunners,
+        sourceMeetingDate: rawMeetingDate,
+        hotScoreThreshold,
+        minRunnersSince,
+      }
+    );
+
+    return {
+      data,
+      meta: {
+        meetingDate: rawMeetingDate,
+        minRunners,
+        hotScoreThreshold,
+        minRunnersSince,
+        source: HOT_FORM_SOURCE_TABLE,
+        formula: "(3 * subsequentWins) + subsequentPlaces",
+        placeDefinition: "finish position 1-3 inclusive",
+        raceCount: data.length,
+        hotRaceCount: data.filter((race) => race.isHot).length,
+        sourceRows: sourceRows.length,
+        subsequentRows: subsequentRows.length,
+        generatedAt: new Date().toISOString(),
+        cache: "MISS",
+      },
+    };
+  })();
+
+  hotFormInFlight.set(cacheKey, work);
+
+  try {
+    const payload = await work;
     hotFormCache.set(cacheKey, {
       createdAt: Date.now(),
       payload,
     });
 
-    return res.status(200).json({
-      ...payload,
-      meta: {
-        ...payload.meta,
-        cached: false,
-        cacheAgeSeconds: 0,
-      },
-    });
+    res.setHeader("Cache-Control", "private, max-age=60");
+    return res.status(200).json(payload);
   } catch (err) {
     console.error("❌ GET /api/hot_form failed:", err);
     return res.status(500).json({
