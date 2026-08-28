@@ -28,6 +28,7 @@
  */
 
 import mysql from "mysql2/promise";
+import { FRANCE_CARD_SOURCE } from "./racecards.mjs";
 
 /** Tables this module owns outright and may create. */
 export const SCHEMA = [
@@ -552,6 +553,63 @@ export class FranceStore {
     }
 
     return { inserted, deleted, races: byRace.size, skippedFields: skipped };
+  }
+
+  /**
+   * Writes French racecards into RacesAndEntries.
+   *
+   * Scoped delete-then-insert per fixture date, filtered on source, so a
+   * re-run replaces that day's French cards and can never touch the British
+   * feed's rows. Declarations change up to the off -- non-runners, jockey
+   * changes -- so re-running a date is the normal case, not the exception.
+   *
+   * The tag columns are left out of the write on purpose: taggedBy,
+   * taggedUser and tagComments are the user's, not the feed's. A re-run of a
+   * date does clear them along with the row, which is the same behaviour the
+   * British feed already has.
+   */
+  async writeRacecards(rows) {
+    if (!rows.length) return { inserted: 0, deleted: 0, dates: 0, skippedFields: [] };
+
+    const [cols] = await this.pool.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'RacesAndEntries'`,
+    );
+    const columns = new Set(cols.map((c) => c.COLUMN_NAME));
+    const writable = Object.keys(rows[0]).filter((k) => columns.has(k));
+    const skipped = Object.keys(rows[0]).filter((k) => !columns.has(k));
+    if (!columns.has("source")) {
+      throw new Error("RacesAndEntries has no source column -- cannot separate French cards from the British feed.");
+    }
+
+    const byDate = new Map();
+    for (const row of rows) {
+      if (!byDate.has(row.FixtureDate)) byDate.set(row.FixtureDate, []);
+      byDate.get(row.FixtureDate).push(row);
+    }
+
+    let inserted = 0;
+    let deleted = 0;
+    for (const [fixtureDate, group] of byDate) {
+      const [del] = await this.pool.query(
+        "DELETE FROM RacesAndEntries WHERE source = ? AND FixtureDate = ?",
+        [FRANCE_CARD_SOURCE, fixtureDate],
+      );
+      deleted += del.affectedRows || 0;
+
+      for (const row of group) {
+        const payload = {};
+        for (const key of writable) payload[key] = row[key] ?? null;
+        const names = Object.keys(payload);
+        await this.query(
+          `INSERT INTO RacesAndEntries (${names.map((n) => `\`${n}\``).join(", ")})
+           VALUES (${names.map(() => "?").join(", ")})`,
+          names.map((n) => payload[n]),
+        );
+        inserted += 1;
+      }
+    }
+    return { inserted, deleted, dates: byDate.size, skippedFields: skipped };
   }
 
   /** Everything France holds in APIData_Table2, for an audit or a rollback. */
