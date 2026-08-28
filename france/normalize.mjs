@@ -158,8 +158,16 @@ export function normalizeRunner({ meeting, course, participant, isoDate }) {
     sourceRaceId: `${isoDate}:R${meeting.numOfficiel}:C${course.numExterne}`,
 
     horseName: String(p.nom || "").trim().toUpperCase(),
+    // Two different things, and APIData_Table2 keeps them apart:
+    // horseCountry is where the horse was bred (PMU gives it per runner),
+    // countryCode is where the RACE was run. Every runner at Southwell is
+    // countryCode GBR and every runner at Navan is IRE, whatever their
+    // breeding -- so a French fixture is FRA for all of them. Writing the
+    // breeding country here instead made a British-bred horse at Deauville
+    // look like a British runner and left French cards outside every
+    // "raced in France" query.
     horseCountry: COUNTRY_BY_FRENCH_NAME[p.pays] || null,
-    countryCode: COUNTRY_BY_FRENCH_NAME[p.pays] || null,
+    countryCode: "FRA",
     foalingYear: Number.isFinite(p.age) ? Number(isoDate.slice(0, 4)) - p.age : null,
     horseAge: p.age ?? null,
     horseGender: GENDER[p.sexe] || null,
