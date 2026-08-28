@@ -136,6 +136,9 @@ db.query(
   (err) => { if (err) console.error("bloodstock_clients table check failed:", err.message); }
 );
 
+// These routes are declared above the global express.json() middleware, so
+// the write handlers parse their own body; without it req.body is undefined
+// and every create/update was rejected as "user_id and name are required".
 const jsonOrNull = (v) => (v === undefined || v === null ? null : JSON.stringify(v));
 
 app.get("/api/bloodstock_clients/:userId", (req, res) => {
@@ -149,7 +152,7 @@ app.get("/api/bloodstock_clients/:userId", (req, res) => {
   );
 });
 
-app.post("/api/bloodstock_clients", (req, res) => {
+app.post("/api/bloodstock_clients", express.json(), (req, res) => {
   const { user_id, name, location, email, prefs, pipeline, suggestions } = req.body || {};
   if (!user_id || !name) return res.status(400).json({ error: "user_id and name are required" });
   db.query(
@@ -166,7 +169,7 @@ app.post("/api/bloodstock_clients", (req, res) => {
   );
 });
 
-app.patch("/api/bloodstock_clients/:id", (req, res) => {
+app.patch("/api/bloodstock_clients/:id", express.json(), (req, res) => {
   const { user_id, name, location, email, prefs, pipeline, suggestions } = req.body || {};
   db.query(
     `UPDATE bloodstock_clients SET name = COALESCE(?, name), location = ?, email = ?,
