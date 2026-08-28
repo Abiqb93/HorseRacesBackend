@@ -289,11 +289,55 @@ export function raceTypeOf(course) {
   return "Flat";
 }
 
+/**
+ * How many runs the form string accounts for.
+ *
+ * A "musique" is one entry per run, newest first -- a finishing position (a
+ * digit, or a letter for a non-completion: T tombé, A arrêté, D disqualifié,
+ * R retiré) followed by the discipline it was run in (p plat, h haies, s
+ * steeple, c cross, a attelé, m monté). "(25)" separates the seasons and is
+ * not a run. It is a floor on the career, not the career itself: PMU
+ * truncates it to the recent past.
+ */
+export function formRunCount(musique) {
+  if (!musique) return 0;
+  return (String(musique).match(/(?:\d+|[ADRT])[apmshc]/gi) || []).length;
+}
+
+/**
+ * The career record, or nothing.
+ *
+ * PMU sometimes returns a zeroed record -- no runs, no wins, no earnings --
+ * for a horse whose own form string shows a season of racing. It is rare on
+ * the Flat (1 runner in 651 sampled) and not rare over jumps (5 in 87). The
+ * zero is an absent record, not a fact about the horse, and writing it down
+ * as one is worse than leaving the field empty: career runs and prize money
+ * are two of the factors prospects are scored on, so a false zero marks a
+ * proven horse as unraced and scores it accordingly.
+ *
+ * A horse with no form string and no record is genuinely unraced, and keeps
+ * its zeroes.
+ */
+export function careerRecordOf(p) {
+  const gains = p.gainsParticipant || {};
+  const record = {
+    careerRuns: p.nombreCourses ?? null,
+    careerWins: p.nombreVictoires ?? null,
+    careerPlaces: p.nombrePlaces ?? null,
+    careerEarnings: centimesToEuros(gains.gainsCarriere),
+    earningsThisYear: centimesToEuros(gains.gainsAnneeEnCours),
+  };
+  const claimsUnraced = !Number(record.careerRuns) && !Number(record.careerEarnings);
+  if (claimsUnraced && formRunCount(p.musique) > 0) {
+    for (const key of Object.keys(record)) record[key] = null;
+  }
+  return record;
+}
+
 export function normalizeRunner({ meeting, course, participant, isoDate }) {
   const p = participant;
   const { going, goingValue } = goingFrom(course);
   const bt = blackTypeFrom(course);
-  const gains = p.gainsParticipant || {};
 
   const nonRunner = p.statut === "NON_PARTANT";
   const finished = Number.isFinite(p.ordreArrivee) ? p.ordreArrivee : null;
@@ -379,11 +423,7 @@ export function normalizeRunner({ meeting, course, participant, isoDate }) {
 
     // ---- form / career --------------------------------------------
     formString: p.musique || null, // French "musique", e.g. "0p1p0p(25)4p"
-    careerRuns: p.nombreCourses ?? null,
-    careerWins: p.nombreVictoires ?? null,
-    careerPlaces: p.nombrePlaces ?? null,
-    careerEarnings: centimesToEuros(gains.gainsCarriere),
-    earningsThisYear: centimesToEuros(gains.gainsAnneeEnCours),
+    ...careerRecordOf(p),
 
     // Post-race analyst comment, French, from DATAHIPPIQUE. The platform
     // already has a public_comments column that renders in the form table.

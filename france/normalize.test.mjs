@@ -9,7 +9,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blackTypeFrom, normalizeCourseName, toFurlongs, normalizeRunner, marginToLengths, goingToEnglish, deriveRaceFields } from "./normalize.mjs";
+import { blackTypeFrom, normalizeCourseName, toFurlongs, normalizeRunner, marginToLengths, goingToEnglish, formRunCount, careerRecordOf, deriveRaceFields } from "./normalize.mjs";
 import { matchHorse, DECISION, enrichmentFor } from "./matchHorse.mjs";
 
 test("black type reads categorieParticularite first", () => {
@@ -263,4 +263,49 @@ test("types a jumps race by its specialite, not its discipline", () => {
   assert.equal(race({ specialite: "OBSTACLE" }).raceType, "Hurdle");
   // The more specific of the two words is the one worth keeping.
   assert.equal(race({ specialite: "OBSTACLE", discipline: "HAIE" }).raceSubType, "HAIE");
+});
+
+/* ------------------------------------------------- career record */
+
+test("counts the runs a form string accounts for", () => {
+  assert.equal(formRunCount("0p6p(25)5p1p1p3p2p5p3p"), 9); // the season marker is not a run
+  assert.equal(formRunCount("1p"), 1);
+  assert.equal(formRunCount("Th2s1s"), 3); // T tombé, over hurdles and steeple
+  assert.equal(formRunCount(""), 0);
+  assert.equal(formRunCount(null), 0);
+});
+
+test("drops a career record the horse's own form contradicts", () => {
+  // PMU returns a zeroed record for some runners -- rare on the Flat, not
+  // rare over jumps -- and a false zero marks a proven horse as unraced in
+  // the two factors prospects are scored on.
+  const record = careerRecordOf({
+    nombreCourses: 0, nombreVictoires: 0, nombrePlaces: 0,
+    gainsParticipant: { gainsCarriere: 0, gainsAnneeEnCours: 0 },
+    musique: "0p6p(25)5p1p1p3p2p5p3p",
+  });
+  assert.deepEqual(record, {
+    careerRuns: null, careerWins: null, careerPlaces: null,
+    careerEarnings: null, earningsThisYear: null,
+  });
+});
+
+test("keeps the zeroes of a horse that genuinely has not run", () => {
+  const record = careerRecordOf({
+    nombreCourses: 0, nombreVictoires: 0, nombrePlaces: 0,
+    gainsParticipant: { gainsCarriere: 0, gainsAnneeEnCours: 0 },
+    musique: null,
+  });
+  assert.equal(record.careerRuns, 0);
+  assert.equal(record.careerEarnings, 0);
+});
+
+test("leaves a real career record alone", () => {
+  const record = careerRecordOf({
+    nombreCourses: 11, nombreVictoires: 2, nombrePlaces: 6,
+    gainsParticipant: { gainsCarriere: 7_545_200, gainsAnneeEnCours: 2_515_000 },
+    musique: "0p6p1p8p(25)4p3p3p2p3p",
+  });
+  assert.equal(record.careerRuns, 11);
+  assert.equal(record.careerEarnings, 75_452); // centimes to euros
 });
