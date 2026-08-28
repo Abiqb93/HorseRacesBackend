@@ -10343,11 +10343,12 @@ app.post("/api/user-preps-reviewlist", (req, res) => {
 let _france = null;
 async function loadFrance() {
   if (!_france) {
-    const [ingest, store] = await Promise.all([
+    const [ingest, store, racecards] = await Promise.all([
       import("./france/ingest.mjs"),
       import("./france/store.mjs"),
+      import("./france/racecards.mjs"),
     ]);
-    _france = { ...ingest, ...store, store: new store.FranceStore() };
+    _france = { ...ingest, ...store, ...racecards, store: new store.FranceStore() };
   }
   return _france;
 }
@@ -10434,6 +10435,53 @@ app.post('/api/france/reconcile', async (req, res) => {
   }
 });
 
+// Pulls the declared French cards for a date (or a span) into
+// RacesAndEntries, which is what the Racecards page reads. The British feed
+// has never carried France, so without this there is no French fixture on
+// that page at all. Body: {date} | {from,to} | {days}, days counting forward
+// from today -- PMU publishes several days ahead.
+app.post('/api/france/racecards/ingest', async (req, res) => {
+  if (!requireFranceAdmin(req, res)) return;
+
+  const { date, from, to, days } = req.body || {};
+  const isoOf = (d) => d.toISOString().slice(0, 10);
+
+  let dates = [];
+  if (date) {
+    if (!FRANCE_ISO.test(date)) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
+    dates = [date];
+  } else if (from && to) {
+    if (!FRANCE_ISO.test(from) || !FRANCE_ISO.test(to)) {
+      return res.status(400).json({ error: "from and to must be YYYY-MM-DD" });
+    }
+    for (let d = new Date(`${from}T12:00:00Z`); isoOf(d) <= to; d.setUTCDate(d.getUTCDate() + 1)) {
+      dates.push(isoOf(d));
+    }
+  } else {
+    const n = Math.min(Math.max(Number(days) || 3, 1), 10);
+    for (let i = 0; i < n; i += 1) {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() + i);
+      dates.push(isoOf(d));
+    }
+  }
+
+  try {
+    const france = await loadFrance();
+    const results = [];
+    for (const iso of dates) {
+      const rows = await france.fetchCardsForDate(iso, { log: (m) => console.log("[france:cards]", m) });
+      const written = await france.store.writeRacecards(rows);
+      results.push({ date: iso, runners: rows.length, ...written });
+    }
+    const runners = results.reduce((n, r) => n + r.inserted, 0);
+    res.status(200).json({ ok: true, dates: dates.length, runners, results });
+  } catch (err) {
+    console.error("[france] racecards:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/france/stats', async (req, res) => {
   try {
     const { store } = await loadFrance();
@@ -10480,9 +10528,15 @@ app.get('/api/france/reviews', async (req, res) => {
 // French racing as it now sits in APIData_Table2. This is the join the whole
 // exercise was for: the same table, the same shape, so the horse, sire and dam
 // pages pick French form up without knowing where it came from.
+// French RESULTS for a date -- the runners and their finishing positions.
+// Kept at this path because the frontend already calls it; the declared
+// cards ahead of the racing are RacesAndEntries, written by the route below.
+//
+// The filter said 'FR' where every French row is written 'FRA', so this
+// route answered every request with an empty list.
 app.get('/api/france/racecards', (req, res) => {
   const { date, from, to, courseName } = req.query;
-  const where = ["a.raceCountry = 'FR'"];
+  const where = ["a.raceCountry = 'FRA'"];
   const params = [];
 
   if (date) {
