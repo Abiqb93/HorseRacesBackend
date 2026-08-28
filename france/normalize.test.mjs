@@ -253,10 +253,14 @@ test("types a jumps race by its specialite, not its discipline", () => {
       isoDate: "2026-08-26",
     });
 
-  assert.equal(race({ specialite: "OBSTACLE", discipline: "HAIE" }).raceType, "Jumps");
-  assert.equal(race({ specialite: "OBSTACLE", discipline: "STEEPLECHASE" }).raceType, "Jumps");
-  assert.equal(race({ specialite: "OBSTACLE", discipline: "CROSS" }).raceType, "Jumps");
+  // In the platform's vocabulary -- Flat / Hurdle / Chase / Bumper -- not a
+  // French "Jumps", which no race-type filter on the site would match.
+  assert.equal(race({ specialite: "OBSTACLE", discipline: "HAIE" }).raceType, "Hurdle");
+  assert.equal(race({ specialite: "OBSTACLE", discipline: "STEEPLECHASE" }).raceType, "Chase");
+  assert.equal(race({ specialite: "OBSTACLE", discipline: "CROSS" }).raceType, "Chase");
   assert.equal(race({ specialite: "PLAT", discipline: "PLAT" }).raceType, "Flat");
+  // Told it is jumping but not which kind: hurdle is the commoner default.
+  assert.equal(race({ specialite: "OBSTACLE" }).raceType, "Hurdle");
   // The more specific of the two words is the one worth keeping.
   assert.equal(race({ specialite: "OBSTACLE", discipline: "HAIE" }).raceSubType, "HAIE");
 });
