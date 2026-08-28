@@ -129,6 +129,24 @@ export const REQUIRED_API_COLUMNS = {
   nonRunner: "TINYINT NULL",
 };
 
+/**
+ * The indexes France's own writes depend on.
+ *
+ * idx_country_date carries the only read France needs to be fast:
+ * "everything that ran in France between these dates".
+ *
+ * The other two carry promoteToApiData's delete. Without them each ingested
+ * race scans APIData_Table2 whole and takes a next-key lock on every row it
+ * examines, so one ingest locks the table against the next and every
+ * subsequent run dies on "Lock wait timeout exceeded" -- which is exactly
+ * what happened once a course rename made the sourceRaceId branch matter.
+ */
+export const REQUIRED_API_INDEXES = {
+  idx_country_date: "(raceCountry, meetingDate)",
+  idx_fr_source_race: "(sourceSystem, sourceRaceId)",
+  idx_fr_source_fixture: "(sourceSystem, meetingDate, courseName, raceNumber)",
+};
+
 export const FRANCE_SOURCE = "FRANCE";
 
 /**
@@ -245,23 +263,21 @@ export class FranceStore {
       }
       if (added.length) this._apiColumns = null;
 
-      // One index carries the only query France actually needs to be fast:
-      // "everything that ran in France between these dates".
-      const indexes = await this.query(
-        `SELECT INDEX_NAME AS name FROM INFORMATION_SCHEMA.STATISTICS
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'APIData_Table2'
-            AND INDEX_NAME = 'idx_country_date' LIMIT 1`,
-      );
-      if (!indexes.length) {
-        // Adding this index to a table this size takes long enough that a
+      for (const [name, definition] of Object.entries(REQUIRED_API_INDEXES)) {
+        const found = await this.query(
+          `SELECT INDEX_NAME AS name FROM INFORMATION_SCHEMA.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'APIData_Table2'
+              AND INDEX_NAME = ? LIMIT 1`,
+          [name],
+        );
+        if (found.length) continue;
+        // Adding an index to a table this size takes long enough that a
         // caller can time out mid-ALTER while MySQL carries on. A retry then
         // sees no index yet and tries again, so treat "already exists" as the
         // success it is rather than failing the whole schema call.
         try {
-          await this.query(
-            "ALTER TABLE APIData_Table2 ADD INDEX idx_country_date (raceCountry, meetingDate)",
-          );
-          added.push("idx_country_date");
+          await this.query(`ALTER TABLE APIData_Table2 ADD INDEX ${name} ${definition}`);
+          added.push(name);
         } catch (err) {
           if (!/Duplicate key name/i.test(err.message)) throw err;
         }
@@ -526,37 +542,44 @@ export class FranceStore {
     for (const group of byRace.values()) {
       const head = group[0];
 
-      // Two ways of naming the same race, and the delete has to try both.
+      // Two ways of naming the same race, and the delete has to try both --
+      // but as two statements, never as one OR.
       //
       // sourceRaceId ("2026-08-26:R4:C3") is PMU's own meeting and race
       // number, so it survives anything that changes how the course is
       // spelled. That matters: correcting La Teste's name from TESTE DE BUCH
       // left every previous row of that fixture invisible to a delete scoped
       // on courseName, and re-ingesting the day doubled it rather than
-      // replacing it. Matching the id as well makes a rename self-healing --
-      // the next ingest of a date clears whatever the old name left behind.
+      // replacing it. Matching the id as well makes a rename self-healing.
+      //
+      // Written as one `A OR B` across different columns, though, MySQL can
+      // use an index for neither, and a full scan of APIData_Table2 takes a
+      // next-key lock on every row it examines. Every subsequent ingest then
+      // died on "Lock wait timeout exceeded" -- on the one date where the id
+      // branch actually had to match, which is exactly the date the rename
+      // broke. Two statements each get their own index.
       //
       // The date/course/number form stays for rows written before
       // sourceRaceId existed, and matches both date forms because earlier
       // runs wrote a bare "YYYY-MM-DD".
-      const clauses = [];
-      const params = [];
       if (head.sourceRaceId) {
-        clauses.push("sourceRaceId = ?");
-        params.push(head.sourceRaceId);
+        const [byId] = await this.pool.query(
+          "DELETE FROM APIData_Table2 WHERE sourceSystem = ? AND sourceRaceId = ?",
+          [FRANCE_SOURCE, head.sourceRaceId],
+        );
+        deleted += byId.affectedRows || 0;
       }
-      clauses.push(
-        `(meetingDate IN (?, ?) AND courseName = ? AND ${
-          head.raceNumber == null ? "raceNumber IS NULL" : "raceNumber = ?"
-        })`,
-      );
-      params.push(apiDateOf(head.meetingDate), isoOf(head.meetingDate), head.courseName);
-      if (head.raceNumber != null) params.push(head.raceNumber);
 
       const [del] = await this.pool.query(
         `DELETE FROM APIData_Table2
-          WHERE sourceSystem = ? AND (${clauses.join(" OR ")})`,
-        [FRANCE_SOURCE, ...params],
+          WHERE sourceSystem = ?
+            AND meetingDate IN (?, ?)
+            AND courseName = ?
+            AND ${head.raceNumber == null ? "raceNumber IS NULL" : "raceNumber = ?"}`,
+        head.raceNumber == null
+          ? [FRANCE_SOURCE, apiDateOf(head.meetingDate), isoOf(head.meetingDate), head.courseName]
+          : [FRANCE_SOURCE, apiDateOf(head.meetingDate), isoOf(head.meetingDate),
+             head.courseName, head.raceNumber],
       );
       deleted += del.affectedRows || 0;
 
