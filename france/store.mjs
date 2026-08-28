@@ -456,7 +456,7 @@ export class FranceStore {
         for (const key of writable) payload[key] = row[key] ?? null;
 
         payload.sourceSystem = FRANCE_SOURCE;
-        if (columns.has("raceCountry")) payload.raceCountry = "FR";
+        if (columns.has("raceCountry")) payload.raceCountry = "FRA";
         if (columns.has("meetingDate")) payload.meetingDate = isoOf(row.meetingDate);
 
         // A confident identity match writes the existing horse's code onto the
