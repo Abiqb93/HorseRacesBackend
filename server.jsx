@@ -10502,6 +10502,20 @@ app.get('/api/france/runs', async (req, res) => {
 
 // Horses whose identity a person needs to settle -- roughly 8% of runners.
 // Typically a name we already hold attached to a different horse.
+// One-off cleanup for the duplicate reviews the unguarded insert left behind.
+// The guard in queueReview stops new ones; this collapses the existing pile,
+// keeping a decided review over a pending one for the same horse and meeting.
+app.post('/api/france/reviews/dedupe', async (req, res) => {
+  if (!requireFranceAdmin(req, res)) return;
+  try {
+    const { store } = await loadFrance();
+    res.status(200).json({ ok: true, ...(await store.dedupeReviews()) });
+  } catch (err) {
+    console.error("[france] review dedupe:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/france/reviews', async (req, res) => {
   try {
     const { store } = await loadFrance();
