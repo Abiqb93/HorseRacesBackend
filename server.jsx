@@ -109,7 +109,7 @@ const validTables = [
   'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion', 'StrideParsPercentilesPerTrack', 
   'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift', 'foalSale_Dashboard', 'foalSale_Pedigree', 'foalSale_StallionStats', 'foalSale_Sales', 'foalSale_StudFeeAnalysis', 'jockey_tracking', 'report_potential_stallions',
   'sectionsparsed', 'stallion-fee', 'racingpost_results',
-  'report_trainer_uplift', 'report_trainer_uplift_summary'
+  'report_trainer_uplift_moves', 'report_trainer_uplift_summary'
 ];
 
 // ---------------------------------------------------------------------------
@@ -1202,7 +1202,7 @@ app.get("/api/reports/potential_stallions", (req, res) => {
 
 // 6) Trainer Uplift Report - horse-level
 app.get("/api/reports/trainer_uplift", (req, res) => {
-  return fetchGeneratedReport(res, "report_trainer_uplift");
+  return fetchGeneratedReport(res, "report_trainer_uplift_moves");
 });
 
 // 7) Trainer Uplift Summary - trainer-level
