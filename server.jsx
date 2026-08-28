@@ -3832,8 +3832,8 @@ const HOT_FORM_CACHE_TTL_MS = 15 * 60 * 1000;
 const hotFormCache = new Map();
 const hotFormInFlight = new Map();
 
-const HOT_FORM_DEFAULT_SCORE_THRESHOLD = 6;
-const HOT_FORM_DEFAULT_MIN_RUNNERS_SINCE = 2;
+const HOT_FORM_DEFAULT_SCORE_THRESHOLD = 4;
+const HOT_FORM_DEFAULT_MIN_RUNNERS_SINCE = 1;
 
 const hotFormQuery = (sql, params = []) =>
   new Promise((resolve, reject) => {
@@ -3881,6 +3881,13 @@ const hotFormDateNumber = (value) => {
   if (!iso) return NaN;
   const [y, m, d] = iso.split("-").map(Number);
   return Date.UTC(y, m - 1, d);
+};
+
+const hotFormDaysBetween = (fromDate, toDate) => {
+  const from = hotFormDateNumber(fromDate);
+  const to = hotFormDateNumber(toDate);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return 0;
+  return Math.max(0, Math.floor((to - from) / 86400000));
 };
 
 const hotFormNumber = (value) => {
@@ -4250,6 +4257,28 @@ app.get("/api/hot_form", async (req, res) => {
   }
 
   const work = (async () => {
+    // First establish the REAL result-data horizon. Hot Form must be judged
+    // against the newest result stored in APIData_Table2, not against today's
+    // calendar date. If the selected race date is itself the latest result date,
+    // there is no subsequent evidence yet and the race day is PENDING, not 0-hot.
+    const latestResultSql = `
+      SELECT DATE_FORMAT(MAX(meetingDate), '%Y-%m-%d') AS latestResultDate
+      FROM \`${HOT_FORM_SOURCE_TABLE}\`
+      WHERE meetingDate IS NOT NULL
+        AND positionOfficial IS NOT NULL
+        AND positionOfficial <> 0
+    `;
+
+    const latestRows = await hotFormQuery(latestResultSql);
+    const latestResultDate = hotFormDateOnly(latestRows?.[0]?.latestResultDate);
+    const coverageDays = latestResultDate
+      ? hotFormDaysBetween(rawMeetingDate, latestResultDate)
+      : 0;
+    const hasLaterResults = Boolean(
+      latestResultDate &&
+      hotFormDateNumber(latestResultDate) > hotFormDateNumber(rawMeetingDate)
+    );
+
     // Query 1: only the original result rows for the selected race date.
     const sourceSql = `
       SELECT
@@ -4285,7 +4314,13 @@ app.get("/api/hot_form", async (req, res) => {
           formula: "(3 * subsequentWins) + subsequentPlaces",
           placeDefinition: "finish position 1-3 inclusive",
           raceCount: 0,
+          formSinceRaceCount: 0,
           hotRaceCount: 0,
+          latestResultDate: latestResultDate || null,
+          dataThroughDate: latestResultDate || null,
+          coverageDays,
+          hasLaterResults,
+          analysisStatus: hasLaterResults ? "READY" : "PENDING_NO_LATER_RESULTS",
           sourceRows: 0,
           subsequentRows: 0,
           generatedAt: new Date().toISOString(),
@@ -4306,7 +4341,7 @@ app.get("/api/hot_form", async (req, res) => {
 
     let subsequentRows = [];
 
-    if (horseNames.length) {
+    if (horseNames.length && hasLaterResults) {
       // Chunk to keep the IN() list comfortably bounded on large race days.
       const chunkSize = 250;
       for (let i = 0; i < horseNames.length; i += chunkSize) {
@@ -4330,19 +4365,20 @@ app.get("/api/hot_form", async (req, res) => {
           FROM \`${HOT_FORM_SOURCE_TABLE}\`
           WHERE horseName IN (${placeholders})
             AND meetingDate >= DATE_ADD(?, INTERVAL 1 DAY)
-            AND meetingDate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+            AND meetingDate < DATE_ADD(?, INTERVAL 1 DAY)
           ORDER BY horseName ASC, meetingDate ASC
         `;
 
         const rows = await hotFormQuery(subsequentSql, [
           ...chunk,
           rawMeetingDate,
+          latestResultDate,
         ]);
         subsequentRows.push(...rows);
       }
     }
 
-    const data = buildHotFormData(
+    const calculatedData = buildHotFormData(
       [...sourceRows, ...subsequentRows],
       {
         minRunners,
@@ -4351,6 +4387,33 @@ app.get("/api/hot_form", async (req, res) => {
         minRunnersSince,
       }
     );
+
+    const data = calculatedData.map((race) => {
+      if (!hasLaterResults) {
+        return {
+          ...race,
+          isHot: null,
+          hotStatus: "PENDING",
+          analysisStatus: "PENDING_NO_LATER_RESULTS",
+          latestResultDate: latestResultDate || null,
+          dataThroughDate: latestResultDate || null,
+          coverageDays,
+        };
+      }
+
+      return {
+        ...race,
+        hotStatus: race.isHot
+          ? "HOT"
+          : race.runnersSinceRun > 0
+          ? "FORMING"
+          : "NO_RUNNERS_SINCE",
+        analysisStatus: "READY",
+        latestResultDate: latestResultDate || null,
+        dataThroughDate: latestResultDate || null,
+        coverageDays,
+      };
+    });
 
     return {
       data,
@@ -4363,7 +4426,13 @@ app.get("/api/hot_form", async (req, res) => {
         formula: "(3 * subsequentWins) + subsequentPlaces",
         placeDefinition: "finish position 1-3 inclusive",
         raceCount: data.length,
-        hotRaceCount: data.filter((race) => race.isHot).length,
+        formSinceRaceCount: data.filter((race) => Number(race.runnersSinceRun) > 0).length,
+        hotRaceCount: data.filter((race) => race.isHot === true).length,
+        latestResultDate: latestResultDate || null,
+        dataThroughDate: latestResultDate || null,
+        coverageDays,
+        hasLaterResults,
+        analysisStatus: hasLaterResults ? "READY" : "PENDING_NO_LATER_RESULTS",
         sourceRows: sourceRows.length,
         subsequentRows: subsequentRows.length,
         generatedAt: new Date().toISOString(),
