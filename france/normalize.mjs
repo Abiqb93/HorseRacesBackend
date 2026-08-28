@@ -137,6 +137,75 @@ export function blackTypeFrom(course) {
  * `positionOfficial` stays null until the race is run, which is exactly how
  * the app distinguishes a racecard entry from a result.
  */
+/**
+ * PMU states a beaten margin as the gap to the horse IN FRONT, in French
+ * racing's own vocabulary ("3/4 L", "1 L 1/2", "ENCOLURE"). The platform
+ * stores distanceBeaten as lengths behind the WINNER, so the gaps have to be
+ * parsed and then accumulated down the finishing order.
+ */
+const SHORT_MARGINS = {
+  "UN_NEZ": 0.05,
+  "COURTE_TETE": 0.08,
+  "UNE_TETE": 0.1,
+  "COURTE_ENCOLURE": 0.2,
+  "ENCOLURE": 0.3,
+  "DEAD_HEAT": 0,
+};
+
+export function marginToLengths(gap) {
+  if (!gap) return null;
+  if (gap.identifiant && gap.identifiant in SHORT_MARGINS) return SHORT_MARGINS[gap.identifiant];
+  // "LOIN" is French for the British "DIST" -- beaten so far the judge stopped
+  // measuring. There is no true value to record, so it is left unmeasured
+  // rather than invented, and the runners behind it inherit the same gap.
+  if (gap.identifiant === "LOIN") return null;
+  const text = String(gap.libelleCourt || "").trim().toUpperCase();
+  const m = text.match(/^(?:(\d+)\s*L)?\s*(?:(\d+)\/(\d+))?\s*L?$/);
+  if (!m || (m[1] === undefined && m[2] === undefined)) return null;
+  const whole = Number(m[1] || 0);
+  const frac = m[2] ? Number(m[2]) / Number(m[3]) : 0;
+  return whole + frac;
+}
+
+/**
+ * Fills in the per-race fields that only exist once the whole field is known:
+ * the margin behind the winner, and the win / black-type flags the rest of the
+ * platform aggregates on. Timeform supplies these on its own rows; derived
+ * here, French rows answer the same queries instead of dropping out of them.
+ */
+export function deriveRaceFields(rows) {
+  const finishers = rows
+    .filter((r) => Number.isFinite(r.positionOfficial))
+    .sort((a, b) => a.positionOfficial - b.positionOfficial);
+
+  let cumulative = 0;
+  let measured = true;
+  for (const row of finishers) {
+    if (row.positionOfficial === 1) {
+      row.distanceBeaten = 0;
+      continue;
+    }
+    const gap = marginToLengths(row.marginToPrevious);
+    if (gap === null) measured = false; // an unmeasured gap makes every
+    if (!measured) { row.distanceBeaten = null; continue; } // later one unknowable
+    cumulative += gap;
+    row.distanceBeaten = Number(cumulative.toFixed(2));
+  }
+
+  for (const row of rows) {
+    const won = row.positionOfficial === 1 ? 1 : 0;
+    const black = row.Group ? "group" : row.Listed ? "listed" : null;
+    row.Win = row.positionOfficial === null ? null : won;
+    row.Group1 = row.Group === 1 ? 1 : 0;
+    row.Stakes = black ? 1 : 0;
+    row.Group_Win = black === "group" ? won : 0;
+    row.Group1_Win = row.Group === 1 ? won : 0;
+    row.Stakes_Win = black ? won : 0;
+    delete row.marginToPrevious;
+  }
+  return rows;
+}
+
 export function normalizeRunner({ meeting, course, participant, isoDate }) {
   const p = participant;
   const { going, goingValue } = goingFrom(course);
@@ -218,6 +287,7 @@ export function normalizeRunner({ meeting, course, participant, isoDate }) {
     nonRunner,
     incident: p.incident || null,
     finishingTimeSeconds: Number.isFinite(p.tempsObtenu) ? p.tempsObtenu / 1000 : null,
+    marginToPrevious: p.distanceChevalPrecedent || null, // consumed by deriveRaceFields
     ispDecimal: p.dernierRapportReference?.rapport ?? p.dernierRapportDirect?.rapport ?? null,
     favourite: Boolean(p.dernierRapportReference?.favoris ?? p.dernierRapportDirect?.favoris),
 
@@ -240,9 +310,11 @@ export function normalizeRunner({ meeting, course, participant, isoDate }) {
 export function normalizeDay(fetched, isoDate) {
   const rows = [];
   for (const { meeting, course, participants } of fetched) {
-    for (const participant of participants) {
-      rows.push(normalizeRunner({ meeting, course, participant, isoDate }));
-    }
+    // Per race, because distanceBeaten and the black-type flags are properties
+    // of the finishing order, not of a runner on its own.
+    const race = participants.map((participant) =>
+      normalizeRunner({ meeting, course, participant, isoDate }));
+    rows.push(...deriveRaceFields(race));
   }
   return rows;
 }
