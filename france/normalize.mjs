@@ -77,30 +77,83 @@ const COURSE_ALIASES = {
   "SAINT-CLOUD": "SAINT-CLOUD",
   "SAINT CLOUD": "SAINT-CLOUD",
   "LE LION D ANGERS": "LE LION-D'ANGERS",
+  "LE LION D'ANGERS": "LE LION-D'ANGERS",
   "PONT DE VIVAUX": "MARSEILLE-PONT-DE-VIVAUX",
   "LA TESTE": "LA TESTE",
+  "LA TESTE DE BUCH": "LA TESTE", // PMU spells out the commune, the platform does not
   "MONT DE MARSAN": "MONT-DE-MARSAN",
   "SAINT MALO": "SAINT-MALO",
   "LES SABLES D OLONNE": "LES SABLES-D'OLONNE",
+  "LES SABLES D'OLONNE": "LES SABLES-D'OLONNE",
 };
 
 export function normalizeCourseName(pmuName) {
   // PMU's long label is "HIPPODROME DE DEAUVILLE"; the platform stores
   // "DEAUVILLE". Strip the prefix before aliasing or nothing lines up.
+  //
+  // The article has to survive that strip, though, and French contracts it
+  // into the preposition: "du" is de+le and "des" is de+les, so HIPPODROME DU
+  // TOUQUET is Le Touquet and HIPPODROME DES SABLES D'OLONNE is Les Sables.
+  // Dropping the article outright split five courses in two -- the platform
+  // stores LA TESTE, LE MANS, LE TOUQUET, LE LION-D'ANGERS and LES
+  // SABLES-D'OLONNE, and PMU rows were arriving as TESTE DE BUCH, MANS,
+  // TOUQUET, LION D'ANGERS and SABLES D OLONNE. La Teste's card of 26 August
+  // was filed under two names at once because of it. "de" and "d'" carry no
+  // article and are stripped whole.
+  const ARTICLE = { "DE LA": "LA ", DU: "LE ", DES: "LES " };
   const raw = String(pmuName || "")
     .trim()
     .toUpperCase()
-    .replace(/^HIPPODROME\s+(DE\s+LA\s+|DE\s+|D'|DU\s+|DES\s+)?/, "")
+    // The whitespace after a word preposition is required, or "DE LA" matches
+    // inside "DE LANGON" and Langon-Libourne becomes "LA NGON-LIBOURNE".
+    .replace(/^HIPPODROME\s+(?:(DE\s+LA|DES|DU|DE)\s+|(D')\s*)/,
+             (m, word) => (word ? ARTICLE[word.replace(/\s+/g, " ")] || "" : ""))
     .trim();
   return COURSE_ALIASES[raw] || raw;
 }
 
-/** "Bon souple" -> the going string; the numeric penetrometer is kept too. */
+/**
+ * French going, in the platform's own vocabulary.
+ *
+ * The going column is read straight onto the race header next to British
+ * cards, and "Bon souple" beside "Good To Soft" reads as a different scale
+ * rather than the same one described in another language. These are the
+ * standard equivalences racing media use either way across the Channel. The
+ * penetrometer reading is kept alongside untranslated, which is the precise
+ * number and the thing France actually measures.
+ */
+const GOING_EN = {
+  "TRES LEGER": "Firm",
+  LEGER: "Good To Firm",
+  "BON LEGER": "Good To Firm",
+  BON: "Good",
+  "BON SOUPLE": "Good To Soft",
+  SOUPLE: "Soft",
+  "TRES SOUPLE": "Soft To Heavy",
+  COLLANT: "Heavy",
+  LOURD: "Heavy",
+  "TRES LOURD": "Heavy",
+};
+
+export function goingToEnglish(intitule) {
+  if (!intitule) return null;
+  const key = String(intitule)
+    .trim()
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, ""); // "Très souple" -> "TRES SOUPLE"
+  // The all-weather tracks report a surface state, not a going, and PMU
+  // labels them "PSF STANDARD". There is no British going that means that,
+  // so it is passed through rather than mistranslated.
+  return GOING_EN[key] || String(intitule).trim();
+}
+
+/** "Bon souple" -> "Good To Soft"; the numeric penetrometer is kept too. */
 function goingFrom(course) {
   const p = course?.penetrometre;
   if (!p) return { going: null, goingValue: null };
   return {
-    going: p.intitule || null,
+    going: goingToEnglish(p.intitule),
     goingValue: p.valeurMesure ? Number(String(p.valeurMesure).replace(",", ".")) : null,
   };
 }
