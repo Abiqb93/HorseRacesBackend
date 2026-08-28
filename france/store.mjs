@@ -477,18 +477,37 @@ export class FranceStore {
     for (const group of byRace.values()) {
       const head = group[0];
 
-      // Match both date forms: earlier runs wrote a bare "YYYY-MM-DD", so
-      // deleting only the padded form would leave those rows behind and
-      // duplicate the race on re-run.
+      // Two ways of naming the same race, and the delete has to try both.
+      //
+      // sourceRaceId ("2026-08-26:R4:C3") is PMU's own meeting and race
+      // number, so it survives anything that changes how the course is
+      // spelled. That matters: correcting La Teste's name from TESTE DE BUCH
+      // left every previous row of that fixture invisible to a delete scoped
+      // on courseName, and re-ingesting the day doubled it rather than
+      // replacing it. Matching the id as well makes a rename self-healing --
+      // the next ingest of a date clears whatever the old name left behind.
+      //
+      // The date/course/number form stays for rows written before
+      // sourceRaceId existed, and matches both date forms because earlier
+      // runs wrote a bare "YYYY-MM-DD".
+      const clauses = [];
+      const params = [];
+      if (head.sourceRaceId) {
+        clauses.push("sourceRaceId = ?");
+        params.push(head.sourceRaceId);
+      }
+      clauses.push(
+        `(meetingDate IN (?, ?) AND courseName = ? AND ${
+          head.raceNumber == null ? "raceNumber IS NULL" : "raceNumber = ?"
+        })`,
+      );
+      params.push(apiDateOf(head.meetingDate), isoOf(head.meetingDate), head.courseName);
+      if (head.raceNumber != null) params.push(head.raceNumber);
+
       const [del] = await this.pool.query(
         `DELETE FROM APIData_Table2
-          WHERE sourceSystem = ?
-            AND meetingDate IN (?, ?)
-            AND courseName = ?
-            AND ${head.raceNumber == null ? "raceNumber IS NULL" : "raceNumber = ?"}`,
-        head.raceNumber == null
-          ? [FRANCE_SOURCE, apiDateOf(head.meetingDate), isoOf(head.meetingDate), head.courseName]
-          : [FRANCE_SOURCE, apiDateOf(head.meetingDate), isoOf(head.meetingDate), head.courseName, head.raceNumber],
+          WHERE sourceSystem = ? AND (${clauses.join(" OR ")})`,
+        [FRANCE_SOURCE, ...params],
       );
       deleted += del.affectedRows || 0;
 
