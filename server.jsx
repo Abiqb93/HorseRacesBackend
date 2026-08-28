@@ -3801,6 +3801,413 @@ app.get("/api/stallion-fee", (req, res) => {
 });
 
 
+
+// ============================================================
+// HOT FORM / HOT RACES
+// ============================================================
+//
+// GET /api/hot_form?days=28&minRunners=6
+//
+// Definition:
+//   A race is "hot" according to what its ORIGINAL runners do AFTER that race.
+//   For every runner in every race inside the requested window, this endpoint
+//   finds later APIData_Table2 runs for the same horse and returns:
+//
+//     hotScore = (3 * subsequentWins) + subsequentPlaces
+//
+// IMPORTANT: subsequentPlaces includes finishing positions 1-3. Therefore a
+// subsequent winner is also a subsequent placer, which matches the feature
+// specification example where 2 subsequent runs can contain 1 win + 2 places.
+//
+// This is deliberately a derived API. There is NO `hot_form` MySQL table and
+// the generic /api/:tableName route must never handle this URL.
+// ============================================================
+
+const HOT_FORM_SOURCE_TABLE = "APIData_Table2";
+
+const hotFormQuery = (sql, params = []) =>
+  new Promise((resolve, reject) => {
+    db.query(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows || []);
+    });
+  });
+
+const hotFormCleanText = (value) => String(value ?? "").trim();
+
+const hotFormHorseKey = (value) =>
+  hotFormCleanText(value)
+    .replace(/\s*\([^)]*\)\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+const hotFormDateOnly = (value) => {
+  if (!value) return "";
+
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return [
+      value.getFullYear(),
+      String(value.getMonth() + 1).padStart(2, "0"),
+      String(value.getDate()).padStart(2, "0"),
+    ].join("-");
+  }
+
+  const raw = String(value).trim();
+  const direct = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (direct) return `${direct[1]}-${direct[2]}-${direct[3]}`;
+
+  const d = new Date(value);
+  if (!Number.isFinite(d.getTime())) return "";
+
+  return [
+    d.getFullYear(),
+    String(d.getMonth() + 1).padStart(2, "0"),
+    String(d.getDate()).padStart(2, "0"),
+  ].join("-");
+};
+
+const hotFormDateNumber = (value) => {
+  const iso = hotFormDateOnly(value);
+  if (!iso) return NaN;
+  const [y, m, d] = iso.split("-").map(Number);
+  return Date.UTC(y, m - 1, d);
+};
+
+const hotFormNumber = (value) => {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+const hotFormPosition = (row = {}) =>
+  hotFormNumber(
+    row.positionOfficial ??
+      row.position ??
+      row.Position ??
+      row.finishingPosition ??
+      row.finishPos
+  );
+
+const hotFormPerformanceRating = (row = {}) =>
+  hotFormNumber(
+    row.performanceRating ??
+      row.timeformRating ??
+      row.tfRating ??
+      row.timeform
+  );
+
+const hotFormTimefigure = (row = {}) =>
+  hotFormNumber(row.timefigure ?? row.TFig ?? row.tfig ?? row.timeformFigure);
+
+const hotFormHorseName = (row = {}) =>
+  hotFormCleanText(row.horseName ?? row.Horse ?? row.horse ?? row.HorseName);
+
+const hotFormHorseCode = (row = {}) =>
+  hotFormCleanText(
+    row.horseCode ??
+      row.horse_code ??
+      row.HorseCode ??
+      row.horseId ??
+      row.horseID ??
+      row.HorseID
+  );
+
+const hotFormRaceId = (row = {}) =>
+  hotFormCleanText(
+    row.raceId ??
+      row.raceID ??
+      row.RaceID ??
+      row.race_id ??
+      row.meetingRaceId
+  );
+
+const hotFormCourseName = (row = {}) =>
+  hotFormCleanText(
+    row.courseName ?? row.Course ?? row.course ?? row.raceTrack ?? row.Track
+  );
+
+const hotFormRaceTitle = (row = {}) =>
+  hotFormCleanText(row.raceTitle ?? row.RaceTitle ?? row.raceName ?? row.Type);
+
+const hotFormMeetingDate = (row = {}) =>
+  hotFormDateOnly(
+    row.meetingDate ?? row.raceDate ?? row.date ?? row.FixtureDate
+  );
+
+const hotFormRaceTime = (row = {}) =>
+  hotFormCleanText(
+    row.scheduledTimeOfRaceLocal ??
+      row.scheduledTime ??
+      row.raceTime ??
+      row.RaceTime ??
+      row.time
+  );
+
+const hotFormRaceKey = (row = {}) => {
+  const raceId = hotFormRaceId(row);
+  if (raceId) return `id:${raceId}`;
+
+  // Fallback keeps the endpoint compatible with historical rows where raceId
+  // is blank. Race time is included where available to avoid collisions.
+  return [
+    hotFormMeetingDate(row).toLowerCase(),
+    hotFormCourseName(row).toLowerCase(),
+    hotFormRaceTime(row).toLowerCase(),
+    hotFormRaceTitle(row).toLowerCase(),
+  ].join("__");
+};
+
+const hotFormDistinctRunnerCount = (rows = []) =>
+  new Set(
+    rows
+      .map((row) => hotFormHorseKey(hotFormHorseName(row)))
+      .filter(Boolean)
+  ).size;
+
+const hotFormPickFirst = (...values) =>
+  values.find((value) => value !== null && value !== undefined && value !== "");
+
+const buildHotFormData = (allRows = [], { minRunners = 6 } = {}) => {
+  const rows = (Array.isArray(allRows) ? allRows : []).filter(
+    (row) => hotFormMeetingDate(row) && hotFormHorseName(row)
+  );
+
+  // Every horse's runs in this 28-day (or requested) dataset, ordered oldest
+  // first. Since target races are inside the same window, these rows contain
+  // every possible subsequent run through today for those target races.
+  const rowsByHorse = new Map();
+  for (const row of rows) {
+    const key = hotFormHorseKey(hotFormHorseName(row));
+    if (!key) continue;
+    if (!rowsByHorse.has(key)) rowsByHorse.set(key, []);
+    rowsByHorse.get(key).push(row);
+  }
+
+  for (const horseRows of rowsByHorse.values()) {
+    horseRows.sort(
+      (a, b) => hotFormDateNumber(hotFormMeetingDate(a)) - hotFormDateNumber(hotFormMeetingDate(b))
+    );
+  }
+
+  // Group original result rows back into races.
+  const races = new Map();
+  for (const row of rows) {
+    const key = hotFormRaceKey(row);
+    if (!key || key.replace(/_/g, "").trim() === "") continue;
+    if (!races.has(key)) races.set(key, []);
+    races.get(key).push(row);
+  }
+
+  const output = [];
+
+  for (const [raceKey, raceRowsRaw] of races.entries()) {
+    // Deduplicate any repeated copy of the same runner in the original race.
+    const raceRunnerMap = new Map();
+    for (const row of raceRowsRaw) {
+      const horseKey = hotFormHorseKey(hotFormHorseName(row));
+      if (!horseKey) continue;
+
+      const current = raceRunnerMap.get(horseKey);
+      if (!current) {
+        raceRunnerMap.set(horseKey, row);
+        continue;
+      }
+
+      // If duplicates exist, retain whichever row has the better usable TF
+      // performanceRating, otherwise keep the first row.
+      const currentRating = hotFormPerformanceRating(current);
+      const candidateRating = hotFormPerformanceRating(row);
+      if (
+        candidateRating !== null &&
+        (currentRating === null || candidateRating > currentRating)
+      ) {
+        raceRunnerMap.set(horseKey, row);
+      }
+    }
+
+    const raceRows = [...raceRunnerMap.values()];
+    if (!raceRows.length) continue;
+
+    const first = raceRows[0];
+    const raceDate = hotFormMeetingDate(first);
+    const raceDateN = hotFormDateNumber(raceDate);
+    if (!Number.isFinite(raceDateN)) continue;
+
+    const distinctRunners = hotFormDistinctRunnerCount(raceRows);
+    const declaredRunnerCount = Math.max(
+      0,
+      ...raceRows
+        .map((row) => hotFormNumber(row.numberOfRunners ?? row.runners ?? row.Runners))
+        .filter((n) => n !== null)
+    );
+
+    // Use actual distinct result rows first because subsequent-form matching
+    // can only be performed for runners we actually hold. Fall back to the
+    // declared number only if necessary.
+    const runnerCount = distinctRunners || declaredRunnerCount;
+    if (runnerCount < minRunners) continue;
+
+    let subsequentWins = 0;
+    let subsequentPlaces = 0;
+    let runnersSinceRun = 0;
+
+    const horses = raceRows
+      .map((originalRow) => {
+        const horseName = hotFormHorseName(originalRow);
+        const horseKey = hotFormHorseKey(horseName);
+        const history = rowsByHorse.get(horseKey) || [];
+
+        // Strictly AFTER the original race date. Same-day rows are deliberately
+        // excluded; horses should not receive subsequent-form credit on the same
+        // date as the source race.
+        const laterRuns = history.filter((laterRow) => {
+          const laterDateN = hotFormDateNumber(hotFormMeetingDate(laterRow));
+          return Number.isFinite(laterDateN) && laterDateN > raceDateN;
+        });
+
+        const horseSubsequentWins = laterRuns.filter(
+          (row) => hotFormPosition(row) === 1
+        ).length;
+
+        // "Places" means finishing 1st, 2nd or 3rd. A winner is therefore also
+        // a placer, consistent with the supplied product specification example.
+        const horseSubsequentPlaces = laterRuns.filter((row) => {
+          const p = hotFormPosition(row);
+          return p !== null && p >= 1 && p <= 3;
+        }).length;
+
+        if (laterRuns.length > 0) runnersSinceRun += 1;
+        subsequentWins += horseSubsequentWins;
+        subsequentPlaces += horseSubsequentPlaces;
+
+        return {
+          horseName,
+          horseCode: hotFormHorseCode(originalRow) || null,
+          finishPos: hotFormPosition(originalRow),
+          performanceRating: hotFormPerformanceRating(originalRow),
+          timefigure: hotFormTimefigure(originalRow),
+          subsequentRuns: laterRuns.length,
+          subsequentWins: horseSubsequentWins,
+          subsequentPlaces: horseSubsequentPlaces,
+        };
+      })
+      .sort((a, b) => {
+        const ap = Number.isFinite(Number(a.finishPos)) ? Number(a.finishPos) : 9999;
+        const bp = Number.isFinite(Number(b.finishPos)) ? Number(b.finishPos) : 9999;
+        return ap - bp || String(a.horseName).localeCompare(String(b.horseName));
+      });
+
+    const ratings = raceRows
+      .map((row) => hotFormPerformanceRating(row))
+      .filter((n) => n !== null && n !== 999 && n < 200);
+
+    const winnerRow = raceRows.find((row) => hotFormPosition(row) === 1);
+    const winnerRating = winnerRow ? hotFormPerformanceRating(winnerRow) : null;
+    const topRating = ratings.length ? Math.max(...ratings) : null;
+
+    const hotScore = 3 * subsequentWins + subsequentPlaces;
+    const normalizedHotScore = runnersSinceRun > 0 ? hotScore / runnersSinceRun : 0;
+
+    output.push({
+      raceId: hotFormRaceId(first) || raceKey,
+      raceTitle: hotFormRaceTitle(first),
+      courseName: hotFormCourseName(first),
+      meetingDate: raceDate,
+      distance: hotFormPickFirst(
+        hotFormNumber(first.distance),
+        hotFormNumber(first.distanceFurlongs),
+        hotFormNumber(first.Distance)
+      ) ?? null,
+      raceClass: hotFormPickFirst(
+        first.raceClass,
+        first.class,
+        first.raceClassCode,
+        first.Class
+      ) ?? null,
+      runners: runnerCount,
+      runnersSinceRun,
+      subsequentWins,
+      subsequentPlaces,
+      hotScore,
+      normalizedHotScore: Number(normalizedHotScore.toFixed(3)),
+      winnerRating:
+        winnerRating !== null && winnerRating !== 999 && winnerRating < 200
+          ? winnerRating
+          : null,
+      topRating,
+      horses,
+    });
+  }
+
+  // Denominator-aware ranking: points per runner who has actually run since is
+  // the primary sort, then raw Hot Score, then number of runners who have run.
+  return output.sort((a, b) => {
+    if (b.normalizedHotScore !== a.normalizedHotScore) {
+      return b.normalizedHotScore - a.normalizedHotScore;
+    }
+    if (b.hotScore !== a.hotScore) return b.hotScore - a.hotScore;
+    if (b.runnersSinceRun !== a.runnersSinceRun) {
+      return b.runnersSinceRun - a.runnersSinceRun;
+    }
+    return String(b.meetingDate).localeCompare(String(a.meetingDate));
+  });
+};
+
+app.get("/api/hot_form", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+
+  const rawDays = Number.parseInt(req.query.days, 10);
+  const rawMinRunners = Number.parseInt(req.query.minRunners, 10);
+
+  const days = Number.isFinite(rawDays)
+    ? Math.max(1, Math.min(rawDays, 120))
+    : 28;
+
+  const minRunners = Number.isFinite(rawMinRunners)
+    ? Math.max(1, Math.min(rawMinRunners, 50))
+    : 6;
+
+  try {
+    // Read only the requested lookback. Because each source race itself is in
+    // this window, every run AFTER it up to today is also inside this result set.
+    // SELECT * is intentional: this backend has historical APIData_Table2 rows
+    // with slightly different field availability, and the normalisers above
+    // safely resolve the live/legacy column names.
+    const sql = `
+      SELECT *
+      FROM \`${HOT_FORM_SOURCE_TABLE}\`
+      WHERE meetingDate >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+        AND meetingDate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+      ORDER BY meetingDate ASC
+    `;
+
+    const rows = await hotFormQuery(sql, [days]);
+    const data = buildHotFormData(rows, { minRunners });
+
+    return res.status(200).json({
+      data,
+      meta: {
+        days,
+        minRunners,
+        source: HOT_FORM_SOURCE_TABLE,
+        formula: "(3 * subsequentWins) + subsequentPlaces",
+        placeDefinition: "finish position 1-3 inclusive",
+        raceCount: data.length,
+        sourceRows: rows.length,
+        generatedAt: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    console.error("❌ GET /api/hot_form failed:", err);
+    return res.status(500).json({
+      error: "Failed to calculate Hot Form",
+      details: err.message,
+      code: err.code || null,
+    });
+  }
+});
+
+
 app.get('/api/:tableName', (req, res) => {
   const { tableName } = req.params;
   const {
