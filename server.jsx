@@ -10539,16 +10539,21 @@ app.get('/api/france/racecards', (req, res) => {
   const where = ["a.raceCountry = 'FRA'"];
   const params = [];
 
+  // Filter meetingDate by range rather than wrapping it in DATE(). The column
+  // holds "YYYY-MM-DD 00:00:00" strings, and a function around it makes
+  // idx_country_date unusable -- the index added in #12 so exactly this lookup
+  // would not scan a table with millions of rows going back to 2006. Every
+  // other query on this table filters the same way.
   if (date) {
     if (!FRANCE_ISO.test(date)) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
-    where.push("DATE(a.meetingDate) = ?");
-    params.push(date);
+    where.push("a.meetingDate BETWEEN ? AND ?");
+    params.push(`${date} 00:00:00`, `${date} 23:59:59`);
   } else if (from && to) {
     if (!FRANCE_ISO.test(from) || !FRANCE_ISO.test(to)) {
       return res.status(400).json({ error: "from and to must be YYYY-MM-DD" });
     }
-    where.push("DATE(a.meetingDate) BETWEEN ? AND ?");
-    params.push(from, to);
+    where.push("a.meetingDate BETWEEN ? AND ?");
+    params.push(`${from} 00:00:00`, `${to} 23:59:59`);
   } else {
     return res.status(400).json({ error: "Provide date, or from and to" });
   }
