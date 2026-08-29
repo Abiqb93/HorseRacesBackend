@@ -123,16 +123,33 @@ export function normalizeCourseName(pmuName) {
  * number and the thing France actually measures.
  */
 const GOING_EN = {
+  // Left column: what France Galop and PMU say. Right: the platform's own
+  // vocabulary, which is Timeform's -- Good, Gd/Frm, Gd/Sft, Soft, Heavy,
+  // Firm, Fast on turf and Std, Slow, Fast on the all-weather. Checked
+  // against what the table actually holds; inventing "Good To Soft" put a
+  // value in the going column that no other row on the platform uses and no
+  // filter matches.
   "TRES LEGER": "Firm",
-  LEGER: "Good To Firm",
-  "BON LEGER": "Good To Firm",
+  LEGER: "Gd/Frm",
+  "BON LEGER": "Gd/Frm",
   BON: "Good",
-  "BON SOUPLE": "Good To Soft",
+  "BON SOUPLE": "Gd/Sft",
   SOUPLE: "Soft",
-  "TRES SOUPLE": "Soft To Heavy",
+  // French racing grades below Souple more finely than Timeform does, and
+  // Timeform has nothing between Soft and Heavy. Tres souple takes the softer
+  // of the two it sits between rather than being promoted to Heavy, which is
+  // reserved for the going that genuinely is.
+  "TRES SOUPLE": "Soft",
   COLLANT: "Heavy",
   LOURD: "Heavy",
   "TRES LOURD": "Heavy",
+
+  // The all-weather tracks report a surface state, and this one does map:
+  // Timeform grades synthetic surfaces Std / Slow / Fast, which is the same
+  // three-step scale PSF uses.
+  "PSF STANDARD": "Std",
+  "PSF LENTE": "Slow",
+  "PSF RAPIDE": "Fast",
 };
 
 export function goingToEnglish(intitule) {
@@ -141,14 +158,13 @@ export function goingToEnglish(intitule) {
     .trim()
     .toUpperCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, ""); // "Très souple" -> "TRES SOUPLE"
-  // The all-weather tracks report a surface state, not a going, and PMU
-  // labels them "PSF STANDARD". There is no British going that means that,
-  // so it is passed through rather than mistranslated.
+    .replace(/[\u0300-\u036f]/g, ""); // "Tres souple" -> "TRES SOUPLE"
+  // Anything unrecognised is passed through as France said it rather than
+  // guessed at -- a foreign going is better than a wrong one.
   return GOING_EN[key] || String(intitule).trim();
 }
 
-/** "Bon souple" -> "Good To Soft"; the numeric penetrometer is kept too. */
+/** "Bon souple" -> "Gd/Sft"; the numeric penetrometer is kept alongside. */
 function goingFrom(course) {
   const p = course?.penetrometre;
   if (!p) return { going: null, goingValue: null };
