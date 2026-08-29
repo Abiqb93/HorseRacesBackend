@@ -10600,6 +10600,30 @@ if (String(process.env.FRANCE_CRON || "").toLowerCase() === "on") {
   // And the last week again, to catch amendments.
   cron.schedule("0 2 * * *", run("reconcile", (f) => f.reconcile(f.store, 7)), paris);
 
+  // The same week once more, before the working day.
+  //
+  // Not redundant: something else that maintains APIData_Table2 refreshes a
+  // recent window overnight, and its delete is not scoped by sourceSystem, so
+  // it takes the French rows with it. On 29 August the French results for the
+  // 25th, 26th and 27th were gone by morning -- 384 rows -- while that date's
+  // Timeform count had grown, which is what gave it away. Until that delete
+  // learns to leave other sources alone, this pass puts France back before
+  // anyone looks.
+  cron.schedule("30 8 * * *", run("morning reconcile", (f) => f.reconcile(f.store, 7)), paris);
+
+  // Declared cards for the days ahead. Evening, once tomorrow's declarations
+  // are published, and again in the morning to pick up overnight withdrawals.
+  const cards = (f) => f.fetchCardsForDate
+    ? Promise.all([0, 1, 2, 3].map(async (offset) => {
+        const d = new Date();
+        d.setUTCDate(d.getUTCDate() + offset);
+        const iso = d.toISOString().slice(0, 10);
+        return f.store.writeRacecards(await f.fetchCardsForDate(iso));
+      }))
+    : null;
+  cron.schedule("0 19 * * *", run("racecards evening", cards), paris);
+  cron.schedule("0 7 * * *", run("racecards morning", cards), paris);
+
   console.log("[france] schedule active (Europe/Paris)");
 } else {
   console.log("[france] schedule off — set FRANCE_CRON=on to enable");
