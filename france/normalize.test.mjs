@@ -309,3 +309,35 @@ test("leaves a real career record alone", () => {
   assert.equal(record.careerRuns, 11);
   assert.equal(record.careerEarnings, 75_452); // centimes to euros
 });
+
+/* ------------------------------------------- withdrawn vs did not finish */
+
+test("separates a withdrawn horse from one that ran and did not finish", () => {
+  // The distinction the results table turns on: a non-runner has no result
+  // and does not belong there, while a faller ran and does.
+  const runner = (participant) =>
+    normalizeRunner({
+      meeting: { numOfficiel: 1, hippodrome: { libelleLong: "HIPPODROME DE DEAUVILLE" } },
+      course: { numExterne: 4, libelle: "SUMBE PRIX MORNY", specialite: "PLAT" },
+      participant: { nom: "A HORSE", ...participant },
+      isoDate: "2026-08-23",
+    });
+
+  const withdrawn = runner({ statut: "NON_PARTANT", incident: "NON_PARTANT" });
+  assert.equal(withdrawn.nonRunner, true);
+  assert.equal(withdrawn.positionOfficial, null);
+
+  const fell = runner({ statut: "PARTANT", incident: "TOMBE" });
+  assert.equal(fell.nonRunner, false);
+  assert.equal(fell.positionOfficial, null); // ran, but has no finishing place
+  assert.equal(fell.incident, "TOMBE");
+
+  const pulledUp = runner({ statut: "PARTANT", incident: "ARRETE" });
+  assert.equal(pulledUp.nonRunner, false);
+  assert.equal(pulledUp.incident, "ARRETE");
+
+  const finished = runner({ statut: "PARTANT", ordreArrivee: 1 });
+  assert.equal(finished.nonRunner, false);
+  assert.equal(finished.positionOfficial, 1);
+  assert.equal(finished.incident, null);
+});

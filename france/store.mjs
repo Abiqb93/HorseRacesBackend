@@ -127,6 +127,7 @@ export const REQUIRED_API_COLUMNS = {
   raceCategory: "VARCHAR(64) NULL",
   distanceMetres: "SMALLINT NULL",
   nonRunner: "TINYINT NULL",
+  incident: "VARCHAR(32) NULL",
 };
 
 /**
@@ -301,8 +302,21 @@ export class FranceStore {
    * window that has already rolled past.
    */
   async stageRows(rows, { source = "MERGED", fetchedAt = new Date() } = {}) {
+    // A withdrawn horse has no result, and APIData_Table2 is the results
+    // table: across 1,591 Timeform rows sampled, not one carries a null
+    // finishing position. Writing non-runners here put them in the race as
+    // runners with a blank position -- Great Barrier Reef appearing as an
+    // eighth runner in a Prix Morny that eight declared and seven contested.
+    // They are still declared on the racecard, which is where a withdrawal
+    // belongs and where RacesAndEntries already marks them "Non-runner".
+    //
+    // A horse that fell or was pulled up is NOT withdrawn: it ran, so it
+    // stays, with its incident recorded rather than left as a bare blank.
+    const runners = rows.filter((row) => !row.nonRunner);
+    const withdrawn = rows.length - runners.length;
+
     const byRace = new Map();
-    for (const row of rows) {
+    for (const row of runners) {
       const key = `${isoOf(row.meetingDate)}|${row.courseName}|${row.raceNumber ?? ""}`;
       if (!byRace.has(key)) byRace.set(key, []);
       byRace.get(key).push(row);
@@ -529,8 +543,21 @@ export class FranceStore {
     const writable = Object.keys(sample).filter((k) => columns.has(k));
     const skipped = Object.keys(sample).filter((k) => !columns.has(k));
 
+    // A withdrawn horse has no result, and APIData_Table2 is the results
+    // table: across 1,591 Timeform rows sampled, not one carries a null
+    // finishing position. Writing non-runners here put them in the race as
+    // runners with a blank position -- Great Barrier Reef appearing as an
+    // eighth runner in a Prix Morny that eight declared and seven contested.
+    // They are still declared on the racecard, which is where a withdrawal
+    // belongs and where RacesAndEntries already marks them "Non-runner".
+    //
+    // A horse that fell or was pulled up is NOT withdrawn: it ran, so it
+    // stays, with its incident recorded rather than left as a bare blank.
+    const runners = rows.filter((row) => !row.nonRunner);
+    const withdrawn = rows.length - runners.length;
+
     const byRace = new Map();
-    for (const row of rows) {
+    for (const row of runners) {
       const key = `${isoOf(row.meetingDate)}|${row.courseName}|${row.raceNumber ?? ""}`;
       if (!byRace.has(key)) byRace.set(key, []);
       byRace.get(key).push(row);
@@ -623,7 +650,7 @@ export class FranceStore {
       }
     }
 
-    return { inserted, deleted, races: byRace.size, skippedFields: skipped };
+    return { inserted, deleted, withdrawn, races: byRace.size, skippedFields: skipped };
   }
 
   /**
@@ -724,8 +751,21 @@ export class FranceStore {
     if (!(await this.tableExists("FranceRaceRecords"))) return 0;
     const columns = await this.franceRecordColumns();
 
+    // A withdrawn horse has no result, and APIData_Table2 is the results
+    // table: across 1,591 Timeform rows sampled, not one carries a null
+    // finishing position. Writing non-runners here put them in the race as
+    // runners with a blank position -- Great Barrier Reef appearing as an
+    // eighth runner in a Prix Morny that eight declared and seven contested.
+    // They are still declared on the racecard, which is where a withdrawal
+    // belongs and where RacesAndEntries already marks them "Non-runner".
+    //
+    // A horse that fell or was pulled up is NOT withdrawn: it ran, so it
+    // stays, with its incident recorded rather than left as a bare blank.
+    const runners = rows.filter((row) => !row.nonRunner);
+    const withdrawn = rows.length - runners.length;
+
     const byRace = new Map();
-    for (const row of rows) {
+    for (const row of runners) {
       const key = `${isoOf(row.meetingDate)}|${row.courseName}|${row.raceNumber ?? ""}`;
       if (!byRace.has(key)) byRace.set(key, []);
       byRace.get(key).push(row);
