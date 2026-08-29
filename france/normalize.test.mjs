@@ -54,7 +54,7 @@ test("units: prize stays euros, career earnings convert from centimes, weight fr
       discipline: "PLAT",
       typePiste: "HERBE",
       nombreDeclaresPartants: 10,
-      penetrometre: { intitule: "Good To Soft", valeurMesure: "3,4" },
+      penetrometre: { intitule: "Bon souple", valeurMesure: "3,4" },
     },
     participant: {
       idCheval: 12345,
@@ -78,7 +78,7 @@ test("units: prize stays euros, career earnings convert from centimes, weight fr
   assert.equal(row.horseCountry, "GBR");
   assert.equal(row.courseName, "DEAUVILLE");
   assert.equal(row.Group, 1);
-  assert.equal(row.going, "Good To Soft", "French going is stored in the platform’s vocabulary");
+  assert.equal(row.going, "Gd/Sft", "French going is stored in the platform’s vocabulary");
   assert.equal(row.positionOfficial, 2);
 });
 
@@ -225,17 +225,23 @@ test("does not mistake a course name beginning in LA for the article", () => {
 });
 
 test("states French going in the platform's own vocabulary", () => {
+  // The platform's vocabulary is Timeform's -- Gd/Sft, not "Good To Soft",
+  // which no other row on the platform uses and no filter matches.
   assert.equal(goingToEnglish("Bon"), "Good");
-  assert.equal(goingToEnglish("Bon souple"), "Good To Soft");
+  assert.equal(goingToEnglish("Bon souple"), "Gd/Sft");
   assert.equal(goingToEnglish("Souple"), "Soft");
-  assert.equal(goingToEnglish("Très souple"), "Soft To Heavy"); // accents and all
+  assert.equal(goingToEnglish("Très souple"), "Soft"); // accents and all
   assert.equal(goingToEnglish("Lourd"), "Heavy");
 });
 
-test("passes through an all-weather surface state rather than mistranslating it", () => {
-  // "PSF STANDARD" describes a synthetic surface, and no British going means
-  // that, so inventing one would be worse than saying what France said.
-  assert.equal(goingToEnglish("PSF STANDARD"), "PSF STANDARD");
+test("grades the all-weather on the scale the platform already uses", () => {
+  // Timeform grades synthetic surfaces Std / Slow / Fast, which is the same
+  // three-step scale PSF uses, so these do map.
+  assert.equal(goingToEnglish("PSF STANDARD"), "Std");
+  assert.equal(goingToEnglish("PSF LENTE"), "Slow");
+  assert.equal(goingToEnglish("PSF RAPIDE"), "Fast");
+  // Anything unrecognised is passed through rather than guessed at.
+  assert.equal(goingToEnglish("Quelque chose"), "Quelque chose");
   assert.equal(goingToEnglish(null), null);
 });
 
