@@ -10482,6 +10482,43 @@ app.post('/api/france/racecards/ingest', async (req, res) => {
   }
 });
 
+// Rebuilds France's own rows in APIData_Table2 from France's own staged
+// tables, for a window of recent dates. No PMU calls -- see repromote() for
+// why this exists and why it is cheap enough to run often.
+// Body: {days} (default 10, back from today) or {from,to}; {dryRun:true} to
+// report what is missing without writing.
+app.post('/api/france/repromote', async (req, res) => {
+  if (!requireFranceAdmin(req, res)) return;
+
+  const { days, from, to, dryRun } = req.body || {};
+  const isoOfDate = (d) => d.toISOString().slice(0, 10);
+  let start = from;
+  let end = to;
+  if (!start || !end) {
+    const n = Math.min(Math.max(Number(days) || 10, 1), 60);
+    const endD = new Date();
+    const startD = new Date();
+    startD.setUTCDate(startD.getUTCDate() - (n - 1));
+    start = isoOfDate(startD);
+    end = isoOfDate(endD);
+  }
+  if (!FRANCE_ISO.test(start) || !FRANCE_ISO.test(end)) {
+    return res.status(400).json({ error: "from and to must be YYYY-MM-DD" });
+  }
+
+  try {
+    const france = await loadFrance();
+    const out = await france.repromote(france.store, {
+      from: start, to: end, dryRun: Boolean(dryRun),
+      log: (m) => console.log("[france:repromote]", m),
+    });
+    res.status(200).json({ ok: true, ...out });
+  } catch (err) {
+    console.error("[france] repromote:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/france/stats', async (req, res) => {
   try {
     const { store } = await loadFrance();
@@ -10615,6 +10652,15 @@ if (String(process.env.FRANCE_CRON || "").toLowerCase() === "on") {
   // learns to leave other sources alone, this pass puts France back before
   // anyone looks.
   cron.schedule("30 8 * * *", run("morning reconcile", (f) => f.reconcile(f.store, 7)), paris);
+
+  // Put back whatever the other writer removed, every hour.
+  //
+  // A day that still has all its rows costs one COUNT, so this is nearly free
+  // on a normal hour and repairs a wiped day within one. It reads from
+  // France's own staged tables, so it never calls PMU and cannot conflict
+  // with an ingest for new data.
+  cron.schedule("20 * * * *", run("repromote", (f) =>
+    f.repromote(f.store, { days: 10, log: (m) => console.log("[france:repromote]", m) })), paris);
 
   // Declared cards for the days ahead. Evening, once tomorrow's declarations
   // are published, and again in the morning to pick up overnight withdrawals.

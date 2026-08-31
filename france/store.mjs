@@ -697,6 +697,47 @@ export class FranceStore {
     return { inserted, deleted, dates: byDate.size, skippedFields: skipped };
   }
 
+  /**
+   * The staged rows for a date range, exactly as they were normalised.
+   *
+   * fr_raw_runner.payload holds the whole normalised runner, which is what
+   * promoteToApiData consumes, so France can rebuild its own rows in
+   * APIData_Table2 from its own tables without going back to PMU. That
+   * matters because something else maintaining that table deletes French
+   * rows for recent dates: a repair that had to re-scrape would take minutes
+   * per day and hammer PMU, where this is a single indexed read.
+   */
+  async stagedRowsBetween(fromIso, toIso, { source = "MERGED" } = {}) {
+    const rows = await this.query(
+      `SELECT r.payload
+         FROM fr_raw_runner r
+         JOIN fr_raw_race ra ON ra.id = r.raw_race_id
+        WHERE ra.meeting_date BETWEEN ? AND ?
+          AND r.source = ?
+        ORDER BY ra.meeting_date, ra.course_name, ra.race_number`,
+      [fromIso, toIso, source],
+    );
+    return rows
+      .map((r) => {
+        try {
+          return typeof r.payload === "string" ? JSON.parse(r.payload) : r.payload;
+        } catch { return null; }
+      })
+      .filter(Boolean);
+  }
+
+  /** What France holds in APIData_Table2 per day, to see what has gone. */
+  async apiDataCountsByDate(fromIso, toIso) {
+    const rows = await this.query(
+      `SELECT DATE(meetingDate) AS d, COUNT(*) AS n
+         FROM APIData_Table2
+        WHERE sourceSystem = ? AND meetingDate BETWEEN ? AND ?
+        GROUP BY DATE(meetingDate) ORDER BY d`,
+      [FRANCE_SOURCE, `${fromIso} 00:00:00`, `${toIso} 23:59:59`],
+    );
+    return Object.fromEntries(rows.map((r) => [isoOf(r.d), Number(r.n)]));
+  }
+
   /** Everything France holds in APIData_Table2, for an audit or a rollback. */
   async franceRowCount() {
     // Lead with raceCountry so this uses idx_country_date. sourceSystem has
