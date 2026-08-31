@@ -125,6 +125,12 @@ export const REQUIRED_API_COLUMNS = {
   headGear: "VARCHAR(32) NULL",
   clothNumber: "SMALLINT NULL",
   raceCategory: "VARCHAR(64) NULL",
+  // The runner's breed. French racing mixes thoroughbreds with Arabians,
+  // Anglo-Arabians and AQPS on the same cards -- the Qatar Arabian World Cup
+  // shares the Arc card -- and nothing downstream can tell them apart
+  // without this. Stored in one vocabulary (see CANONICAL_BREED below);
+  // Timeform's own rows leave it NULL, which reads as "thoroughbred feed".
+  breed: "VARCHAR(32) NULL",
   distanceMetres: "SMALLINT NULL",
   nonRunner: "TINYINT NULL",
   incident: "VARCHAR(32) NULL",
@@ -149,6 +155,27 @@ export const REQUIRED_API_INDEXES = {
 };
 
 export const FRANCE_SOURCE = "FRANCE";
+
+/**
+ * One vocabulary for the breed column, whichever source wrote the row. PMU
+ * says "PUR-SANG" / "ARABE" / "ANGLO ARABE"; France Galop's sheets say "PS" /
+ * "AQPS". Both arrive verbatim in the staged payloads -- the translation
+ * happens here at promotion, the same boundary that renames finishingTime,
+ * so a repromoted 2025 payload and tomorrow's ingest write the same value.
+ * Only evidenced spellings are mapped; an unmapped value is stored uppercased
+ * rather than guessed at.
+ */
+const CANONICAL_BREED = {
+  "PUR-SANG": "PS", "PUR SANG": "PS", PS: "PS",
+  ARABE: "AR", AR: "AR",
+  "ANGLO ARABE": "AA", "ANGLO-ARABE": "AA", AA: "AA",
+  AQPS: "AQPS",
+};
+export function canonicalBreed(value) {
+  if (value == null || value === "") return null;
+  const key = String(value).trim().toUpperCase();
+  return CANONICAL_BREED[key] ?? key;
+}
 
 /**
  * A pool of its own rather than the callback-style `mysql` pool server.jsx
@@ -618,6 +645,7 @@ export class FranceStore {
           payload.raceClass = String(row.raceCategory).replace(/_/g, " ");
         }
         if (columns.has("meetingDate")) payload.meetingDate = apiDateOf(row.meetingDate);
+        if (columns.has("breed")) payload.breed = canonicalBreed(row.breed);
 
         // A confident identity match writes the existing horse's code onto the
         // French row, which is the join that puts French form on that horse's

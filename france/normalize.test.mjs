@@ -370,3 +370,23 @@ test("writes the breeding country the way the platform already writes it", () =>
   assert.equal(canonicalBreedingCountry("CZE"), "CZE");
   assert.equal(canonicalBreedingCountry(null), null);
 });
+
+test("writes the breed in one vocabulary whichever source wrote the row", async () => {
+  // PMU spells breeds out ("PUR-SANG", "ARABE", "ANGLO ARABE"); France
+  // Galop's sheets abbreviate ("PS", "AQPS"). Both arrive verbatim in the
+  // staged payloads, so promotion translates at the boundary -- otherwise
+  // the same breed lands in the column under two names, exactly the
+  // two-vocabulary split the breeding country had.
+  const { canonicalBreed } = await import("./store.mjs");
+  assert.equal(canonicalBreed("PUR-SANG"), "PS");
+  assert.equal(canonicalBreed("PS"), "PS");
+  assert.equal(canonicalBreed("ARABE"), "AR");
+  assert.equal(canonicalBreed("ANGLO ARABE"), "AA");
+  assert.equal(canonicalBreed("ANGLO-ARABE"), "AA");
+  assert.equal(canonicalBreed("AQPS"), "AQPS");
+
+  // Not evidenced, so passed through uppercased rather than guessed at.
+  assert.equal(canonicalBreed("Trotteur Francais"), "TROTTEUR FRANCAIS");
+  assert.equal(canonicalBreed(null), null);
+  assert.equal(canonicalBreed(""), null);
+});

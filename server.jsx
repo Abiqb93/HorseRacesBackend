@@ -10490,7 +10490,7 @@ app.post('/api/france/racecards/ingest', async (req, res) => {
 app.post('/api/france/repromote', async (req, res) => {
   if (!requireFranceAdmin(req, res)) return;
 
-  const { days, from, to, dryRun } = req.body || {};
+  const { days, from, to, dryRun, force } = req.body || {};
   const isoOfDate = (d) => d.toISOString().slice(0, 10);
   let start = from;
   let end = to;
@@ -10509,7 +10509,7 @@ app.post('/api/france/repromote', async (req, res) => {
   try {
     const france = await loadFrance();
     const out = await france.repromote(france.store, {
-      from: start, to: end, dryRun: Boolean(dryRun),
+      from: start, to: end, dryRun: Boolean(dryRun), force: Boolean(force),
       log: (m) => console.log("[france:repromote]", m),
     });
     res.status(200).json({ ok: true, ...out });
