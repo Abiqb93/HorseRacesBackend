@@ -729,13 +729,18 @@ export class FranceStore {
   /** What France holds in APIData_Table2 per day, to see what has gone. */
   async apiDataCountsByDate(fromIso, toIso) {
     const rows = await this.query(
-      `SELECT DATE(meetingDate) AS d, COUNT(*) AS n
+      // Formatted in SQL rather than DATE(): the driver hands a DATE column
+      // back as a JS Date, and isoOf stringifies that to "Mon Aug 25" rather
+      // than "2026-08-25", so every key missed and every day looked empty. A
+      // day that looks empty is a day this rewrites, which would have turned
+      // the hourly repair into an hourly rewrite of the whole window.
+      `SELECT DATE_FORMAT(meetingDate, '%Y-%m-%d') AS d, COUNT(*) AS n
          FROM APIData_Table2
         WHERE sourceSystem = ? AND meetingDate BETWEEN ? AND ?
-        GROUP BY DATE(meetingDate) ORDER BY d`,
+        GROUP BY d ORDER BY d`,
       [FRANCE_SOURCE, `${fromIso} 00:00:00`, `${toIso} 23:59:59`],
     );
-    return Object.fromEntries(rows.map((r) => [isoOf(r.d), Number(r.n)]));
+    return Object.fromEntries(rows.map((r) => [String(r.d), Number(r.n)]));
   }
 
   /** Everything France holds in APIData_Table2, for an audit or a rollback. */
