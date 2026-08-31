@@ -17,7 +17,7 @@ import {
   parsePedigreeCell,
   parseFieldCounts,
 } from "./franceGalopClient.mjs";
-import { normalizeGoing, normalizeRaceType, blackTypeFromFG, isThoroughbred } from "./normalizeFG.mjs";
+import { normalizeGoing, normalizeRaceType, blackTypeFromFG, isThoroughbred, normalizeFGRunner } from "./normalizeFG.mjs";
 import { raceKey, runnerKey, mergeRunner, mergeDay, findIncompleteRaces } from "./mergeSources.mjs";
 
 /* ---------------- numbers ---------------- */
@@ -227,4 +227,27 @@ test("a complete race is not flagged", () => {
     { meetingDate: "2026-08-16", courseName: "ROYAN", raceNumber: 1, horseName: "B", numberOfRunners: 2 },
   ];
   assert.equal(findIncompleteRaces(rows).length, 0);
+});
+
+test("files a France Galop runner under the country the race was run in", () => {
+  // countryCode is the race country across the platform -- every runner at
+  // Southwell is GBR whatever its breeding. This carried the breeding country,
+  // so one French card arrived split across FR, FRA, IRE, GB and GER and the
+  // results page, which groups on it, showed France twice over.
+  const row = (country) =>
+    normalizeFGRunner({
+      fixture: { meetingDate: "2026-08-30" },
+      race: { meetingDate: "2026-08-30", raceCode: "X" },
+      runner: { horseName: "A HORSE", country, age: 4 },
+    });
+
+  assert.equal(row("GB").countryCode, "FRA");
+  assert.equal(row("IRE").countryCode, "FRA");
+  assert.equal(row(null).countryCode, "FRA");
+
+  // The breeding country is not lost -- it has its own column, and that is
+  // the one that should differ between runners.
+  assert.equal(row("GB").horseCountry, "GB");
+  assert.equal(row("IRE").horseCountry, "IRE");
+  assert.equal(row(null).horseCountry, "FR");
 });
