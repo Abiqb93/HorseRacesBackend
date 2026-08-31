@@ -13,14 +13,33 @@
 
 const METRES_PER_FURLONG = 201.168;
 
+/**
+ * The breeding-country codes the platform already uses, which are Timeform's
+ * and are not any one standard: IRE, GBR, FR, USA, JPN, GER, AUS, NZ, DEN,
+ * SAF, ITY, SWE. Mostly ISO-3, but France is FR and New Zealand NZ.
+ *
+ * Both French sources disagreed with it, in opposite directions, so a French
+ * card carried the same breeding country under two names. Measured over seven
+ * days: 713 French rows said FRA where every Timeform row says FR, and 19
+ * said GB where Timeform says GBR.
+ *
+ * Only the two that the data shows are wrong are mapped. France also produces
+ * SPA and CZE, which Timeform has not been seen to write either way, and
+ * guessing at those would be inventing a convention rather than following one.
+ */
+const BREEDING_COUNTRY_FIXUPS = { FRA: "FR", GB: "GBR" };
+
+export function canonicalBreedingCountry(code) {
+  if (!code) return null;
+  const key = String(code).trim().toUpperCase();
+  return BREEDING_COUNTRY_FIXUPS[key] || key;
+}
+
 /** PMU returns country display names, not codes, on the runner. */
 const COUNTRY_BY_FRENCH_NAME = {
-  // ISO-3 throughout, matching countryCode across the rest of the platform
-  // (twenty years of French results are stored as "FRA"). France was the one
-  // ISO-2 entry here, which put every ingested French run outside every
-  // country filter on the site. `horseCountry` is separately ISO-2 -- see
-  // matchHorse.mjs -- and is unaffected.
-  France: "FRA",
+  // These feed horseCountry, so they are written in the platform's breeding
+  // vocabulary above -- France is FR, not FRA.
+  France: "FR",
   "Royaume-Uni": "GBR",
   Irlande: "IRE",
   Allemagne: "GER",
@@ -378,7 +397,7 @@ export function normalizeRunner({ meeting, course, participant, isoDate }) {
     // breeding country here instead made a British-bred horse at Deauville
     // look like a British runner and left French cards outside every
     // "raced in France" query.
-    horseCountry: COUNTRY_BY_FRENCH_NAME[p.pays] || null,
+    horseCountry: canonicalBreedingCountry(COUNTRY_BY_FRENCH_NAME[p.pays]),
     countryCode: "FRA",
     foalingYear: Number.isFinite(p.age) ? Number(isoDate.slice(0, 4)) - p.age : null,
     horseAge: p.age ?? null,

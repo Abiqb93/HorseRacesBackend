@@ -13,6 +13,7 @@
  */
 
 import { toFurlongs, normalizeCourseName } from "./normalize.mjs";
+import { canonicalBreedingCountry } from "./normalize.mjs";
 
 /** France Galop going labels, as they appear on the fixture and race pages. */
 const GOING = {
@@ -83,7 +84,10 @@ export function normalizeFGRunner({ fixture, race, runner }) {
     // ---- identity --------------------------------------------------
     horseName: runner.horseName,
     horseNameRaw: runner.horseNameRaw ?? runner.horseName,
-    horseCountry: runner.country || "FR", // no suffix means French-bred
+    // The name suffix, in the platform's breeding vocabulary: a (GB) horse
+    // is GBR here, as every Timeform row writes it. No suffix means
+    // French-bred, which the platform writes FR.
+    horseCountry: canonicalBreedingCountry(runner.country) || "FR",
     // countryCode is where the RACE was run, not where the horse was bred --
     // every runner at Southwell is GBR and every runner at Navan is IRE,
     // whatever their breeding. This said the breeding country, so a French
