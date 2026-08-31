@@ -84,7 +84,17 @@ export function normalizeFGRunner({ fixture, race, runner }) {
     horseName: runner.horseName,
     horseNameRaw: runner.horseNameRaw ?? runner.horseName,
     horseCountry: runner.country || "FR", // no suffix means French-bred
-    countryCode: runner.country || "FR",
+    // countryCode is where the RACE was run, not where the horse was bred --
+    // every runner at Southwell is GBR and every runner at Navan is IRE,
+    // whatever their breeding. This said the breeding country, so a French
+    // card arrived split across as many countries as it had nationalities of
+    // horse: 30 August came in as FR, FRA, IRE, GB and GER, and the results
+    // page, which groups on this column, showed France twice over.
+    //
+    // The PMU side of the same ingest has always written FRA. Only the France
+    // Galop side disagreed, so only the days the scheduled ingest wrote --
+    // which is the one path that merges FG in -- were affected.
+    countryCode: "FRA",
     horseAge: runner.age ?? null,
     foalingYear: Number.isFinite(runner.age) && season ? season - runner.age : null,
     horseGender: runner.sex ?? null,
