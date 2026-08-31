@@ -709,21 +709,37 @@ export class FranceStore {
    */
   async stagedRowsBetween(fromIso, toIso, { source = "MERGED" } = {}) {
     const rows = await this.query(
-      `SELECT r.payload
+      `SELECT r.payload, ra.fetched_at, ra.race_code, ra.meeting_date,
+              ra.course_name, ra.race_number
          FROM fr_raw_runner r
          JOIN fr_raw_race ra ON ra.id = r.raw_race_id
         WHERE ra.meeting_date BETWEEN ? AND ?
           AND r.source = ?
-        ORDER BY ra.meeting_date, ra.course_name, ra.race_number`,
+        ORDER BY ra.fetched_at ASC, ra.meeting_date, ra.course_name, ra.race_number`,
       [fromIso, toIso, source],
     );
-    return rows
-      .map((r) => {
-        try {
-          return typeof r.payload === "string" ? JSON.parse(r.payload) : r.payload;
-        } catch { return null; }
-      })
-      .filter(Boolean);
+
+    // Staging keeps a race under every name it has ever been filed as, because
+    // its key includes the course name: correcting La Teste from TESTE DE BUCH
+    // left both staged for the same fixture, which is why 26 August stages 266
+    // runners for a card of 164. Promotion collapses them anyway -- both share
+    // a sourceRaceId, so the second group's delete removes the first group's
+    // inserts -- but re-promoting the stale copy is wasted work and makes the
+    // staged total useless as a measure of what a day should hold.
+    //
+    // Newest staging wins, per race and horse.
+    const seen = new Map();
+    for (const r of rows) {
+      let row;
+      try {
+        row = typeof r.payload === "string" ? JSON.parse(r.payload) : r.payload;
+      } catch { continue; }
+      if (!row) continue;
+      const raceKey = r.race_code
+        || `${isoOf(r.meeting_date)}|${r.course_name}|${r.race_number ?? ""}`;
+      seen.set(`${raceKey}|${row.horseName}`, row);
+    }
+    return [...seen.values()];
   }
 
   /** What France holds in APIData_Table2 per day, to see what has gone. */
