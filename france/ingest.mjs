@@ -233,7 +233,7 @@ export async function backfill(store, from, to, { log = console.error, dryRun = 
  * It is a repair, not an ingest: it will not invent a day France never staged,
  * and a date with nothing staged is reported rather than silently skipped.
  */
-export async function repromote(store, { from, to, dryRun = false, log = console.error } = {}) {
+export async function repromote(store, { from, to, dryRun = false, force = false, log = console.error } = {}) {
   const staged = await store.stagedRowsBetween(from, to);
   const before = await store.apiDataCountsByDate(from, to);
 
@@ -255,12 +255,15 @@ export async function repromote(store, { from, to, dryRun = false, log = console
     // and would rewrite the lot every hour.
     const expected = rows.filter((r) => !r.nonRunner).length;
     if (dryRun) {
-      results.push({ date: iso, staged: rows.length, expected, held, wouldWrite: held < expected });
+      results.push({ date: iso, staged: rows.length, expected, held, wouldWrite: force || held < expected });
       continue;
     }
     // Only rewrite a day that has actually lost rows. A day already whole is
     // left alone, so the hourly pass costs one count query on a normal day.
-    if (held >= expected) {
+    // `force` rewrites it anyway: when promotion learns to write a column the
+    // table did not have (breed), the staged payloads already hold the value
+    // and a forced pass is how history picks it up without touching PMU.
+    if (!force && held >= expected) {
       results.push({ date: iso, staged: rows.length, expected, held, repaired: false });
       continue;
     }
