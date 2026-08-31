@@ -216,6 +216,59 @@ export async function backfill(store, from, to, { log = console.error, dryRun = 
  * non-runners, stewards' decisions -- so a single pass at result time drifts
  * away from the official record within days.
  */
+/**
+ * Rebuilds France's rows in APIData_Table2 from France's own staged tables.
+ *
+ * Something else that maintains APIData_Table2 refreshes a window of recent
+ * dates and deletes French rows as it goes: on 31 August the results for the
+ * 27th onward were gone while the 24th to 26th, which had aged out of that
+ * window, survived. Re-ingesting from PMU puts them back, but takes minutes a
+ * day and cannot sensibly run often enough to keep the gap short.
+ *
+ * This repairs from fr_raw_runner instead, which France owns and which nothing
+ * else touches. The staged payload is the normalised row, so the repair is a
+ * read, an identity resolve and a write -- no network at all -- which is cheap
+ * enough to run hourly.
+ *
+ * It is a repair, not an ingest: it will not invent a day France never staged,
+ * and a date with nothing staged is reported rather than silently skipped.
+ */
+export async function repromote(store, { from, to, dryRun = false, log = console.error } = {}) {
+  const staged = await store.stagedRowsBetween(from, to);
+  const before = await store.apiDataCountsByDate(from, to);
+
+  const byDate = new Map();
+  for (const row of staged) {
+    const iso = String(row.meetingDate).slice(0, 10);
+    if (!byDate.has(iso)) byDate.set(iso, []);
+    byDate.get(iso).push(row);
+  }
+
+  const dates = [...byDate.keys()].sort();
+  const results = [];
+  for (const iso of dates) {
+    const rows = byDate.get(iso);
+    const held = before[iso] ?? 0;
+    if (dryRun) {
+      results.push({ date: iso, staged: rows.length, held, wouldWrite: rows.length !== held });
+      continue;
+    }
+    // Only rewrite a day that has actually lost rows. A day already whole is
+    // left alone, so the hourly pass costs one count query on a normal day.
+    if (held === rows.length) {
+      results.push({ date: iso, staged: rows.length, held, repaired: false });
+      continue;
+    }
+    const { resolved } = await resolveIdentities(store, rows, { log });
+    const promoted = await store.promoteToApiData(rows, { resolved });
+    results.push({ date: iso, staged: rows.length, held, repaired: true, ...promoted });
+    log(`  repromote ${iso}: held ${held}, staged ${rows.length}, wrote ${promoted.inserted}`);
+  }
+
+  const repaired = results.filter((r) => r.repaired).length;
+  return { from, to, dates: dates.length, repaired, results };
+}
+
 export async function reconcile(store, days = 7, { log = console.error } = {}) {
   const results = [];
   for (let i = 1; i <= days; i += 1) {
