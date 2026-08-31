@@ -9,7 +9,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blackTypeFrom, normalizeCourseName, toFurlongs, normalizeRunner, marginToLengths, goingToEnglish, formRunCount, careerRecordOf, deriveRaceFields } from "./normalize.mjs";
+import { blackTypeFrom, normalizeCourseName, toFurlongs, normalizeRunner, marginToLengths, goingToEnglish, formRunCount, careerRecordOf, deriveRaceFields, canonicalBreedingCountry } from "./normalize.mjs";
 import { matchHorse, DECISION, enrichmentFor } from "./matchHorse.mjs";
 
 test("black type reads categorieParticularite first", () => {
@@ -346,4 +346,27 @@ test("separates a withdrawn horse from one that ran and did not finish", () => {
   assert.equal(finished.nonRunner, false);
   assert.equal(finished.positionOfficial, 1);
   assert.equal(finished.incident, null);
+});
+
+/* ------------------------------------------- breeding-country vocabulary */
+
+test("writes the breeding country the way the platform already writes it", () => {
+  // Timeform's codes are the platform's, and they are not one standard:
+  // mostly ISO-3, but France is FR and New Zealand NZ. Both French sources
+  // disagreed, in opposite directions, so the same breeding country arrived
+  // under two names -- 713 rows saying FRA against Timeform's FR, and 19
+  // saying GB against its GBR.
+  assert.equal(canonicalBreedingCountry("FRA"), "FR");
+  assert.equal(canonicalBreedingCountry("GB"), "GBR");
+  assert.equal(canonicalBreedingCountry("gb"), "GBR");
+
+  // Already right, and left alone.
+  assert.equal(canonicalBreedingCountry("IRE"), "IRE");
+  assert.equal(canonicalBreedingCountry("GBR"), "GBR");
+  assert.equal(canonicalBreedingCountry("FR"), "FR");
+
+  // Not evidenced either way, so passed through rather than guessed at.
+  assert.equal(canonicalBreedingCountry("SPA"), "SPA");
+  assert.equal(canonicalBreedingCountry("CZE"), "CZE");
+  assert.equal(canonicalBreedingCountry(null), null);
 });

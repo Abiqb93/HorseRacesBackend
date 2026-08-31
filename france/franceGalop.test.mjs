@@ -246,8 +246,9 @@ test("files a France Galop runner under the country the race was run in", () => 
   assert.equal(row(null).countryCode, "FRA");
 
   // The breeding country is not lost -- it has its own column, and that is
-  // the one that should differ between runners.
-  assert.equal(row("GB").horseCountry, "GB");
+  // the one that should differ between runners. It is written in the
+  // platform's vocabulary, which spells a British-bred horse GBR.
+  assert.equal(row("GB").horseCountry, "GBR");
   assert.equal(row("IRE").horseCountry, "IRE");
   assert.equal(row(null).horseCountry, "FR");
 });
