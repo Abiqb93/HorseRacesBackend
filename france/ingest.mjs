@@ -249,20 +249,25 @@ export async function repromote(store, { from, to, dryRun = false, log = console
   for (const iso of dates) {
     const rows = byDate.get(iso);
     const held = before[iso] ?? 0;
+    // What a whole day looks like in APIData_Table2, which is not the staged
+    // count: staging keeps withdrawn horses and the results table does not, so
+    // comparing the two directly reports every day short by its non-runners
+    // and would rewrite the lot every hour.
+    const expected = rows.filter((r) => !r.nonRunner).length;
     if (dryRun) {
-      results.push({ date: iso, staged: rows.length, held, wouldWrite: rows.length !== held });
+      results.push({ date: iso, staged: rows.length, expected, held, wouldWrite: held < expected });
       continue;
     }
     // Only rewrite a day that has actually lost rows. A day already whole is
     // left alone, so the hourly pass costs one count query on a normal day.
-    if (held === rows.length) {
-      results.push({ date: iso, staged: rows.length, held, repaired: false });
+    if (held >= expected) {
+      results.push({ date: iso, staged: rows.length, expected, held, repaired: false });
       continue;
     }
     const { resolved } = await resolveIdentities(store, rows, { log });
     const promoted = await store.promoteToApiData(rows, { resolved });
-    results.push({ date: iso, staged: rows.length, held, repaired: true, ...promoted });
-    log(`  repromote ${iso}: held ${held}, staged ${rows.length}, wrote ${promoted.inserted}`);
+    results.push({ date: iso, staged: rows.length, expected, held, repaired: true, ...promoted });
+    log(`  repromote ${iso}: held ${held} of ${expected}, wrote ${promoted.inserted}`);
   }
 
   const repaired = results.filter((r) => r.repaired).length;
