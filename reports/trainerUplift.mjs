@@ -187,7 +187,18 @@ export async function rebuildAll(db, { chunk = 100000, log = () => {} } = {}) {
 const FILTERS = (query) => {
   const where = [];
   const params = [];
-  if (query.country) { where.push("country = ?"); params.push(String(query.country).toUpperCase()); }
+  // The report is a UK & Ireland product: moves are kept when the horse's
+  // first runs for the new yard were in Britain or Ireland, which keeps the
+  // Irish yards raiding Britain and drops overseas stables without leaning
+  // on how Timeform spells a trainer's name. A specific country narrows
+  // within that pair; nothing widens past it.
+  const country = String(query.country || "").toUpperCase();
+  if (country === "GBR" || country === "IRE") {
+    where.push("country = ?");
+    params.push(country);
+  } else {
+    where.push("country IN ('GBR','IRE')");
+  }
   if (query.sex) {
     const sexes = String(query.sex).toLowerCase().split(",").filter(Boolean);
     if (sexes.length) { where.push(`LOWER(sex) IN (${sexes.map(() => "?").join(",")})`); params.push(...sexes); }
