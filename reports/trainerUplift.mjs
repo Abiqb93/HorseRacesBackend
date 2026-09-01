@@ -226,7 +226,17 @@ export async function summary(db, query) {
       ROUND(AVG(uplift5), 2) AS avgUplift5,   SUM(uplift5 IS NOT NULL) AS n5,
       ROUND(AVG(uplift10), 2) AS avgUplift10, SUM(uplift10 IS NOT NULL) AS n10,
       ROUND(AVG(CASE WHEN uplift5 IS NOT NULL THEN uplift5 > 0 END), 3) AS pctImproved5,
-      ROUND(AVG(CASE WHEN uplift3 IS NOT NULL THEN uplift3 > 0 END), 3) AS pctImproved3
+      ROUND(AVG(CASE WHEN uplift3 IS NOT NULL THEN uplift3 > 0 END), 3) AS pctImproved3,
+      -- the four recruit profiles (sex x trip), scored on the 3-run uplift so
+      -- short stays still count; the "best with" tag is derived from these
+      ROUND(AVG(CASE WHEN LOWER(sex) IN ('f','m') AND medianDistF <= 9.4 THEN uplift3 END), 2) AS fmSpU3,
+      SUM(LOWER(sex) IN ('f','m') AND medianDistF <= 9.4 AND uplift3 IS NOT NULL)             AS fmSpN,
+      ROUND(AVG(CASE WHEN LOWER(sex) IN ('f','m') AND medianDistF > 9.4 THEN uplift3 END), 2)  AS fmStU3,
+      SUM(LOWER(sex) IN ('f','m') AND medianDistF > 9.4 AND uplift3 IS NOT NULL)              AS fmStN,
+      ROUND(AVG(CASE WHEN LOWER(sex) IN ('c','g','h') AND medianDistF <= 9.4 THEN uplift3 END), 2) AS cgSpU3,
+      SUM(LOWER(sex) IN ('c','g','h') AND medianDistF <= 9.4 AND uplift3 IS NOT NULL)             AS cgSpN,
+      ROUND(AVG(CASE WHEN LOWER(sex) IN ('c','g','h') AND medianDistF > 9.4 THEN uplift3 END), 2)  AS cgStU3,
+      SUM(LOWER(sex) IN ('c','g','h') AND medianDistF > 9.4 AND uplift3 IS NOT NULL)              AS cgStN
     FROM ${MOVES_TABLE}
     ${where}
     GROUP BY toTrainer
@@ -250,6 +260,18 @@ export async function summary(db, query) {
     ].filter(([v]) => v !== null);
     const wSum = parts.reduce((a, [, w]) => a + w, 0);
     r.scoreRaw = wSum ? +(parts.reduce((a, [v, w]) => a + v * w, 0) / wSum).toFixed(3) : null;
+  }
+  // "Best with": the recruit profile with the highest 3-run uplift on a
+  // sample of at least five moves; no tag when nothing qualifies.
+  for (const r of rows) {
+    const segs = [
+      ["FM \u00b7 Sprint/Mile", r.fmSpU3, r.fmSpN],
+      ["FM \u00b7 Middle/Stay", r.fmStU3, r.fmStN],
+      ["CG \u00b7 Sprint/Mile", r.cgSpU3, r.cgSpN],
+      ["CG \u00b7 Middle/Stay", r.cgStU3, r.cgStN],
+    ].filter(([, v, n]) => v !== null && Number(n) >= 5);
+    segs.sort((a, b) => Number(b[1]) - Number(a[1]));
+    r.bestWith = segs.length ? segs[0][0] : null;
   }
   const ranked = rows.filter((r) => r.scoreRaw !== null).sort((a, b) => a.scoreRaw - b.scoreRaw);
   ranked.forEach((r, i) => {

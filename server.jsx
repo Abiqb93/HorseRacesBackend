@@ -110,7 +110,7 @@ const validTables = [
   'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift', 'foalSale_Dashboard', 'foalSale_Pedigree', 'foalSale_StallionStats', 'foalSale_Sales', 'foalSale_StudFeeAnalysis', 'jockey_tracking', 'report_potential_stallions',
   'sectionsparsed', 'stallion-fee', 'racingpost_results',
   'report_trainer_uplift_moves', 'report_trainer_uplift_summary',
-  'report_track_pars_tf', 'report_track_pars_rtv'
+  'report_track_pars_tf', 'report_track_pars_rtv', 'report_trainer_form'
 ];
 
 // ---------------------------------------------------------------------------
@@ -1219,6 +1219,26 @@ app.get("/api/reports/trainer_uplift_summary", (req, res) => {
 // times. Generated tables, rebuilt daily by the cron below; the builder
 // lives in reports/trackPars.mjs.
 const loadTrackPars = () => import("./reports/trackPars.mjs");
+
+// Trainer form: rolling 25/300/1000-run windows of run-to-form, placed
+// strike rate and impact value per UK/IRE flat yard. Builder in
+// reports/trainerForm.mjs; rebuilt daily with the track pars.
+const loadTrainerForm = () => import("./reports/trainerForm.mjs");
+
+app.get("/api/reports/trainer_form", (req, res) => {
+  return fetchGeneratedReport(res, "report_trainer_form");
+});
+
+app.post("/api/reports/trainer_form/rebuild", async (req, res) => {
+  if (!requireFranceAdmin(req, res)) return;
+  try {
+    const { buildTrainerForm } = await loadTrainerForm();
+    res.status(200).json({ ok: true, ...(await buildTrainerForm(db)) });
+  } catch (err) {
+    console.error("[trainer-form] rebuild:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.get("/api/reports/track_pars_tf", (req, res) => {
   return fetchGeneratedReport(res, "report_track_pars_tf");
@@ -10712,6 +10732,9 @@ app.get('/api/france/racecards', (req, res) => {
       const { rebuildTrackPars } = await loadTrackPars();
       const out = await rebuildTrackPars(db);
       console.log("[track-pars] daily rebuild:", JSON.stringify(out));
+      const { buildTrainerForm } = await loadTrainerForm();
+      const form = await buildTrainerForm(db);
+      console.log("[trainer-form] daily rebuild:", JSON.stringify(form));
     } catch (err) {
       console.error("[track-pars] daily rebuild failed:", err.message);
     }
