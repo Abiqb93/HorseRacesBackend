@@ -1233,7 +1233,9 @@ app.get("/api/reports/track_pars_rtv", (req, res) => {
 // Builder in reports/trainerUplift.mjs; rebuilt weekly by the cron below.
 const loadTrainerUplift = () => import("./reports/trainerUplift.mjs");
 
-app.post("/api/reports/trainer_uplift2/rebuild", async (req, res) => {
+// Declared above the global express.json() mount, so the body is parsed
+// route-level, the same way the bloodstock_clients routes do it.
+app.post("/api/reports/trainer_uplift2/rebuild", express.json(), async (req, res) => {
   if (!requireFranceAdmin(req, res)) return;
   try {
     const tu = await loadTrainerUplift();
