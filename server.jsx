@@ -109,7 +109,8 @@ const validTables = [
   'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion', 'StrideParsPercentilesPerTrack', 
   'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift', 'foalSale_Dashboard', 'foalSale_Pedigree', 'foalSale_StallionStats', 'foalSale_Sales', 'foalSale_StudFeeAnalysis', 'jockey_tracking', 'report_potential_stallions',
   'sectionsparsed', 'stallion-fee', 'racingpost_results',
-  'report_trainer_uplift_moves', 'report_trainer_uplift_summary'
+  'report_trainer_uplift_moves', 'report_trainer_uplift_summary',
+  'report_track_pars_tf', 'report_track_pars_rtv'
 ];
 
 // ---------------------------------------------------------------------------
@@ -1211,6 +1212,31 @@ app.get("/api/reports/trainer_uplift", (req, res) => {
 // 7) Trainer Uplift Summary - trainer-level
 app.get("/api/reports/trainer_uplift_summary", (req, res) => {
   return fetchGeneratedReport(res, "report_trainer_uplift_summary");
+});
+
+// Track & distance pars from the two sectional sources the database holds:
+// Timeform's race-level closing sectionals and Racing TV's per-furlong
+// times. Generated tables, rebuilt daily by the cron below; the builder
+// lives in reports/trackPars.mjs.
+const loadTrackPars = () => import("./reports/trackPars.mjs");
+
+app.get("/api/reports/track_pars_tf", (req, res) => {
+  return fetchGeneratedReport(res, "report_track_pars_tf");
+});
+
+app.get("/api/reports/track_pars_rtv", (req, res) => {
+  return fetchGeneratedReport(res, "report_track_pars_rtv");
+});
+
+app.post("/api/reports/track_pars/rebuild", async (req, res) => {
+  if (!requireFranceAdmin(req, res)) return;
+  try {
+    const { rebuildTrackPars } = await loadTrackPars();
+    res.status(200).json({ ok: true, ...(await rebuildTrackPars(db)) });
+  } catch (err) {
+    console.error("[track-pars] rebuild:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 
@@ -10615,6 +10641,22 @@ app.get('/api/france/racecards', (req, res) => {
     },
   );
 });
+
+// Track pars refresh, daily before the morning. Independent of the France
+// gate -- these tables serve the Ratings pages whatever the France schedule
+// is doing.
+{
+  const cron = require("node-cron");
+  cron.schedule("40 3 * * *", async () => {
+    try {
+      const { rebuildTrackPars } = await loadTrackPars();
+      const out = await rebuildTrackPars(db);
+      console.log("[track-pars] daily rebuild:", JSON.stringify(out));
+    } catch (err) {
+      console.error("[track-pars] daily rebuild failed:", err.message);
+    }
+  }, { timezone: "Europe/London" });
+}
 
 // The schedule. Europe/Paris throughout, because that is what the fixture list
 // is published in.
