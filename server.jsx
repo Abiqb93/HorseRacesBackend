@@ -1228,6 +1228,49 @@ app.get("/api/reports/track_pars_rtv", (req, res) => {
   return fetchGeneratedReport(res, "report_track_pars_rtv");
 });
 
+// Trainer uplift v2: moves table with country / flat-only / age / sex /
+// distance dimensions, filtered aggregation, and the 0-100 uplift score.
+// Builder in reports/trainerUplift.mjs; rebuilt weekly by the cron below.
+const loadTrainerUplift = () => import("./reports/trainerUplift.mjs");
+
+app.post("/api/reports/trainer_uplift2/rebuild", async (req, res) => {
+  if (!requireFranceAdmin(req, res)) return;
+  try {
+    const tu = await loadTrainerUplift();
+    const { init, finalize, codeFrom, codeTo, all } = req.body || {};
+    if (all) return res.status(200).json({ ok: true, ...(await tu.rebuildAll(db, { log: (m) => console.log("[trainer-uplift]", m) })) });
+    if (init) return res.status(200).json({ ok: true, ...(await tu.initMoves(db)) });
+    if (finalize) return res.status(200).json({ ok: true, ...(await tu.finalizeMoves(db)) });
+    if (Number.isFinite(Number(codeFrom)) && Number.isFinite(Number(codeTo))) {
+      return res.status(200).json({ ok: true, ...(await tu.buildMovesRange(db, Number(codeFrom), Number(codeTo))) });
+    }
+    res.status(400).json({ error: "pass {all} or {init} or {codeFrom,codeTo} or {finalize}" });
+  } catch (err) {
+    console.error("[trainer-uplift] rebuild:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/reports/trainer_uplift2/summary", async (req, res) => {
+  try {
+    const tu = await loadTrainerUplift();
+    const data = await tu.summary(db, req.query || {});
+    res.status(200).json({ data, count: data.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/reports/trainer_uplift2/moves", async (req, res) => {
+  try {
+    const tu = await loadTrainerUplift();
+    const data = await tu.moves(db, req.query || {});
+    res.status(200).json({ data, count: data.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/reports/track_pars/rebuild", async (req, res) => {
   if (!requireFranceAdmin(req, res)) return;
   try {
@@ -10641,6 +10684,21 @@ app.get('/api/france/racecards', (req, res) => {
     },
   );
 });
+
+// Trainer uplift moves, weekly on Monday morning -- a full walk of the
+// results table, so not worth running daily.
+{
+  const cron = require("node-cron");
+  cron.schedule("10 4 * * 1", async () => {
+    try {
+      const tu = await loadTrainerUplift();
+      const out = await tu.rebuildAll(db, { log: (m) => console.log("[trainer-uplift]", m) });
+      console.log("[trainer-uplift] weekly rebuild:", JSON.stringify(out));
+    } catch (err) {
+      console.error("[trainer-uplift] weekly rebuild failed:", err.message);
+    }
+  }, { timezone: "Europe/London" });
+}
 
 // Track pars refresh, daily before the morning. Independent of the France
 // gate -- these tables serve the Ratings pages whatever the France schedule
