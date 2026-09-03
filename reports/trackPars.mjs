@@ -1,7 +1,7 @@
 /**
- * Track & distance pars from the two sectional sources the database holds.
+ * Track & distance pars from the sectional sources the database holds.
  *
- * Two generated tables, rebuilt daily by the cron in server.jsx and served
+ * Generated tables, rebuilt daily by the cron in server.jsx and served
  * whole like the other generated reports:
  *
  *  - report_track_pars_tf: Timeform's race-level sectionals. One row per
@@ -17,6 +17,11 @@
  *    from every runner with sectionals, and n counts distinct races. The
  *    RTV result URLs do not separate the Newmarket courses, so the label is
  *    joined per meeting date from the Timeform rows in APIData_Table2.
+ *
+ *  - report_track_pars_atr / report_track_pars_atr_going: At The Races'
+ *    per-segment sectionals (attheraces), one row per British course and
+ *    exact distance, the second also per going, in the segment columns ATR
+ *    itself uses (Start-5f, 5f-4f ... 1f-Finish). See buildAtrPars.
  */
 
 const MAX_F = 34;
@@ -187,8 +192,85 @@ export async function buildRtvPars(db) {
   return { table: "report_track_pars_rtv", rows: n, sourceRows: rows.length };
 }
 
+/* ----------------------------------------------------------------- ATR -- */
+
+// Every sectional segment column the attheraces table carries, in the order
+// the site's "Finishing Speed % : Track and Distance Pars" sheet lists them.
+// Furlong segments count down to the line (Start-5f, 5f-4f ... 1f-Finish);
+// the metre ones are the overseas tracks' labels and stay for completeness.
+export const ATR_SEGMENTS = [
+  "Start-5f", "5f-4f", "4f-3f", "3f-2f", "2f-1f", "1f-Finish", "Start-4f", "Start-6f", "6f-5f", "Start-9f", "9f-8f", "8f-7f", "7f-6f",
+  "Start-7f", "Start-14f", "14f-13f", "13f-12f", "12f-11f", "11f-10f", "10f-9f", "Start-8f", "Start-13f", "Start-11f", "Start-10f",
+  "Start-12f", "12f-8f", "8f-6f", "6f-4f", "4f-2f", "Start-20f", "20f-16f", "16f-12f", "Start-24f", "24f-20f", "Start-16f", "Start-15f",
+  "15f-14f", "Start-1f", "Start-18f", "18f-17f", "17f-16f", "16f-15f", "3f-1f", "Start-17f", "Start-19f", "19f-18f", "9f-7f",
+  "Start-1800m", "1800m-1600m", "1600m-1400m", "1400m-1200m", "1200m-1000m", "1000m-800m", "800m-600m", "600m-400m", "400m-200m",
+  "200m-Finish", "Start-1000m", "Start-1200m", "Start-1400m", "Start-800m", "Start-1600m", "Start-2200m", "2200m-2000m", "2000m-1800m",
+  "Start-2600m", "2600m-2400m", "2400m-2200m", "Start-2000m", "Start-3000m", "3000m-2800m", "2800m-2600m", "5f-3f", "Start-21f",
+  "21f-20f", "20f-19f", "7f-5f", "6f-3f", "Start-3f", "11f-9f", "1000m-600m",
+];
+
+/** "7f 213y" -> 7.97, "1m (Str)" -> 8, "2m 4f 110y" -> 20.5 */
+export const distanceToFurlongs = (label) => {
+  const m = String(label || "").match(/(?:(\d+)m\b)?\s*(?:(\d+)f\b)?\s*(?:(\d+)y\b)?/);
+  if (!m || (m[1] === undefined && m[2] === undefined)) return null;
+  const f = Number(m[1] || 0) * 8 + Number(m[2] || 0) + Number(m[3] || 0) / 220;
+  return f > 0 ? Math.round(f * 100) / 100 : null;
+};
+
+/**
+ * At The Races per-segment pars: one row per British course and exact race
+ * distance (and, in the second table, per going as ATR reports it), from
+ * every runner ATR timed. A segment cell can carry a position tag after the
+ * time ("68.81 Rear"), so the leading number is what is averaged; blanks and
+ * anything non-numeric drop out of the average rather than pulling it to zero.
+ * British courses only, as the sheet has always had it: ATR labels every
+ * overseas track with its country in brackets.
+ */
+export async function buildAtrPars(db) {
+  const segAvg = ATR_SEGMENTS.map(
+    (s) => `ROUND(AVG(NULLIF(CAST(SUBSTRING_INDEX(\`${s}\`, ' ', 1) AS DECIMAL(9,3)), 0)), 4) AS \`avg_${s}\``,
+  ).join(",\n      ");
+  const hasTime = ATR_SEGMENTS.filter((s) => /Finish$/.test(s)).map((s) => `(\`${s}\` IS NOT NULL AND \`${s}\` <> '')`).join(" OR ");
+  const build = async (name, withGoing) => {
+    await q(db, `DROP TABLE IF EXISTS ${name}_next`);
+    await q(db, `
+      CREATE TABLE ${name}_next AS
+      SELECT
+        TRIM(Racename)                                                  AS track,
+        NULL                                                            AS distance_f,
+        ${withGoing ? "TRIM(Ground) AS going," : ""}
+        ROUND(AVG(NULLIF(CAST(\`Horse Finish %\` AS DECIMAL(6,2)), 0)), 2)  AS avg_fsp,
+        COUNT(*)                                                        AS runs,
+        MIN(STR_TO_DATE(Date, '%d-%m-%Y'))                              AS from_date,
+        MAX(STR_TO_DATE(Date, '%d-%m-%Y'))                              AS to_date,
+        ${segAvg},
+        TRIM(Distance)                                                  AS distance
+      FROM attheraces
+      WHERE Racename IS NOT NULL AND Racename NOT LIKE '%(%'
+        AND Distance IS NOT NULL AND Distance <> ''
+        ${withGoing ? "AND Ground IS NOT NULL AND Ground <> ''" : ""}
+        AND (${hasTime})
+      GROUP BY TRIM(Racename), TRIM(Distance)${withGoing ? ", TRIM(Ground)" : ""}
+    `);
+    await q(db, `ALTER TABLE ${name}_next MODIFY distance_f DECIMAL(6,2) NULL`);
+    const labels = await q(db, `SELECT DISTINCT distance FROM ${name}_next`);
+    for (const { distance } of labels) {
+      await q(db, `UPDATE ${name}_next SET distance_f = ? WHERE distance = ?`, [distanceToFurlongs(distance), distance]);
+    }
+    await q(db, `DELETE FROM ${name}_next WHERE distance_f IS NULL`);
+    await q(db, `DROP TABLE IF EXISTS ${name}`);
+    await q(db, `RENAME TABLE ${name}_next TO ${name}`);
+    const [{ n }] = await q(db, `SELECT COUNT(*) AS n FROM ${name}`);
+    return { table: name, rows: n };
+  };
+  const all = await build("report_track_pars_atr", false);
+  const going = await build("report_track_pars_atr_going", true);
+  return { all, going };
+}
+
 export async function rebuildTrackPars(db) {
   const tf = await buildTimeformPars(db);
   const rtv = await buildRtvPars(db);
-  return { tf, rtv };
+  const atr = await buildAtrPars(db);
+  return { tf, rtv, atr };
 }
