@@ -21,7 +21,8 @@
  *  - report_track_pars_atr / report_track_pars_atr_going: At The Races'
  *    per-segment sectionals (attheraces), one row per British course and
  *    exact distance, the second also per going, in the segment columns ATR
- *    itself uses (Start-5f, 5f-4f ... 1f-Finish). See buildAtrPars.
+ *    itself uses (Start-5f, 5f-4f ... 1f-Finish); Newmarket is split into
+ *    its Rowley Mile and July courses by month. See buildAtrPars.
  */
 
 const MAX_F = 34;
@@ -233,10 +234,15 @@ export async function buildAtrPars(db) {
   const hasTime = ATR_SEGMENTS.filter((s) => /Finish$/.test(s)).map((s) => `(\`${s}\` IS NOT NULL AND \`${s}\` <> '')`).join(" OR ");
   const build = async (name, withGoing) => {
     await q(db, `DROP TABLE IF EXISTS ${name}_next`);
+    // ATR calls both Newmarket courses "Newmarket"; the July course hosts every
+    // meeting from late June to the end of August, the Rowley Mile the rest
+    const track = `CASE WHEN TRIM(Racename) = 'Newmarket'
+        THEN IF(MONTH(STR_TO_DATE(Date, '%d-%m-%Y')) BETWEEN 6 AND 8, 'Newmarket (July)', 'Newmarket (Rowley)')
+        ELSE TRIM(Racename) END`;
     await q(db, `
       CREATE TABLE ${name}_next AS
       SELECT
-        TRIM(Racename)                                                  AS track,
+        ${track}                                                        AS track,
         NULL                                                            AS distance_f,
         ${withGoing ? "TRIM(Ground) AS going," : ""}
         ROUND(AVG(NULLIF(CAST(\`Horse Finish %\` AS DECIMAL(6,2)), 0)), 2)  AS avg_fsp,
@@ -250,7 +256,7 @@ export async function buildAtrPars(db) {
         AND Distance IS NOT NULL AND Distance <> ''
         ${withGoing ? "AND Ground IS NOT NULL AND Ground <> ''" : ""}
         AND (${hasTime})
-      GROUP BY TRIM(Racename), TRIM(Distance)${withGoing ? ", TRIM(Ground)" : ""}
+      GROUP BY ${track}, TRIM(Distance)${withGoing ? ", TRIM(Ground)" : ""}
     `);
     await q(db, `ALTER TABLE ${name}_next MODIFY distance_f DECIMAL(6,2) NULL`);
     const labels = await q(db, `SELECT DISTINCT distance FROM ${name}_next`);
