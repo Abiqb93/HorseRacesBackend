@@ -110,7 +110,7 @@ const validTables = [
   'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift', 'foalSale_Dashboard', 'foalSale_Pedigree', 'foalSale_StallionStats', 'foalSale_Sales', 'foalSale_StudFeeAnalysis', 'jockey_tracking', 'report_potential_stallions',
   'sectionsparsed', 'stallion-fee', 'racingpost_results',
   'report_trainer_uplift_moves', 'report_trainer_uplift_summary',
-  'report_track_pars_tf', 'report_track_pars_rtv', 'report_trainer_form'
+  'report_track_pars_tf', 'report_track_pars_rtv', 'report_track_pars_atr', 'report_track_pars_atr_going', 'report_trainer_form'
 ];
 
 // ---------------------------------------------------------------------------
@@ -1246,6 +1246,14 @@ app.get("/api/reports/track_pars_tf", (req, res) => {
 
 app.get("/api/reports/track_pars_rtv", (req, res) => {
   return fetchGeneratedReport(res, "report_track_pars_rtv");
+});
+
+app.get("/api/reports/track_pars_atr", (req, res) => {
+  return fetchGeneratedReport(res, "report_track_pars_atr");
+});
+
+app.get("/api/reports/track_pars_atr_going", (req, res) => {
+  return fetchGeneratedReport(res, "report_track_pars_atr_going");
 });
 
 // Trainer uplift v2: moves table with country / flat-only / age / sex /
