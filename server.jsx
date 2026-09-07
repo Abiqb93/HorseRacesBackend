@@ -4635,6 +4635,90 @@ app.get("/api/hot_form", async (req, res) => {
 });
 
 
+// -----------------------------------------------------
+// GET /api/review_horse_actions
+// The Action List: every saved action, newest first.
+//
+// This has to be declared ABOVE the generic /api/:tableName
+// handler below, or that one matches "review_horse_actions"
+// first and rejects it as an invalid table name. That is
+// exactly what used to happen: the Action List's fetch always
+// failed, the page quietly fell back to actions held in
+// memory, and so the list looked right until you reloaded and
+// then looked empty. Nothing was ever lost - the rows were in
+// the table the whole time, there was simply no route that
+// would read them back.
+//
+// Optional filters: userId, horseName, status, action, limit.
+// -----------------------------------------------------
+app.get("/api/review_horse_actions", (req, res) => {
+  const { userId, horseName, status, action } = req.query;
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 1000, 1), 5000);
+
+  const where = [];
+  const params = [];
+
+  if (String(userId || "").trim()) {
+    where.push("LOWER(TRIM(user_id)) = LOWER(TRIM(?))");
+    params.push(String(userId).trim());
+  }
+  if (String(horseName || "").trim()) {
+    where.push("LOWER(TRIM(horse_name)) = LOWER(TRIM(?))");
+    params.push(String(horseName).trim());
+  }
+  if (String(status || "").trim()) {
+    where.push("LOWER(TRIM(action_status)) = LOWER(TRIM(?))");
+    params.push(String(status).trim());
+  }
+  if (String(action || "").trim()) {
+    where.push("LOWER(TRIM(action_assigned)) = LOWER(TRIM(?))");
+    params.push(String(action).trim());
+  }
+
+  const sql = `
+    SELECT
+      id,
+      user_id AS userId,
+      user_id AS assignedBy,
+      horse_name AS horseName,
+      horse_code AS horseCode,
+      action_assigned AS action,
+      action_status AS status,
+      action_note AS notes,
+      DATE_FORMAT(assigned_at, '%Y-%m-%d %H:%i:%s') AS assignedAt,
+      reason_to_track AS reasonToTrack,
+      qualifying_reason AS qualifyingReason,
+      DATE_FORMAT(meetingDate, '%Y-%m-%d') AS meetingDate,
+      raceTitle,
+      courseName,
+      DATE_FORMAT(scheduledTimeOfRaceLocal, '%Y-%m-%d %H:%i:%s') AS scheduledTimeOfRaceLocal,
+      performanceRating,
+      sireName,
+      damName,
+      ownerFullName,
+      trainerFullName,
+      horseAge,
+      horseGender,
+      horseColour,
+      silkCode,
+      source,
+      DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS createdAt,
+      DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updatedAt
+    FROM review_horse_actions
+    ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY assigned_at DESC, id DESC
+    LIMIT ${limit}
+  `;
+
+  db.query(sql, params, (err, rows) => {
+    if (err) {
+      console.error("❌ Error listing review_horse_actions:", err);
+      return res.status(500).json({ error: "Database error", details: err.message });
+    }
+    return res.status(200).json({ data: rows });
+  });
+});
+
 app.get('/api/:tableName', (req, res) => {
   const { tableName } = req.params;
   const {
