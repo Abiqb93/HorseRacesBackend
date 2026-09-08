@@ -11008,6 +11008,109 @@ if (String(process.env.FRANCE_CRON || "").toLowerCase() === "on") {
   console.log("[france] schedule off — set FRANCE_CRON=on to enable");
 }
 
+// ---------------------------------------------------------------------------
+// BlandfordAI - the conversational surface over the platform's data.
+//
+// The browser holds no credentials and talks to no model provider: it POSTs a
+// conversation here, and this process runs the model with a read-only view of
+// the warehouse. The Anthropic key lives in this service's environment and
+// never leaves it.
+//
+// The reply streams back as Server-Sent Events rather than one JSON body,
+// because a question that needs four queries answered takes tens of seconds
+// and a spinner for that long reads as a hang.
+//
+// The agent module is loaded on first use, the way the France and reports
+// modules are, so a service without the key set still boots and serves every
+// other route.
+// ---------------------------------------------------------------------------
+const loadAiAgent = () => import("./ai/agent.mjs");
+
+/** What the AI can read: the same tables the REST API exposes. */
+const aiAllowedTables = () => validTables;
+
+app.get("/api/ai/status", async (req, res) => {
+  try {
+    const agent = await loadAiAgent();
+    res.json({
+      available: Boolean(process.env.ANTHROPIC_API_KEY),
+      model: agent.MODEL,
+      tables: aiAllowedTables().length,
+      limits: agent.AI_LIMITS,
+    });
+  } catch (err) {
+    res.status(500).json({ available: false, error: err.message });
+  }
+});
+
+app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
+  const { messages, userId } = req.body || {};
+
+  if (!Array.isArray(messages) || !messages.length) {
+    return res.status(400).json({ error: "messages must be a non-empty array" });
+  }
+  // A conversation the client keeps growing is the only thing that grows this
+  // request, so it is bounded here rather than left to the model's context.
+  if (messages.length > 100) {
+    return res.status(400).json({ error: "Conversation too long; start a new chat." });
+  }
+  for (const m of messages) {
+    if (!m || (m.role !== "user" && m.role !== "assistant")) {
+      return res.status(400).json({ error: "each message needs role 'user' or 'assistant'" });
+    }
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    // Railway's edge buffers proxied responses by default, which would hold
+    // the whole stream back until the turn ended.
+    "X-Accel-Buffering": "no",
+  });
+
+  const send = (event, data) => {
+    if (res.writableEnded) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data ?? {})}\n\n`);
+  };
+
+  // A closed tab should stop the work, not leave a turn running against the
+  // model until it finishes talking to itself.
+  const abort = new AbortController();
+  req.on("close", () => abort.abort());
+
+  // Some proxies drop an idle connection; a comment line every 15s is not an
+  // event to the client and keeps it open while the model thinks.
+  const keepAlive = setInterval(() => {
+    if (!res.writableEnded) res.write(": keep-alive\n\n");
+  }, 15000);
+
+  try {
+    const agent = await loadAiAgent();
+    const result = await agent.runTurn({
+      messages,
+      userId,
+      db,
+      allowedTables: aiAllowedTables(),
+      emit: send,
+      signal: abort.signal,
+    });
+    send("done", { stopped: result.stopped, usage: result.usage });
+  } catch (err) {
+    // A closed tab aborts the request mid-turn. That is the normal way a
+    // conversation ends, not a failure, and there is nobody left to tell.
+    if (abort.signal.aborted || err?.name === "APIUserAbortError") {
+      // nothing to report
+    } else {
+      console.error("[ai] turn failed:", err);
+      send("error", { message: err?.message || "The assistant failed to answer." });
+    }
+  } finally {
+    clearInterval(keepAlive);
+    if (!res.writableEnded) res.end();
+  }
+});
+
 // Start the server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
