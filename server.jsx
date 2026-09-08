@@ -4651,6 +4651,24 @@ app.get("/api/hot_form", async (req, res) => {
 //
 // Optional filters: userId, horseName, status, action, limit.
 // -----------------------------------------------------
+// The same person has signed actions under more than one id as the login
+// changed: "Tom" and "TomWilson" are one person, "Stuart" and "StuartBoman"
+// another. Filtering on the exact id alone hid a user's own older actions
+// from them. Each group is matched as a whole, in either direction, so it
+// does not matter which spelling is asked for or which one was stored.
+// Add a row here if another id appears; nothing else needs to change.
+const USER_ID_ALIASES = [
+  ["tom", "tomwilson"],
+  ["stuart", "stuartboman"],
+];
+
+const userIdGroup = (value) => {
+  const wanted = String(value || "").trim().toLowerCase();
+  if (!wanted) return [];
+  const group = USER_ID_ALIASES.find((names) => names.includes(wanted));
+  return group ? [...group] : [wanted];
+};
+
 app.get("/api/review_horse_actions", (req, res) => {
   const { userId, horseName, status, action } = req.query;
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 1000, 1), 5000);
@@ -4658,9 +4676,10 @@ app.get("/api/review_horse_actions", (req, res) => {
   const where = [];
   const params = [];
 
-  if (String(userId || "").trim()) {
-    where.push("LOWER(TRIM(user_id)) = LOWER(TRIM(?))");
-    params.push(String(userId).trim());
+  const userIds = userIdGroup(userId);
+  if (userIds.length) {
+    where.push(`LOWER(TRIM(user_id)) IN (${userIds.map(() => "?").join(", ")})`);
+    params.push(...userIds);
   }
   if (String(horseName || "").trim()) {
     where.push("LOWER(TRIM(horse_name)) = LOWER(TRIM(?))");
