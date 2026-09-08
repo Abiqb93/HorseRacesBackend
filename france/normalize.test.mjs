@@ -9,7 +9,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blackTypeFrom, normalizeCourseName, toFurlongs, normalizeRunner, marginToLengths, goingToEnglish, formRunCount, careerRecordOf, deriveRaceFields, canonicalBreedingCountry } from "./normalize.mjs";
+import { blackTypeFrom, normalizeCourseName, toFurlongs, normalizeRunner, marginToLengths, goingToEnglish, formRunCount, careerRecordOf, deriveRaceFields, canonicalBreedingCountry , parisLocalIso } from "./normalize.mjs";
 import { matchHorse, DECISION, enrichmentFor } from "./matchHorse.mjs";
 
 test("black type reads categorieParticularite first", () => {
@@ -389,4 +389,25 @@ test("writes the breed in one vocabulary whichever source wrote the row", async 
   assert.equal(canonicalBreed("Trotteur Francais"), "TROTTEUR FRANCAIS");
   assert.equal(canonicalBreed(null), null);
   assert.equal(canonicalBreed(""), null);
+});
+
+test("files a French off-time in Paris local, the way every other row is written", () => {
+  // The rest of APIData_Table2 stores the local race time and the front end
+  // prints it verbatim, so reading PMU's epoch as UTC put every French card
+  // two hours early in summer -- the Qatar Prix la Rochette read 11:58 on its
+  // French row and 13:58 on its Timeform one, and the three races of that
+  // card Timeform does not rate came out ahead of races they ran after.
+  assert.equal(parisLocalIso(Date.parse("2026-09-06T11:58:00Z")), "2026-09-06T13:58:00");
+
+  // CET, not CEST: the offset is one hour in winter, so it cannot be a
+  // constant.
+  assert.equal(parisLocalIso(Date.parse("2026-01-15T13:05:00Z")), "2026-01-15T14:05:00");
+
+  // No trailing Z. The value is a local clock reading, and labelling it UTC
+  // is what caused the fault in the first place.
+  assert.ok(!parisLocalIso(Date.parse("2026-09-06T11:58:00Z")).endsWith("Z"));
+
+  assert.equal(parisLocalIso(null), null);
+  assert.equal(parisLocalIso(undefined), null);
+  assert.equal(parisLocalIso("not a time"), null);
 });
