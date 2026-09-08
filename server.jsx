@@ -430,10 +430,52 @@ app.get('/api/sire_age_reports', (req, res) => {
 });
 
 
-app.get('/api/ClosingEntries', (req, res) => {
-  const query = `SELECT * FROM ClosingEntries`;
+/**
+ * "From this date onwards", for the race feeds the dashboard reads.
+ *
+ * The dashboard's notification panel pulls six tables whole and then keeps
+ * only the rows dated today or later. FranceRaceRecords alone is 30,259 rows
+ * and 26 MB of JSON for the 197 rows it can use; ClosingEntries and
+ * DeclarationsTracking stopped updating in 2025, so every one of their 2,247
+ * rows is discarded after being downloaded and parsed.
+ *
+ * ?from=YYYY-MM-DD moves that filter into the query. It is opt-in: the France
+ * and Closing pages read the same routes for their history and must keep
+ * getting all of it, so an absent or malformed `from` changes nothing.
+ *
+ * Two date shapes are in these columns and both have to be read. Most rows
+ * carry the scraped English form, "Tuesday 8  September 2026", double space
+ * and all; RacesAndEntries also holds 1,265 rows written as "2026-09-08".
+ * A row whose date parses as neither is KEPT -- the client's own parser is
+ * more forgiving than MySQL's, and a filter should not silently drop rows it
+ * cannot read.
+ */
+const raceDateExpr = (column) => {
+  const col = `\`${column}\``;
+  return `COALESCE(STR_TO_DATE(REPLACE(${col}, '  ', ' '), '%W %e %M %Y'), STR_TO_DATE(${col}, '%Y-%m-%d'))`;
+};
 
-  db.query(query, (err, results) => {
+const fromDateCondition = (req, column) => {
+  const from = String(req.query.from || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) return null;
+  const expr = raceDateExpr(column);
+  return { sql: `(${expr} IS NULL OR ${expr} >= ?)`, params: [from] };
+};
+
+/** Assemble a SELECT with however many of the conditions actually applied. */
+const whereOf = (conditions) => {
+  const live = conditions.filter(Boolean);
+  return {
+    sql: live.length ? ` WHERE ${live.map((c) => c.sql).join(' AND ')}` : '',
+    params: live.flatMap((c) => c.params),
+  };
+};
+
+app.get('/api/ClosingEntries', (req, res) => {
+  const where = whereOf([fromDateCondition(req, 'date')]);
+  const query = `SELECT * FROM ClosingEntries${where.sql}`;
+
+  db.query(query, where.params, (err, results) => {
     if (err) {
       console.error("Error fetching ClosingEntries:", err);
       return res.status(500).json({ error: "Database error" });
@@ -1037,9 +1079,10 @@ app.patch('/api/foalSale/:sheet/:sireName/star', (req, res) => {
 
 
 app.get('/api/FranceRaceRecords', (req, res) => {
-  const query = `SELECT * FROM FranceRaceRecords`;
+  const where = whereOf([fromDateCondition(req, 'Date')]);
+  const query = `SELECT * FROM FranceRaceRecords${where.sql}`;
 
-  db.query(query, (err, results) => {
+  db.query(query, where.params, (err, results) => {
     if (err) {
       console.error("Error fetching FranceRaceRecords:", err);
       return res.status(500).json({ error: "Database error" });
@@ -1050,9 +1093,10 @@ app.get('/api/FranceRaceRecords', (req, res) => {
 });
 
 app.get('/api/IrelandRaceRecords', (req, res) => {
-  const query = `SELECT * FROM IrelandRaceRecords`;
+  const where = whereOf([fromDateCondition(req, 'Date')]);
+  const query = `SELECT * FROM IrelandRaceRecords${where.sql}`;
 
-  db.query(query, (err, results) => {
+  db.query(query, where.params, (err, results) => {
     if (err) {
       console.error("Error fetching IrelandRaceRecords:", err);
       return res.status(500).json({ error: "Database error" });
@@ -1629,14 +1673,18 @@ app.get('/api/RacesAndEntries', (req, res) => {
   // without this every page load pulled the whole table - 4,399 rows and
   // 3.5 MB - to find the handful of rows somebody had tagged.
   const taggedOnly = ["1", "true", "yes"].includes(String(req.query.tagged || "").toLowerCase());
-  const query = taggedOnly
-    ? `SELECT * FROM RacesAndEntries
-       WHERE COALESCE(TRIM(taggedBy), '') <> ''
-          OR COALESCE(TRIM(taggedUser), '') <> ''
-          OR COALESCE(TRIM(tagComments), '') <> ''`
-    : `SELECT * FROM RacesAndEntries`;
+  const tagged = taggedOnly
+    ? {
+        sql: `(COALESCE(TRIM(taggedBy), '') <> ''
+            OR COALESCE(TRIM(taggedUser), '') <> ''
+            OR COALESCE(TRIM(tagComments), '') <> '')`,
+        params: [],
+      }
+    : null;
+  const where = whereOf([tagged, fromDateCondition(req, 'FixtureDate')]);
+  const query = `SELECT * FROM RacesAndEntries${where.sql}`;
 
-  db.query(query, (err, results) => {
+  db.query(query, where.params, (err, results) => {
     if (err) {
       console.error("Error fetching ClosingEntries:", err);
       return res.status(500).json({ error: "Database error" });
@@ -1670,9 +1718,10 @@ app.get('/api/racingpost', (req, res) => {
 });
 
 app.get('/api/EntriesTracking', (req, res) => {
-  const query = `SELECT * FROM EntriesTracking`;
+  const where = whereOf([fromDateCondition(req, 'Date')]);
+  const query = `SELECT * FROM EntriesTracking${where.sql}`;
 
-  db.query(query, (err, results) => {
+  db.query(query, where.params, (err, results) => {
     if (err) {
       console.error("Error fetching EntriesTracking:", err);
       return res.status(500).json({ error: "Database error" });
@@ -1684,9 +1733,10 @@ app.get('/api/EntriesTracking', (req, res) => {
 
 
 app.get('/api/DeclarationsTracking', (req, res) => {
-  const query = `SELECT * FROM DeclarationsTracking`;
+  const where = whereOf([fromDateCondition(req, 'Date')]);
+  const query = `SELECT * FROM DeclarationsTracking${where.sql}`;
 
-  db.query(query, (err, results) => {
+  db.query(query, where.params, (err, results) => {
     if (err) {
       console.error("Error fetching DeclarationsTracking:", err);
       return res.status(500).json({ error: "Database error" });
