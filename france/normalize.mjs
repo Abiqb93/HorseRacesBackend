@@ -14,6 +14,41 @@
 const METRES_PER_FURLONG = 201.168;
 
 /**
+ * The off-time, written the way the rest of the table writes it.
+ *
+ * Every other row in APIData_Table2 stores the LOCAL race time in
+ * `scheduledTimeOfRaceLocal` -- York's last race on 6 Sep 2026 is filed as
+ * 17:00, which is 16:00 UTC -- and the front end renders the field verbatim.
+ * PMU gives `heureDepart` as epoch milliseconds, and passing that through
+ * `toISOString()` filed French racing in UTC instead: the same Qatar Prix la
+ * Rochette read 13:58 on its Timeform row and 11:58 on its French one, so
+ * every French off-time on the site ran two hours early in summer and one in
+ * winter, and a card whose races Timeform does not rate came out in the wrong
+ * order.
+ *
+ * France Galop's own scrape already writes Paris local (normalizeFG.mjs), so
+ * this brings the two French sources into agreement as well.
+ */
+const PARIS_PARTS = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/Paris",
+  year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", second: "2-digit",
+  hour12: false,
+});
+
+export function parisLocalIso(value) {
+  if (value === null || value === undefined) return null;
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) return null;
+  const p = {};
+  for (const { type, value: v } of PARIS_PARTS.formatToParts(at)) p[type] = v;
+  // en-GB renders midnight as 24; the ISO form wants 00 on the same date,
+  // and Paris local dates never cross back over midnight from a French card.
+  const hour = p.hour === "24" ? "00" : p.hour;
+  return `${p.year}-${p.month}-${p.day}T${hour}:${p.minute}:${p.second}`;
+}
+
+/**
  * The breeding-country codes the platform already uses, which are Timeform's
  * and are not any one standard: IRE, GBR, FR, USA, JPN, GER, AUS, NZ, DEN,
  * SAF, ITY, SWE. Mostly ISO-3, but France is FR and New Zealand NZ.
@@ -433,7 +468,7 @@ export function normalizeRunner({ meeting, course, participant, isoDate }) {
     distanceMetres: course.distance ?? null,
     going,
     goingValue,
-    scheduledTimeOfRaceLocal: course.heureDepart ? new Date(course.heureDepart).toISOString() : null,
+    scheduledTimeOfRaceLocal: parisLocalIso(course.heureDepart),
     numberOfRunners: course.nombreDeclaresPartants ?? null,
     prizeFund: course.montantPrix ?? null, // euros
     prizeFundWinner: course.montantOffert1er ?? null, // euros
