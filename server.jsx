@@ -11076,8 +11076,16 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
 
   // A closed tab should stop the work, not leave a turn running against the
   // model until it finishes talking to itself.
+  //
+  // Watch the RESPONSE, not the request. Since Node 16 an IncomingMessage
+  // emits "close" as soon as its body has been read, which for a POST is
+  // immediately -- aborting every turn before it started and returning an
+  // empty 200. res "close" fires either when the reply is finished or when the
+  // connection is dropped, and writableEnded tells those two apart.
   const abort = new AbortController();
-  req.on("close", () => abort.abort());
+  res.on("close", () => {
+    if (!res.writableEnded) abort.abort();
+  });
 
   // Some proxies drop an idle connection; a comment line every 15s is not an
   // event to the client and keeps it open while the model thinks.
