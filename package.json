@@ -3,14 +3,15 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "node --test france/*.test.mjs",
+    "test": "node --test france/*.test.mjs ai/*.test.mjs",
     "start": "node server.jsx",
     "france:schema": "node france/cli.mjs schema",
     "france:ingest": "node france/cli.mjs ingest",
     "france:backfill": "node france/cli.mjs backfill",
     "france:reconcile": "node france/cli.mjs reconcile",
     "france:stats": "node france/cli.mjs stats",
-    "france:test": "node --test france/normalize.test.mjs france/franceGalop.test.mjs france/mergeSources.test.mjs"
+    "france:test": "node --test france/normalize.test.mjs france/franceGalop.test.mjs france/mergeSources.test.mjs",
+    "ai:test": "node --test ai/*.test.mjs"
   },
   "keywords": [],
   "author": "",
@@ -21,6 +22,7 @@
     "npm": ">=10"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.124.0",
     "bcrypt": "^6.0.0",
     "cheerio": "^1.2.0",
     "compression": "^1.7.5",
