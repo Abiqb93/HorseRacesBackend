@@ -1624,7 +1624,17 @@ app.get("/api/RacesAndEntries/horse/:horseName", (req, res) => {
 
 
 app.get('/api/RacesAndEntries', (req, res) => {
-  const query = `SELECT * FROM RacesAndEntries`;
+  // ?tagged=1 returns only the entries carrying a tag. The notification bell
+  // needs nothing else, and it runs on every page in the dashboard layout, so
+  // without this every page load pulled the whole table - 4,399 rows and
+  // 3.5 MB - to find the handful of rows somebody had tagged.
+  const taggedOnly = ["1", "true", "yes"].includes(String(req.query.tagged || "").toLowerCase());
+  const query = taggedOnly
+    ? `SELECT * FROM RacesAndEntries
+       WHERE COALESCE(TRIM(taggedBy), '') <> ''
+          OR COALESCE(TRIM(taggedUser), '') <> ''
+          OR COALESCE(TRIM(tagComments), '') <> ''`
+    : `SELECT * FROM RacesAndEntries`;
 
   db.query(query, (err, results) => {
     if (err) {
@@ -2968,6 +2978,38 @@ app.get('/api/APIData_Table2/horse', (req, res) => {
     label: `horseName=${horseName}`,
     whereParts: ["a.horseName = ?"],
     params: [String(horseName).trim()],
+    startDate,
+    endDate,
+    limit,
+    offset,
+    order,
+  });
+});
+
+// Career rows for several horses in one request. The Review List needs these
+// for every horse it shows and was asking one horse at a time: 41 requests
+// pooled twelve at a time, each taking the best part of a second. Same rows,
+// same shape and the same query helper as /api/APIData_Table2/horse, so the
+// client groups the response by horseName and nothing else changes.
+app.get('/api/APIData_Table2/horses', (req, res) => {
+  const { startDate, endDate, order = "desc" } = req.query;
+  const { limit, offset } = getApiDataPaging(req);
+
+  const names = String(req.query.horseNames || "")
+    .split(",")
+    .map((n) => n.trim())
+    .filter(Boolean)
+    .slice(0, 300);
+
+  if (!names.length) {
+    return res.status(400).json({ error: "Missing required query parameter: horseNames" });
+  }
+
+  return runApiDataTable2Query({
+    res,
+    label: `horseNames=${names.length} names`,
+    whereParts: [`a.horseName IN (${names.map(() => "?").join(", ")})`],
+    params: names,
     startDate,
     endDate,
     limit,
