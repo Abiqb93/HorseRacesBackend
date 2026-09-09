@@ -11193,6 +11193,11 @@ app.get("/api/ai/status", async (req, res) => {
       model: agent.MODEL,
       tables: aiAllowedTables().length,
       limits: agent.AI_LIMITS,
+      // Reported so a key that is set but unusable is visible here rather than
+      // only as a 400 on somebody's first question. Whether the key itself
+      // carries a workspace is not something this service can see, so this
+      // says what is configured, not whether it is sufficient.
+      workspace: process.env.ANTHROPIC_WORKSPACE_ID ? "set" : "not set",
     });
   } catch (err) {
     res.status(500).json({ available: false, error: err.message });
@@ -11284,8 +11289,10 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
     if (!res.writableEnded) res.write(": keep-alive\n\n");
   }, 15000);
 
+  let agentModule = null;
   try {
     const agent = await loadAiAgent();
+    agentModule = agent;
     const result = await agent.runTurn({
       messages,
       userId,
@@ -11302,7 +11309,11 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
       // nothing to report
     } else {
       console.error("[ai] turn failed:", err);
-      send("error", { message: err?.message || "The assistant failed to answer." });
+      send("error", {
+        message: agentModule
+          ? agentModule.explainAgentError(err)
+          : err?.message || "The assistant failed to answer.",
+      });
     }
   } finally {
     clearInterval(keepAlive);

@@ -422,10 +422,46 @@ You can only read. There is no tool here that changes anything - you cannot add 
 You cannot see the wider internet, only this platform's data.`;
 }
 
+/**
+ * Turn a configuration failure into a sentence that says what to do about it.
+ *
+ * The raw API message for an unscoped key is accurate and useless to the person
+ * who sees it: it names a header, in a product that has none, on the screen
+ * where they asked about a horse. Everything else is passed through unchanged -
+ * inventing friendly text for errors we have not seen hides real ones.
+ */
+export function explainAgentError(err) {
+  const raw = String(err?.message || "");
+  if (/not scoped to a workspace|anthropic-workspace-id/i.test(raw)) {
+    return (
+      "BlandfordAI's API key is not tied to a workspace, so Anthropic will not " +
+      "run the request. Either set ANTHROPIC_WORKSPACE_ID on the backend to the " +
+      "workspace the key should bill to, or replace the key with one created " +
+      "inside a workspace, then redeploy."
+    );
+  }
+  if (/credit balance|insufficient.*quota|billing/i.test(raw)) {
+    return "Anthropic refused the request for a billing reason: " + raw;
+  }
+  return raw || "The assistant failed to answer.";
+}
+
 /* ------------------------------------------------------------------- loop */
 
 let client = null;
 
+/**
+ * An Anthropic API key belongs either to one workspace or to none. A key with
+ * no workspace cannot infer which one to bill and rejects every request with
+ *
+ *   "This API key is not scoped to a workspace, so this request must include
+ *    the anthropic-workspace-id header"
+ *
+ * which arrives as a 400 on the first question anyone asks, long after the key
+ * looked correctly configured. ANTHROPIC_WORKSPACE_ID names the workspace for
+ * an unscoped key; a key that is already scoped to one needs nothing and
+ * ignores the variable if it is set anyway.
+ */
 export function anthropicClient() {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error(
@@ -433,8 +469,18 @@ export function anthropicClient() {
       "Add it to the backend's environment variables and redeploy.",
     );
   }
-  if (!client) client = new Anthropic();
+  if (!client) {
+    const workspace = String(process.env.ANTHROPIC_WORKSPACE_ID || "").trim();
+    client = new Anthropic(
+      workspace ? { defaultHeaders: { "anthropic-workspace-id": workspace } } : {},
+    );
+  }
   return client;
+}
+
+/** Cleared between tests, and after a configuration change in a long-lived process. */
+export function resetAnthropicClient() {
+  client = null;
 }
 
 /**

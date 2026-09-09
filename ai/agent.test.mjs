@@ -207,3 +207,70 @@ test("the advisor brief tells it to look for who else is on it", () => {
   assert.match(p, /team_activity/);
   assert.match(p, /Do not manufacture a connection/);
 });
+
+/* ------------------------------------------------------ workspace scoping */
+
+test("an unscoped key is given the workspace header, when one is configured", async () => {
+  const { anthropicClient, resetAnthropicClient } = await import("./agent.mjs");
+  const before = { key: process.env.ANTHROPIC_API_KEY, ws: process.env.ANTHROPIC_WORKSPACE_ID };
+  try {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    process.env.ANTHROPIC_WORKSPACE_ID = "wrkspc_abc123";
+    resetAnthropicClient();
+    const c = anthropicClient();
+    // header names are matched case-insensitively by the SDK; ours is lower-case
+    const headers = c._options?.defaultHeaders || {};
+    assert.equal(headers["anthropic-workspace-id"], "wrkspc_abc123");
+  } finally {
+    process.env.ANTHROPIC_API_KEY = before.key;
+    if (before.ws === undefined) delete process.env.ANTHROPIC_WORKSPACE_ID;
+    else process.env.ANTHROPIC_WORKSPACE_ID = before.ws;
+    resetAnthropicClient();
+  }
+});
+
+test("a key that needs no workspace is not given an empty header", async () => {
+  const { anthropicClient, resetAnthropicClient } = await import("./agent.mjs");
+  const before = { key: process.env.ANTHROPIC_API_KEY, ws: process.env.ANTHROPIC_WORKSPACE_ID };
+  try {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    process.env.ANTHROPIC_WORKSPACE_ID = "   ";  // blank in the dashboard is not a value
+    resetAnthropicClient();
+    const c = anthropicClient();
+    const headers = c._options?.defaultHeaders || {};
+    assert.equal(headers["anthropic-workspace-id"], undefined);
+  } finally {
+    process.env.ANTHROPIC_API_KEY = before.key;
+    if (before.ws === undefined) delete process.env.ANTHROPIC_WORKSPACE_ID;
+    else process.env.ANTHROPIC_WORKSPACE_ID = before.ws;
+    resetAnthropicClient();
+  }
+});
+
+test("a missing key still fails with the sentence that says what to do", async () => {
+  const { anthropicClient, resetAnthropicClient } = await import("./agent.mjs");
+  const before = process.env.ANTHROPIC_API_KEY;
+  try {
+    delete process.env.ANTHROPIC_API_KEY;
+    resetAnthropicClient();
+    assert.throws(() => anthropicClient(), /ANTHROPIC_API_KEY is not set/);
+  } finally {
+    if (before === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = before;
+    resetAnthropicClient();
+  }
+});
+
+test("the workspace error is translated into something actionable", async () => {
+  const { explainAgentError } = await import("./agent.mjs");
+  const real = "This API key is not scoped to a workspace, so this request must include the anthropic-workspace-id header with the ID of the workspace to use.";
+  const out = explainAgentError(new Error(real));
+  assert.match(out, /ANTHROPIC_WORKSPACE_ID/);
+  assert.doesNotMatch(out, /header/, "the reader has no way to set a header");
+});
+
+test("an error we have not seen is passed through, not dressed up", async () => {
+  const { explainAgentError } = await import("./agent.mjs");
+  assert.equal(explainAgentError(new Error("connection reset")), "connection reset");
+  assert.match(explainAgentError({}), /failed to answer/);
+});
