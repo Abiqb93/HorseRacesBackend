@@ -3016,18 +3016,37 @@ const runApiDataTable2Query = ({
 };
 
 app.get('/api/APIData_Table2/horse', (req, res) => {
-  const { horseName, startDate, endDate, order = "desc" } = req.query;
+  const { horseName, horseCode, startDate, endDate, order = "desc" } = req.query;
   const { limit, offset } = getApiDataPaging(req);
 
   if (!horseName || !String(horseName).trim()) {
     return res.status(400).json({ error: "Missing required query parameter: horseName" });
   }
 
+  // A name is not a horse. Across 1,042 days of this table, 2,535 of 117,003
+  // names -- about one in forty -- belong to more than one animal: City Of Gold
+  // is a 2yo Wootton Bassett colt of Aidan O'Brien's (horseCode 651466) and
+  // also a French horse of J. Boisnard's that ran at Pornichet in 2024
+  // (602533). Asked for the name alone this route returns both, and a caller
+  // that does not separate them shows one career made of two horses.
+  //
+  // horseCode is the warehouse's per-horse id. Passing it narrows the answer to
+  // one horse; without it the behaviour is unchanged, because callers that do
+  // their own splitting need every row to split.
+  const whereParts = ["a.horseName = ?"];
+  const params = [String(horseName).trim()];
+
+  const code = String(horseCode ?? "").trim();
+  if (code) {
+    whereParts.push("a.horseCode = ?");
+    params.push(code);
+  }
+
   return runApiDataTable2Query({
     res,
-    label: `horseName=${horseName}`,
-    whereParts: ["a.horseName = ?"],
-    params: [String(horseName).trim()],
+    label: `horseName=${horseName}${code ? ` horseCode=${code}` : ""}`,
+    whereParts,
+    params,
     startDate,
     endDate,
     limit,
