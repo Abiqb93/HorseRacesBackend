@@ -123,3 +123,87 @@ test("the system prompt tells the model what it is and cannot do", () => {
   assert.match(p, /only read/i);
   assert.match(p, /describe_table/);
 });
+
+/* ------------------------------------------------------- team_activity */
+
+/** A stub that also records the parameters, which is where the subject goes. */
+function paramDb(rows = []) {
+  const calls = [];
+  return {
+    calls,
+    query(sql, params, cb) {
+      const done = typeof params === "function" ? params : cb;
+      calls.push({ sql, params: Array.isArray(params) ? params : [] });
+      done(null, rows);
+    },
+  };
+}
+
+const teamCall = (input, db, userId) =>
+  runTool({ name: "team_activity", input }, { db, allowedTables: TABLES, userId });
+
+test("team_activity names the colleague who asked, and separates the reader's own question", async () => {
+  const db = paramDb([
+    { user_id: "Stuart", question: "How has Paborus been running?", asked_at: new Date() },
+    { user_id: "Richard", question: "Paborus for the Abbaye?", asked_at: new Date() },
+  ]);
+  const out = await teamCall({ subject: "Paborus (FR)" }, db, "Richard");
+  const body = JSON.parse(out.content);
+
+  assert.equal(body.colleagues.length, 1);
+  assert.equal(body.colleagues[0].asked_by, "Stuart");
+  assert.equal(body.your_own_earlier_questions.length, 1);
+  assert.deepEqual(body.who, [{ asked_by: "Stuart", times: 1, most_recent: "today" }]);
+});
+
+test("the subject reaches SQL as a bound parameter, never inside the statement", async () => {
+  const db = paramDb();
+  await teamCall({ subject: "Kodiac'; DROP TABLE x; --" }, db, "Richard");
+  const [{ sql, params }] = db.calls;
+  assert.ok(!sql.includes("DROP"), "the subject was interpolated into the SQL");
+  assert.ok(sql.includes("LIKE ?"));
+  assert.ok(params[0].includes("Kodiac"));
+});
+
+test("a LIKE wildcard in a name cannot act as a wildcard", async () => {
+  // normalisation drops % and _ before the query is built, so they never
+  // reach LIKE as metacharacters; the escape behind it is belt and braces
+  const db = paramDb();
+  await teamCall({ subject: "100% Sure" }, db, "Richard");
+  assert.equal(db.calls[0].params[0], "%100 Sure%");
+  await teamCall({ subject: "a_b" }, db, "Richard");
+  assert.equal(db.calls[1].params[0], "%a b%");
+});
+
+test("a subject too short to mean anything is refused rather than matching everything", async () => {
+  const db = paramDb([{ user_id: "Stuart", question: "anything", asked_at: new Date() }]);
+  const out = await teamCall({ subject: "a" }, db, "Richard");
+  assert.equal(out.is_error, true);
+  assert.equal(db.calls.length, 0, "it should not have queried at all");
+});
+
+test("no subject asks what the desk has been asking generally", async () => {
+  const db = paramDb();
+  await teamCall({}, db, "Richard");
+  assert.ok(!db.calls[0].sql.includes("LIKE"));
+});
+
+test("the look-back window is clamped to something sane", async () => {
+  const db = paramDb();
+  await teamCall({ subject: "Kodiac", days: 99999 }, db, "Richard");
+  assert.equal(db.calls[0].params[1], 365);
+  await teamCall({ subject: "Kodiac", days: -5 }, db, "Richard");
+  assert.equal(db.calls[1].params[1], 90);
+});
+
+test("nothing found tells the model to stay quiet rather than report the absence", async () => {
+  const db = paramDb([]);
+  const body = JSON.parse((await teamCall({ subject: "Kodiac" }, db, "Richard")).content);
+  assert.match(body.note, /Say nothing about it/);
+});
+
+test("the advisor brief tells it to look for who else is on it", () => {
+  const p = systemPrompt({ userId: "Richard", today: "2026-09-09" });
+  assert.match(p, /team_activity/);
+  assert.match(p, /Do not manufacture a connection/);
+});

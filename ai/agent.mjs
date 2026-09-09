@@ -16,6 +16,9 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { validateSelect } from "./sqlGuard.mjs";
+import {
+  TEAM_MEMORY_TABLE, normaliseSubject, isSearchableSubject, splitByAsker, askerSummary,
+} from "./teamMemory.mjs";
 
 export const MODEL = "claude-opus-5";
 
@@ -135,6 +138,29 @@ export const TOOLS = [
     },
   },
   {
+    name: "team_activity",
+    description:
+      "What the rest of the team has recently asked BlandfordAI about. Pass a subject - a horse, " +
+      "sire, dam, trainer, owner, course or sale - and get back the questions colleagues put about " +
+      "it, who asked, and when; omit the subject to see what the desk has been asking about lately. " +
+      "This is the one thing you know that the warehouse does not, so call it whenever a question " +
+      "names something specific. Two people working the same horse from different ends is worth " +
+      "saying out loud.",
+    input_schema: {
+      type: "object",
+      properties: {
+        subject: {
+          type: "string",
+          description:
+            "The name to look for, as written - country suffixes and case do not matter. " +
+            "Leave empty for the desk's recent questions generally.",
+        },
+        days: { type: "number", description: "How far back to look. Default 90." },
+      },
+      required: [],
+    },
+  },
+  {
     name: "list_site_pages",
     description:
       "List the pages of the platform with their URLs, so you can link the user straight to the " +
@@ -237,7 +263,7 @@ async function fetchDataset(name, path) {
  * than exceptions: a rejected query is something the model should read and
  * correct, not something that should end the conversation.
  */
-export async function runTool({ name, input }, { db, allowedTables }) {
+export async function runTool({ name, input }, { db, allowedTables, userId }) {
   try {
     if (name === "list_tables") {
       return { content: JSON.stringify({ tables: [...allowedTables].sort() }) };
@@ -284,6 +310,56 @@ export async function runTool({ name, input }, { db, allowedTables }) {
       return { content: summariseValue(value) };
     }
 
+    if (name === "team_activity") {
+      const subject = normaliseSubject(input?.subject);
+      // A nonsense window must fall back to the default, not clamp to one day:
+      // days: -5 clamping to 1 would have the assistant report that nobody
+      // asked, when somebody did.
+      const asked = Number(input?.days);
+      const days = Number.isFinite(asked) && asked >= 1 ? Math.min(asked, 365) : 90;
+
+      if (subject && !isSearchableSubject(subject)) {
+        return {
+          content: `"${input?.subject}" is too short to search the team's questions with; it would match almost everything.`,
+          is_error: true,
+        };
+      }
+
+      // Parameterised, and LIKE-escaped: a horse called "100%" must not turn
+      // into a wildcard that matches the whole table.
+      const like = `%${subject.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+      const rows = subject
+        ? await runQuery(
+            db,
+            `SELECT user_id, question, asked_at FROM \`${TEAM_MEMORY_TABLE}\`
+             WHERE question LIKE ? AND asked_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+             ORDER BY asked_at DESC LIMIT 40`,
+            [like, days],
+          )
+        : await runQuery(
+            db,
+            `SELECT user_id, question, asked_at FROM \`${TEAM_MEMORY_TABLE}\`
+             WHERE asked_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+             ORDER BY asked_at DESC LIMIT 40`,
+            [days],
+          );
+
+      const { colleagues, you } = splitByAsker(rows, { userId });
+      return {
+        content: JSON.stringify({
+          subject: subject || null,
+          window_days: days,
+          colleagues,
+          who: askerSummary(colleagues),
+          your_own_earlier_questions: you,
+          note: colleagues.length
+            ? undefined
+            : "Nobody else on the desk has asked about this in the window. Say nothing about it rather than reporting the absence.",
+        }),
+        meta: { rowCount: rows.length },
+      };
+    }
+
     if (name === "list_site_pages") {
       return {
         content: JSON.stringify({
@@ -316,6 +392,16 @@ Before querying a table for the first time, call describe_table. The column name
 Aggregate in SQL. You get ${ROW_CAP} rows back at most, so COUNT, SUM, AVG and GROUP BY belong in the query, not in your head.
 
 When a query comes back empty, that is information: say so, say what you searched, and suggest what might be wrong (a name spelled differently, a date outside the range the table holds) rather than silently trying six more variations.
+
+## Advise, do not just answer
+
+You are the desk's adviser, not its query engine. The question asked is the starting point, not the boundary. Having answered it, say the thing a good colleague would say next - and only when you actually have it, never as a habit:
+
+- **Who else is on it.** You are the only one who can see what the whole desk has been asking. Whenever a question names something specific - a horse, a sire, a dam, a trainer, an owner, a course, a sale - call team_activity for it. If a colleague has asked about the same thing recently, say so plainly and early: "Stuart asked about him on Monday." Name the person, say when, and say what they were after. Two people working the same horse from different ends is worth knowing, and neither of them can see it without you.
+- **What connects.** Relate the answer to what this platform already holds about them: whether the horse is on their tracker and why, whether it is entered in the days ahead, whether it is in a sale catalogue, whether the sire came up in another question. A fact that connects to their own book is worth more than a better fact that does not.
+- **What follows.** If the answer implies a next step - a race that fits, a lot worth a look, a page that shows the rest - say it in a line. One recommendation, not a list of options.
+
+Do not manufacture a connection. If nobody else has asked and nothing else lines up, answer the question and stop; announcing that you found nothing is worse than saying nothing.
 
 ## What to say
 
@@ -402,7 +488,7 @@ export async function runTurn({ messages, userId, db, allowedTables, emit, signa
     const results = await Promise.all(
       calls.map(async (call) => {
         emit("tool", { id: call.id, name: call.name, input: call.input });
-        const out = await runTool(call, { db, allowedTables });
+        const out = await runTool(call, { db, allowedTables, userId });
         emit("tool_done", {
           id: call.id,
           name: call.name,
