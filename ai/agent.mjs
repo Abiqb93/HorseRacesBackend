@@ -16,6 +16,10 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { validateSelect } from "./sqlGuard.mjs";
+import { describeTables, LARGE_TABLES } from "./tableNotes.mjs";
+import {
+  TEAM_MEMORY_TABLE, normaliseSubject, isSearchableSubject, splitByAsker, askerSummary,
+} from "./teamMemory.mjs";
 
 export const MODEL = "claude-opus-5";
 
@@ -66,13 +70,26 @@ const SITE_PAGES = [
  * they are the same numbers the pages draw.
  */
 const DATASETS = {
+  // Sectionals, stride and pars
   "sectionals-index": ["/data/rtv/index.json", "Every meeting with sectional data: date, track, file"],
   "sectional-ratings": ["/data/rtv/ratings.json", "The sectional ratings board, by cohort and 7/30/90-day window"],
   "course-distance-pars": ["/data/rtv/pars.json", "Course-and-distance pars: winning time, finishing speed, stride"],
+  "cd-pars": ["/data/rtv/cd-pars.json", "Course-and-distance pars, per-furlong detail"],
+  "pars-history": ["/data/rtv/pars-history.json", "How pars have moved over time"],
+  "tfr-equivalent": ["/data/rtv/tfr-equivalent.json", "Timeform-equivalent conversion for sectional ratings"],
   "horse-sectional-runs": ["/data/rtv/horses.json", "Which meetings each horse has sectional data in"],
-  "stallions": ["/data/stallions/stallions.json", "The stallion roster with progeny statistics"],
+
+  // Stallions
+  "stallions": ["/data/stallions/index.json", "The stallion roster with progeny statistics, fees, crop and stage"],
   "precocity": ["/data/stallions/precocity.json", "Sire Precocity Index, category, par and judgement window"],
+  "early-indicators": ["/data/stallions/early.json", "Young-sire first and second season figures"],
+  "fee-model": ["/data/stallions/fee-model.json", "Stud fee history and the fee-change model"],
+  "stallion-population": ["/data/stallions/population.json", "The stallion population by year and market"],
+
+  // Prospects
   "prospects": ["/data/prospects/index.json", "The prospects index"],
+  "prospect-sires": ["/data/prospects/sires.json", "Sire-level summary across the prospects index"],
+  "royal-ascot": ["/data/prospects/royal-ascot.json", "Royal Ascot profiles and pipeline"],
 };
 
 /* ------------------------------------------------------------------ tools */
@@ -132,6 +149,29 @@ export const TOOLS = [
         },
       },
       required: ["name"],
+    },
+  },
+  {
+    name: "team_activity",
+    description:
+      "What the rest of the team has recently asked BlandfordAI about. Pass a subject - a horse, " +
+      "sire, dam, trainer, owner, course or sale - and get back the questions colleagues put about " +
+      "it, who asked, and when; omit the subject to see what the desk has been asking about lately. " +
+      "This is the one thing you know that the warehouse does not, so call it whenever a question " +
+      "names something specific. Two people working the same horse from different ends is worth " +
+      "saying out loud.",
+    input_schema: {
+      type: "object",
+      properties: {
+        subject: {
+          type: "string",
+          description:
+            "The name to look for, as written - country suffixes and case do not matter. " +
+            "Leave empty for the desk's recent questions generally.",
+        },
+        days: { type: "number", description: "How far back to look. Default 90." },
+      },
+      required: [],
     },
   },
   {
@@ -237,10 +277,19 @@ async function fetchDataset(name, path) {
  * than exceptions: a rejected query is something the model should read and
  * correct, not something that should end the conversation.
  */
-export async function runTool({ name, input }, { db, allowedTables }) {
+export async function runTool({ name, input }, { db, allowedTables, userId }) {
   try {
     if (name === "list_tables") {
-      return { content: JSON.stringify({ tables: [...allowedTables].sort() }) };
+      const tables = describeTables(allowedTables);
+      return {
+        content: JSON.stringify({
+          tables,
+          note:
+            "A table marked large will not survive an unbounded scan - bound it by date. " +
+            "A table with no note is one nobody has described yet; describe_table it before use.",
+        }),
+        meta: { rowCount: tables.length },
+      };
     }
 
     if (name === "describe_table") {
@@ -284,6 +333,56 @@ export async function runTool({ name, input }, { db, allowedTables }) {
       return { content: summariseValue(value) };
     }
 
+    if (name === "team_activity") {
+      const subject = normaliseSubject(input?.subject);
+      // A nonsense window must fall back to the default, not clamp to one day:
+      // days: -5 clamping to 1 would have the assistant report that nobody
+      // asked, when somebody did.
+      const asked = Number(input?.days);
+      const days = Number.isFinite(asked) && asked >= 1 ? Math.min(asked, 365) : 90;
+
+      if (subject && !isSearchableSubject(subject)) {
+        return {
+          content: `"${input?.subject}" is too short to search the team's questions with; it would match almost everything.`,
+          is_error: true,
+        };
+      }
+
+      // Parameterised, and LIKE-escaped: a horse called "100%" must not turn
+      // into a wildcard that matches the whole table.
+      const like = `%${subject.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+      const rows = subject
+        ? await runQuery(
+            db,
+            `SELECT user_id, question, asked_at FROM \`${TEAM_MEMORY_TABLE}\`
+             WHERE question LIKE ? AND asked_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+             ORDER BY asked_at DESC LIMIT 40`,
+            [like, days],
+          )
+        : await runQuery(
+            db,
+            `SELECT user_id, question, asked_at FROM \`${TEAM_MEMORY_TABLE}\`
+             WHERE asked_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+             ORDER BY asked_at DESC LIMIT 40`,
+            [days],
+          );
+
+      const { colleagues, you } = splitByAsker(rows, { userId });
+      return {
+        content: JSON.stringify({
+          subject: subject || null,
+          window_days: days,
+          colleagues,
+          who: askerSummary(colleagues),
+          your_own_earlier_questions: you,
+          note: colleagues.length
+            ? undefined
+            : "Nobody else on the desk has asked about this in the window. Say nothing about it rather than reporting the absence.",
+        }),
+        meta: { rowCount: rows.length },
+      };
+    }
+
     if (name === "list_site_pages") {
       return {
         content: JSON.stringify({
@@ -311,11 +410,27 @@ They are bloodstock professionals: agents, analysts and advisers who buy, sell, 
 
 Answer from the data, not from memory. Every figure you state must have come back from a tool in this same conversation. You have a read-only view of the platform's own warehouse and of the datasets its pages are built from; use them.
 
-Before querying a table for the first time, call describe_table. The column names and date formats here are genuinely not guessable - dates appear both as "2026-09-08" and as "Tuesday 8  September 2026" (with a double space), horse names carry country suffixes, and several tables hold the same concept under different column names. Look at the example rows.
+Get to the answer in few steps. list_tables gives you every table with a one-line note on what it holds - read it once and pick the one table that answers the question, rather than describing your way through the schema. Most questions about how a horse ran are answered by APIData_Table2 alone. Describe only the table you are about to query, and only the first time you use it in this conversation.
+
+Then describe_table it, because the column names and date formats here are genuinely not guessable - dates appear both as "2026-09-08" and as "Tuesday 8  September 2026" (with a double space), horse names carry country suffixes, and several tables hold the same concept under different column names. Look at the example rows.
 
 Aggregate in SQL. You get ${ROW_CAP} rows back at most, so COUNT, SUM, AVG and GROUP BY belong in the query, not in your head.
 
+Bound every query on a large table. list_tables marks which they are. A GROUP BY across the whole of one of them is a full scan and will hit the ${QUERY_TIMEOUT_MS / 1000}s timeout - the query is abandoned and you have spent a step for nothing. Put a date range in the WHERE clause, and filter on the column as it is stored rather than wrapping it in a function, which stops an index being used.
+
+If a step fails, do not repeat it in another form. A timed-out query will time out again; a dataset that 404s will 404 again. Change what you are asking for, or say what is not available.
+
 When a query comes back empty, that is information: say so, say what you searched, and suggest what might be wrong (a name spelled differently, a date outside the range the table holds) rather than silently trying six more variations.
+
+## Advise, do not just answer
+
+You are the desk's adviser, not its query engine. The question asked is the starting point, not the boundary. Having answered it, say the thing a good colleague would say next - and only when you actually have it, never as a habit:
+
+- **Who else is on it.** You are the only one who can see what the whole desk has been asking. Whenever a question names something specific - a horse, a sire, a dam, a trainer, an owner, a course, a sale - call team_activity for it. If a colleague has asked about the same thing recently, say so plainly and early: "Stuart asked about him on Monday." Name the person, say when, and say what they were after. Two people working the same horse from different ends is worth knowing, and neither of them can see it without you.
+- **What connects.** Relate the answer to what this platform already holds about them: whether the horse is on their tracker and why, whether it is entered in the days ahead, whether it is in a sale catalogue, whether the sire came up in another question. A fact that connects to their own book is worth more than a better fact that does not.
+- **What follows.** If the answer implies a next step - a race that fits, a lot worth a look, a page that shows the rest - say it in a line. One recommendation, not a list of options.
+
+Do not manufacture a connection. If nobody else has asked and nothing else lines up, answer the question and stop; announcing that you found nothing is worse than saying nothing.
 
 ## What to say
 
@@ -336,10 +451,46 @@ You can only read. There is no tool here that changes anything - you cannot add 
 You cannot see the wider internet, only this platform's data.`;
 }
 
+/**
+ * Turn a configuration failure into a sentence that says what to do about it.
+ *
+ * The raw API message for an unscoped key is accurate and useless to the person
+ * who sees it: it names a header, in a product that has none, on the screen
+ * where they asked about a horse. Everything else is passed through unchanged -
+ * inventing friendly text for errors we have not seen hides real ones.
+ */
+export function explainAgentError(err) {
+  const raw = String(err?.message || "");
+  if (/not scoped to a workspace|anthropic-workspace-id/i.test(raw)) {
+    return (
+      "BlandfordAI's API key is not tied to a workspace, so Anthropic will not " +
+      "run the request. Either set ANTHROPIC_WORKSPACE_ID on the backend to the " +
+      "workspace the key should bill to, or replace the key with one created " +
+      "inside a workspace, then redeploy."
+    );
+  }
+  if (/credit balance|insufficient.*quota|billing/i.test(raw)) {
+    return "Anthropic refused the request for a billing reason: " + raw;
+  }
+  return raw || "The assistant failed to answer.";
+}
+
 /* ------------------------------------------------------------------- loop */
 
 let client = null;
 
+/**
+ * An Anthropic API key belongs either to one workspace or to none. A key with
+ * no workspace cannot infer which one to bill and rejects every request with
+ *
+ *   "This API key is not scoped to a workspace, so this request must include
+ *    the anthropic-workspace-id header"
+ *
+ * which arrives as a 400 on the first question anyone asks, long after the key
+ * looked correctly configured. ANTHROPIC_WORKSPACE_ID names the workspace for
+ * an unscoped key; a key that is already scoped to one needs nothing and
+ * ignores the variable if it is set anyway.
+ */
 export function anthropicClient() {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error(
@@ -347,8 +498,18 @@ export function anthropicClient() {
       "Add it to the backend's environment variables and redeploy.",
     );
   }
-  if (!client) client = new Anthropic();
+  if (!client) {
+    const workspace = String(process.env.ANTHROPIC_WORKSPACE_ID || "").trim();
+    client = new Anthropic(
+      workspace ? { defaultHeaders: { "anthropic-workspace-id": workspace } } : {},
+    );
+  }
   return client;
+}
+
+/** Cleared between tests, and after a configuration change in a long-lived process. */
+export function resetAnthropicClient() {
+  client = null;
 }
 
 /**
@@ -402,7 +563,7 @@ export async function runTurn({ messages, userId, db, allowedTables, emit, signa
     const results = await Promise.all(
       calls.map(async (call) => {
         emit("tool", { id: call.id, name: call.name, input: call.input });
-        const out = await runTool(call, { db, allowedTables });
+        const out = await runTool(call, { db, allowedTables, userId });
         emit("tool_done", {
           id: call.id,
           name: call.name,

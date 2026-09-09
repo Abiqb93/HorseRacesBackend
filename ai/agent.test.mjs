@@ -33,7 +33,33 @@ test("every tool has a schema the API will accept", () => {
 
 test("list_tables returns the allow-list and nothing else", async () => {
   const out = await call("list_tables", {});
-  assert.deepEqual(JSON.parse(out.content).tables, [...TABLES].sort());
+  const names = JSON.parse(out.content).tables.map((t) => t.name);
+  assert.deepEqual(names, [...TABLES].sort());
+});
+
+test("list_tables delivers the notes its own description promises", async () => {
+  // the bug this replaced: the description advertised "a one-line note on what
+  // each holds" and the tool returned bare names, so the assistant had no way
+  // to choose a table except to describe them one at a time
+  const promise = TOOLS.find((t) => t.name === "list_tables").description;
+  assert.match(promise, /one-line note/);
+
+  const tables = JSON.parse((await call("list_tables", {})).content).tables;
+  const main = tables.find((t) => t.name === "APIData_Table2");
+  assert.ok(main.note, "the main warehouse table must carry a note");
+  assert.match(main.note, /sire/i);
+  assert.equal(main.large, true, "it must be flagged as needing a bounded query");
+});
+
+test("a table nobody has described is listed without a note, not with a guess", async () => {
+  const out = await runTool(
+    { name: "list_tables", input: {} },
+    { db: stubDb(), allowedTables: ["APIData_Table2", "some_table_nobody_documented"] },
+  );
+  const tables = JSON.parse(out.content).tables;
+  const unknown = tables.find((t) => t.name === "some_table_nobody_documented");
+  assert.ok(unknown, "it is still listed");
+  assert.equal(unknown.note, undefined, "and carries no invented description");
 });
 
 test("describe_table returns columns and examples for an allowed table", async () => {
@@ -122,4 +148,174 @@ test("the system prompt tells the model what it is and cannot do", () => {
   assert.match(p, /2026-09-08/);
   assert.match(p, /only read/i);
   assert.match(p, /describe_table/);
+});
+
+/* ------------------------------------------------------- team_activity */
+
+/** A stub that also records the parameters, which is where the subject goes. */
+function paramDb(rows = []) {
+  const calls = [];
+  return {
+    calls,
+    query(sql, params, cb) {
+      const done = typeof params === "function" ? params : cb;
+      calls.push({ sql, params: Array.isArray(params) ? params : [] });
+      done(null, rows);
+    },
+  };
+}
+
+const teamCall = (input, db, userId) =>
+  runTool({ name: "team_activity", input }, { db, allowedTables: TABLES, userId });
+
+test("team_activity names the colleague who asked, and separates the reader's own question", async () => {
+  const db = paramDb([
+    { user_id: "Stuart", question: "How has Paborus been running?", asked_at: new Date() },
+    { user_id: "Richard", question: "Paborus for the Abbaye?", asked_at: new Date() },
+  ]);
+  const out = await teamCall({ subject: "Paborus (FR)" }, db, "Richard");
+  const body = JSON.parse(out.content);
+
+  assert.equal(body.colleagues.length, 1);
+  assert.equal(body.colleagues[0].asked_by, "Stuart");
+  assert.equal(body.your_own_earlier_questions.length, 1);
+  assert.deepEqual(body.who, [{ asked_by: "Stuart", times: 1, most_recent: "today" }]);
+});
+
+test("the subject reaches SQL as a bound parameter, never inside the statement", async () => {
+  const db = paramDb();
+  await teamCall({ subject: "Kodiac'; DROP TABLE x; --" }, db, "Richard");
+  const [{ sql, params }] = db.calls;
+  assert.ok(!sql.includes("DROP"), "the subject was interpolated into the SQL");
+  assert.ok(sql.includes("LIKE ?"));
+  assert.ok(params[0].includes("Kodiac"));
+});
+
+test("a LIKE wildcard in a name cannot act as a wildcard", async () => {
+  // normalisation drops % and _ before the query is built, so they never
+  // reach LIKE as metacharacters; the escape behind it is belt and braces
+  const db = paramDb();
+  await teamCall({ subject: "100% Sure" }, db, "Richard");
+  assert.equal(db.calls[0].params[0], "%100 Sure%");
+  await teamCall({ subject: "a_b" }, db, "Richard");
+  assert.equal(db.calls[1].params[0], "%a b%");
+});
+
+test("a subject too short to mean anything is refused rather than matching everything", async () => {
+  const db = paramDb([{ user_id: "Stuart", question: "anything", asked_at: new Date() }]);
+  const out = await teamCall({ subject: "a" }, db, "Richard");
+  assert.equal(out.is_error, true);
+  assert.equal(db.calls.length, 0, "it should not have queried at all");
+});
+
+test("no subject asks what the desk has been asking generally", async () => {
+  const db = paramDb();
+  await teamCall({}, db, "Richard");
+  assert.ok(!db.calls[0].sql.includes("LIKE"));
+});
+
+test("the look-back window is clamped to something sane", async () => {
+  const db = paramDb();
+  await teamCall({ subject: "Kodiac", days: 99999 }, db, "Richard");
+  assert.equal(db.calls[0].params[1], 365);
+  await teamCall({ subject: "Kodiac", days: -5 }, db, "Richard");
+  assert.equal(db.calls[1].params[1], 90);
+});
+
+test("nothing found tells the model to stay quiet rather than report the absence", async () => {
+  const db = paramDb([]);
+  const body = JSON.parse((await teamCall({ subject: "Kodiac" }, db, "Richard")).content);
+  assert.match(body.note, /Say nothing about it/);
+});
+
+test("the advisor brief tells it to look for who else is on it", () => {
+  const p = systemPrompt({ userId: "Richard", today: "2026-09-09" });
+  assert.match(p, /team_activity/);
+  assert.match(p, /Do not manufacture a connection/);
+});
+
+/* ------------------------------------------------------ workspace scoping */
+
+test("an unscoped key is given the workspace header, when one is configured", async () => {
+  const { anthropicClient, resetAnthropicClient } = await import("./agent.mjs");
+  const before = { key: process.env.ANTHROPIC_API_KEY, ws: process.env.ANTHROPIC_WORKSPACE_ID };
+  try {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    process.env.ANTHROPIC_WORKSPACE_ID = "wrkspc_abc123";
+    resetAnthropicClient();
+    const c = anthropicClient();
+    // header names are matched case-insensitively by the SDK; ours is lower-case
+    const headers = c._options?.defaultHeaders || {};
+    assert.equal(headers["anthropic-workspace-id"], "wrkspc_abc123");
+  } finally {
+    process.env.ANTHROPIC_API_KEY = before.key;
+    if (before.ws === undefined) delete process.env.ANTHROPIC_WORKSPACE_ID;
+    else process.env.ANTHROPIC_WORKSPACE_ID = before.ws;
+    resetAnthropicClient();
+  }
+});
+
+test("a key that needs no workspace is not given an empty header", async () => {
+  const { anthropicClient, resetAnthropicClient } = await import("./agent.mjs");
+  const before = { key: process.env.ANTHROPIC_API_KEY, ws: process.env.ANTHROPIC_WORKSPACE_ID };
+  try {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    process.env.ANTHROPIC_WORKSPACE_ID = "   ";  // blank in the dashboard is not a value
+    resetAnthropicClient();
+    const c = anthropicClient();
+    const headers = c._options?.defaultHeaders || {};
+    assert.equal(headers["anthropic-workspace-id"], undefined);
+  } finally {
+    process.env.ANTHROPIC_API_KEY = before.key;
+    if (before.ws === undefined) delete process.env.ANTHROPIC_WORKSPACE_ID;
+    else process.env.ANTHROPIC_WORKSPACE_ID = before.ws;
+    resetAnthropicClient();
+  }
+});
+
+test("a missing key still fails with the sentence that says what to do", async () => {
+  const { anthropicClient, resetAnthropicClient } = await import("./agent.mjs");
+  const before = process.env.ANTHROPIC_API_KEY;
+  try {
+    delete process.env.ANTHROPIC_API_KEY;
+    resetAnthropicClient();
+    assert.throws(() => anthropicClient(), /ANTHROPIC_API_KEY is not set/);
+  } finally {
+    if (before === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = before;
+    resetAnthropicClient();
+  }
+});
+
+test("the workspace error is translated into something actionable", async () => {
+  const { explainAgentError } = await import("./agent.mjs");
+  const real = "This API key is not scoped to a workspace, so this request must include the anthropic-workspace-id header with the ID of the workspace to use.";
+  const out = explainAgentError(new Error(real));
+  assert.match(out, /ANTHROPIC_WORKSPACE_ID/);
+  assert.doesNotMatch(out, /header/, "the reader has no way to set a header");
+});
+
+test("an error we have not seen is passed through, not dressed up", async () => {
+  const { explainAgentError } = await import("./agent.mjs");
+  assert.equal(explainAgentError(new Error("connection reset")), "connection reset");
+  assert.match(explainAgentError({}), /failed to answer/);
+});
+
+/* ------------------------------------------------------- datasets & steps */
+
+test("every dataset path is one that exists on the site", async () => {
+  // "stallions" pointed at /data/stallions/stallions.json, which has never
+  // existed - the roster is index.json - so every request for the roster 404d
+  const { AI_DATASETS } = await import("./agent.mjs");
+  assert.equal(AI_DATASETS.stallions[0], "/data/stallions/index.json");
+  for (const [name, [path]] of Object.entries(AI_DATASETS)) {
+    assert.match(path, /^\/data\/[a-z-]+\/[a-z0-9-]+\.json$/, `${name} has an odd path`);
+  }
+});
+
+test("the brief tells it to bound large tables and not to retry a dead step", () => {
+  const p = systemPrompt({ userId: "Richard", today: "2026-09-09" });
+  assert.match(p, /Bound every query on a large table/);
+  assert.match(p, /do not repeat it in another form/);
+  assert.match(p, /rather than describing your way through the schema/);
 });

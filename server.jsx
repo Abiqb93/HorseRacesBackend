@@ -11193,11 +11193,30 @@ app.get("/api/ai/status", async (req, res) => {
       model: agent.MODEL,
       tables: aiAllowedTables().length,
       limits: agent.AI_LIMITS,
+      // Reported so a key that is set but unusable is visible here rather than
+      // only as a 400 on somebody's first question. Whether the key itself
+      // carries a workspace is not something this service can see, so this
+      // says what is configured, not whether it is sufficient.
+      workspace: process.env.ANTHROPIC_WORKSPACE_ID ? "set" : "not set",
     });
   } catch (err) {
     res.status(500).json({ available: false, error: err.message });
   }
 });
+
+/**
+ * Every question put to BlandfordAI is written down, so the assistant can tell
+ * one member of the desk that another has been asking about the same horse.
+ * That connection is the one thing it knows that the warehouse does not.
+ */
+loadAiAgent()
+  .then(() => import("./ai/teamMemory.mjs"))
+  .then(({ TEAM_MEMORY_DDL }) => {
+    db.query(TEAM_MEMORY_DDL, (err) => {
+      if (err) console.error("ai_questions table check failed:", err.message);
+    });
+  })
+  .catch((err) => console.error("ai_questions bootstrap failed:", err.message));
 
 app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
   const { messages, userId } = req.body || {};
@@ -11215,6 +11234,27 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
       return res.status(400).json({ error: "each message needs role 'user' or 'assistant'" });
     }
   }
+
+  // Recorded before the turn runs, not after: a question that made the
+  // assistant fall over is still a question the desk asked, and losing it
+  // would leave a hole in exactly the conversations worth connecting.
+  // Fire-and-forget - nobody's answer waits on the write, and a failure here
+  // must never cost them the reply.
+  (async () => {
+    try {
+      const { MAX_QUESTION_CHARS, TEAM_MEMORY_TABLE } = await import("./ai/teamMemory.mjs");
+      const last = [...messages].reverse().find((m) => m.role === "user");
+      const question = String(last?.content ?? "").trim().slice(0, MAX_QUESTION_CHARS);
+      if (!question) return;
+      db.query(
+        `INSERT INTO \`${TEAM_MEMORY_TABLE}\` (user_id, question) VALUES (?, ?)`,
+        [String(userId || "unknown").slice(0, 64), question],
+        (err) => { if (err) console.error("[ai] question not recorded:", err.message); },
+      );
+    } catch (err) {
+      console.error("[ai] question not recorded:", err.message);
+    }
+  })();
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -11249,8 +11289,10 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
     if (!res.writableEnded) res.write(": keep-alive\n\n");
   }, 15000);
 
+  let agentModule = null;
   try {
     const agent = await loadAiAgent();
+    agentModule = agent;
     const result = await agent.runTurn({
       messages,
       userId,
@@ -11267,7 +11309,11 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
       // nothing to report
     } else {
       console.error("[ai] turn failed:", err);
-      send("error", { message: err?.message || "The assistant failed to answer." });
+      send("error", {
+        message: agentModule
+          ? agentModule.explainAgentError(err)
+          : err?.message || "The assistant failed to answer.",
+      });
     }
   } finally {
     clearInterval(keepAlive);
