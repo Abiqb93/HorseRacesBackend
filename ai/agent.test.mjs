@@ -33,7 +33,33 @@ test("every tool has a schema the API will accept", () => {
 
 test("list_tables returns the allow-list and nothing else", async () => {
   const out = await call("list_tables", {});
-  assert.deepEqual(JSON.parse(out.content).tables, [...TABLES].sort());
+  const names = JSON.parse(out.content).tables.map((t) => t.name);
+  assert.deepEqual(names, [...TABLES].sort());
+});
+
+test("list_tables delivers the notes its own description promises", async () => {
+  // the bug this replaced: the description advertised "a one-line note on what
+  // each holds" and the tool returned bare names, so the assistant had no way
+  // to choose a table except to describe them one at a time
+  const promise = TOOLS.find((t) => t.name === "list_tables").description;
+  assert.match(promise, /one-line note/);
+
+  const tables = JSON.parse((await call("list_tables", {})).content).tables;
+  const main = tables.find((t) => t.name === "APIData_Table2");
+  assert.ok(main.note, "the main warehouse table must carry a note");
+  assert.match(main.note, /sire/i);
+  assert.equal(main.large, true, "it must be flagged as needing a bounded query");
+});
+
+test("a table nobody has described is listed without a note, not with a guess", async () => {
+  const out = await runTool(
+    { name: "list_tables", input: {} },
+    { db: stubDb(), allowedTables: ["APIData_Table2", "some_table_nobody_documented"] },
+  );
+  const tables = JSON.parse(out.content).tables;
+  const unknown = tables.find((t) => t.name === "some_table_nobody_documented");
+  assert.ok(unknown, "it is still listed");
+  assert.equal(unknown.note, undefined, "and carries no invented description");
 });
 
 test("describe_table returns columns and examples for an allowed table", async () => {
@@ -273,4 +299,23 @@ test("an error we have not seen is passed through, not dressed up", async () => 
   const { explainAgentError } = await import("./agent.mjs");
   assert.equal(explainAgentError(new Error("connection reset")), "connection reset");
   assert.match(explainAgentError({}), /failed to answer/);
+});
+
+/* ------------------------------------------------------- datasets & steps */
+
+test("every dataset path is one that exists on the site", async () => {
+  // "stallions" pointed at /data/stallions/stallions.json, which has never
+  // existed - the roster is index.json - so every request for the roster 404d
+  const { AI_DATASETS } = await import("./agent.mjs");
+  assert.equal(AI_DATASETS.stallions[0], "/data/stallions/index.json");
+  for (const [name, [path]] of Object.entries(AI_DATASETS)) {
+    assert.match(path, /^\/data\/[a-z-]+\/[a-z0-9-]+\.json$/, `${name} has an odd path`);
+  }
+});
+
+test("the brief tells it to bound large tables and not to retry a dead step", () => {
+  const p = systemPrompt({ userId: "Richard", today: "2026-09-09" });
+  assert.match(p, /Bound every query on a large table/);
+  assert.match(p, /do not repeat it in another form/);
+  assert.match(p, /rather than describing your way through the schema/);
 });

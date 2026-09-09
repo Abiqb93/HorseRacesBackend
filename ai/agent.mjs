@@ -16,6 +16,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { validateSelect } from "./sqlGuard.mjs";
+import { describeTables, LARGE_TABLES } from "./tableNotes.mjs";
 import {
   TEAM_MEMORY_TABLE, normaliseSubject, isSearchableSubject, splitByAsker, askerSummary,
 } from "./teamMemory.mjs";
@@ -69,13 +70,26 @@ const SITE_PAGES = [
  * they are the same numbers the pages draw.
  */
 const DATASETS = {
+  // Sectionals, stride and pars
   "sectionals-index": ["/data/rtv/index.json", "Every meeting with sectional data: date, track, file"],
   "sectional-ratings": ["/data/rtv/ratings.json", "The sectional ratings board, by cohort and 7/30/90-day window"],
   "course-distance-pars": ["/data/rtv/pars.json", "Course-and-distance pars: winning time, finishing speed, stride"],
+  "cd-pars": ["/data/rtv/cd-pars.json", "Course-and-distance pars, per-furlong detail"],
+  "pars-history": ["/data/rtv/pars-history.json", "How pars have moved over time"],
+  "tfr-equivalent": ["/data/rtv/tfr-equivalent.json", "Timeform-equivalent conversion for sectional ratings"],
   "horse-sectional-runs": ["/data/rtv/horses.json", "Which meetings each horse has sectional data in"],
-  "stallions": ["/data/stallions/stallions.json", "The stallion roster with progeny statistics"],
+
+  // Stallions
+  "stallions": ["/data/stallions/index.json", "The stallion roster with progeny statistics, fees, crop and stage"],
   "precocity": ["/data/stallions/precocity.json", "Sire Precocity Index, category, par and judgement window"],
+  "early-indicators": ["/data/stallions/early.json", "Young-sire first and second season figures"],
+  "fee-model": ["/data/stallions/fee-model.json", "Stud fee history and the fee-change model"],
+  "stallion-population": ["/data/stallions/population.json", "The stallion population by year and market"],
+
+  // Prospects
   "prospects": ["/data/prospects/index.json", "The prospects index"],
+  "prospect-sires": ["/data/prospects/sires.json", "Sire-level summary across the prospects index"],
+  "royal-ascot": ["/data/prospects/royal-ascot.json", "Royal Ascot profiles and pipeline"],
 };
 
 /* ------------------------------------------------------------------ tools */
@@ -266,7 +280,16 @@ async function fetchDataset(name, path) {
 export async function runTool({ name, input }, { db, allowedTables, userId }) {
   try {
     if (name === "list_tables") {
-      return { content: JSON.stringify({ tables: [...allowedTables].sort() }) };
+      const tables = describeTables(allowedTables);
+      return {
+        content: JSON.stringify({
+          tables,
+          note:
+            "A table marked large will not survive an unbounded scan - bound it by date. " +
+            "A table with no note is one nobody has described yet; describe_table it before use.",
+        }),
+        meta: { rowCount: tables.length },
+      };
     }
 
     if (name === "describe_table") {
@@ -387,9 +410,15 @@ They are bloodstock professionals: agents, analysts and advisers who buy, sell, 
 
 Answer from the data, not from memory. Every figure you state must have come back from a tool in this same conversation. You have a read-only view of the platform's own warehouse and of the datasets its pages are built from; use them.
 
-Before querying a table for the first time, call describe_table. The column names and date formats here are genuinely not guessable - dates appear both as "2026-09-08" and as "Tuesday 8  September 2026" (with a double space), horse names carry country suffixes, and several tables hold the same concept under different column names. Look at the example rows.
+Get to the answer in few steps. list_tables gives you every table with a one-line note on what it holds - read it once and pick the one table that answers the question, rather than describing your way through the schema. Most questions about how a horse ran are answered by APIData_Table2 alone. Describe only the table you are about to query, and only the first time you use it in this conversation.
+
+Then describe_table it, because the column names and date formats here are genuinely not guessable - dates appear both as "2026-09-08" and as "Tuesday 8  September 2026" (with a double space), horse names carry country suffixes, and several tables hold the same concept under different column names. Look at the example rows.
 
 Aggregate in SQL. You get ${ROW_CAP} rows back at most, so COUNT, SUM, AVG and GROUP BY belong in the query, not in your head.
+
+Bound every query on a large table. list_tables marks which they are. A GROUP BY across the whole of one of them is a full scan and will hit the ${QUERY_TIMEOUT_MS / 1000}s timeout - the query is abandoned and you have spent a step for nothing. Put a date range in the WHERE clause, and filter on the column as it is stored rather than wrapping it in a function, which stops an index being used.
+
+If a step fails, do not repeat it in another form. A timed-out query will time out again; a dataset that 404s will 404 again. Change what you are asking for, or say what is not available.
 
 When a query comes back empty, that is information: say so, say what you searched, and suggest what might be wrong (a name spelled differently, a date outside the range the table holds) rather than silently trying six more variations.
 
