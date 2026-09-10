@@ -358,3 +358,117 @@ test("no table is described twice", async () => {
   const twice = keys.filter((k) => (seen.has(k) ? true : (seen.add(k), false)));
   assert.deepEqual([...new Set(twice)], [], "these tables are described more than once");
 });
+
+/* --------------------------------------------------- reaching a big dataset */
+
+/*
+ * "Show me the top first-season sires by early indicators" could not be
+ * answered from the dataset built to answer it. `early-indicators` holds 1,384
+ * stallions at ~2.9 kB each - 4.4 MB against a 60 kB cap - in alphabetical
+ * order, so asking for `stallions` returned the sires whose names begin with A.
+ *
+ * The only escapes offered were a numeric index or the whole file, and the
+ * truncation note told the model to "fetch a narrower slice" using a syntax
+ * that did not exist. It tried `stallions[?stage==first]`, then
+ * `stallions[0:200]`, then gave up on the dataset and hand-rolled fifteen steps
+ * of SQL against the warehouse, timing one query out.
+ */
+
+const SIRES = [
+  { n: "A Different Style", stage: "second", eisAdj: 40.1, cc: "USA", bulk: "x".repeat(50) },
+  { n: "Bayside Boy", stage: "first", eisAdj: 70.4, cc: "IRE", bulk: "x".repeat(50) },
+  { n: "Blackbeard", stage: "first", eisAdj: 69.3, cc: "IRE", bulk: "x".repeat(50) },
+  { n: "Corniche", stage: "first", eisAdj: 67.5, cc: "USA", bulk: "x".repeat(50) },
+  { n: "Nomination Only", stage: "first", eisAdj: null, cc: "GB", bulk: "x".repeat(50) },
+  { n: "Old Hand", stage: "established", eisAdj: 88.0, cc: "GB", bulk: "x".repeat(50) },
+];
+
+test("a path can take a slice, which is what the truncation note has always promised", async () => {
+  const { pickPath } = await import("./agent.mjs");
+  const doc = { stallions: SIRES };
+  assert.deepEqual(pickPath(doc, "stallions[0:2]").map((s) => s.n), ["A Different Style", "Bayside Boy"]);
+  assert.deepEqual(pickPath(doc, "stallions[4:]").map((s) => s.n), ["Nomination Only", "Old Hand"]);
+  assert.deepEqual(pickPath(doc, "stallions[:1]").map((s) => s.n), ["A Different Style"]);
+  assert.equal(pickPath(doc, "stallions[1]").n, "Bayside Boy", "a plain index still works");
+  assert.equal(pickPath(doc, "stallions"), doc.stallions, "and no path at all");
+});
+
+test("a slice of something that is not an array is nothing, not a crash", async () => {
+  const { pickPath } = await import("./agent.mjs");
+  assert.equal(pickPath({ a: 1 }, "a[0:2]"), undefined);
+  assert.equal(pickPath({ a: 1 }, "missing.deeper"), undefined);
+});
+
+test("the question that could not be answered, answered in one call", async () => {
+  const { applySelect, pickPath } = await import("./agent.mjs");
+  const out = applySelect(pickPath({ stallions: SIRES }, "stallions"), {
+    where: { stage: "first" },
+    sort: "eisAdj desc",
+    limit: 3,
+    fields: ["n", "eisAdj"],
+  });
+  assert.equal(out.matched, 4, "four first-season sires in the file");
+  assert.equal(out.of, 6);
+  assert.deepEqual(out.items, [
+    { n: "Bayside Boy", eisAdj: 70.4 },
+    { n: "Blackbeard", eisAdj: 69.3 },
+    { n: "Corniche", eisAdj: 67.5 },
+  ]);
+});
+
+test("a sire with no index is not the best one, and not the worst one either", async () => {
+  const { applySelect } = await import("./agent.mjs");
+  const asc = applySelect(SIRES.filter((s) => s.stage === "first"), { sort: "eisAdj" });
+  const desc = applySelect(SIRES.filter((s) => s.stage === "first"), { sort: "eisAdj desc" });
+  assert.equal(asc.items.at(-1).n, "Nomination Only", "sorted low to high, nothing is still last");
+  assert.equal(desc.items.at(-1).n, "Nomination Only", "and sorted high to low, still last");
+});
+
+test("the operators cover what a sparse dataset actually needs", async () => {
+  const { applySelect } = await import("./agent.mjs");
+  const names = (sel) => applySelect(SIRES, sel).items.map((s) => s.n);
+  assert.deepEqual(names({ where: { cc: { in: ["IRE"] } } }), ["Bayside Boy", "Blackbeard"]);
+  assert.deepEqual(names({ where: { eisAdj: { gte: 69 } } }), ["Bayside Boy", "Blackbeard", "Old Hand"]);
+  assert.deepEqual(names({ where: { eisAdj: { lte: 41 } } }), ["A Different Style"]);
+  assert.deepEqual(names({ where: { stage: { ne: "established" }, eisAdj: { present: true } } }),
+    ["A Different Style", "Bayside Boy", "Blackbeard", "Corniche"]);
+});
+
+test("selecting only the fields asked for is the difference between 4 MB and 4 kB", async () => {
+  const { applySelect } = await import("./agent.mjs");
+  const whole = JSON.stringify(SIRES).length;
+  const thin = JSON.stringify(applySelect(SIRES, { fields: ["n", "eisAdj"] }).items).length;
+  assert.ok(thin < whole / 2, `thinned to ${thin} from ${whole}`);
+});
+
+test("select leaves anything that is not an array alone", async () => {
+  const { applySelect } = await import("./agent.mjs");
+  const obj = { generated: "2026-09-10", year: 2026 };
+  assert.equal(applySelect(obj, { sort: "year" }), obj);
+  assert.deepEqual(applySelect(SIRES, undefined), SIRES, "and no select at all is the array itself");
+});
+
+test("get_dataset tells the model that select exists", async () => {
+  const { TOOLS } = await import("./agent.mjs");
+  const t = TOOLS.find((x) => x.name === "get_dataset");
+  assert.ok(t.input_schema.properties.select, "there is no way to guess a tool argument that is undocumented");
+  assert.match(t.input_schema.properties.path.description, /\[0:50\]/, "the slice syntax is shown");
+  assert.match(t.input_schema.properties.select.description, /where.*sort.*limit.*fields/s);
+});
+
+test("a value we do not hold is not a small value", async () => {
+  // Number(null) is 0, so before this a stallion with no index came back as
+  // the cheapest, the slowest and the worst-rated of anything asked for.
+  const { applySelect } = await import("./agent.mjs");
+  const rows = [
+    { n: "Rated", eisAdj: 70 },
+    { n: "Unrated", eisAdj: null },
+    { n: "Missing" },
+    { n: "Blank", eisAdj: "   " },
+  ];
+  const names = (sel) => applySelect(rows, sel).items.map((r) => r.n);
+  assert.deepEqual(names({ where: { eisAdj: { lte: 50 } } }), [], "none of them is below 50");
+  assert.deepEqual(names({ where: { eisAdj: { gte: 0 } } }), ["Rated"]);
+  assert.deepEqual(names({ where: { eisAdj: { present: true } } }), ["Rated", "Blank"],
+    "present is about the key being there, which is a different question");
+});
