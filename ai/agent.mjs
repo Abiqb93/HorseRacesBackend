@@ -179,9 +179,10 @@ export const TOOLS = [
               type: "object",
               description:
                 'Field to value for equality, or an operator object: {"in":[...]}, ' +
+                'A nested field is a path, e.g. "move.status". ' +
                 '{"gte":n}, {"lte":n}, {"ne":v}, {"present":true} for is-not-null.',
             },
-            sort: { type: "string", description: 'Field, optionally "field desc".' },
+            sort: { type: "string", description: 'Field, optionally "field desc". A nested field is a path: "move.abci desc".' },
             limit: { type: "integer", description: "How many rows to return." },
             fields: {
               type: "array",
@@ -301,6 +302,25 @@ function numeric(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Read a field, which may be a path.
+ *
+ * The published datasets nest: an APEX sire keeps its change under `move` and
+ * its row per edition under `by`, so "sort by ABCI movement" is `move.abci`
+ * and a flat lookup finds nothing at all. Without this the whole APEX file is
+ * filterable only on the two fields that happen to sit at the top level.
+ */
+function readField(row, field) {
+  if (row === null || row === undefined) return undefined;
+  if (!String(field).includes(".")) return row[field];
+  let at = row;
+  for (const part of String(field).split(".")) {
+    if (at === null || at === undefined) return undefined;
+    at = at[part];
+  }
+  return at;
+}
+
 function applySelect(value, select) {
   if (!select || !Array.isArray(value)) return value;
   const { where, sort, limit, fields } = select;
@@ -310,7 +330,7 @@ function applySelect(value, select) {
   if (where && typeof where === "object") {
     rows = rows.filter((row) =>
       Object.entries(where).every(([field, want]) => {
-        const got = row?.[field];
+        const got = readField(row, field);
         if (want && typeof want === "object" && !Array.isArray(want)) {
           if (want.in !== undefined && !(Array.isArray(want.in) && want.in.includes(got))) return false;
           // Nullish first. `Number(null)` is 0, so a stallion with no index
@@ -341,8 +361,8 @@ function applySelect(value, select) {
     const [field, dir] = sort.trim().split(/\s+/);
     const desc = String(dir || "").toLowerCase() === "desc";
     rows = [...rows].sort((a, b) => {
-      const x = a?.[field];
-      const y = b?.[field];
+      const x = readField(a, field);
+      const y = readField(b, field);
       // Nothing sorts last whichever way round it is asked for: a stallion with
       // no index is not the best one, and it is not the worst one either.
       if (x === null || x === undefined) return y === null || y === undefined ? 0 : 1;
@@ -355,7 +375,7 @@ function applySelect(value, select) {
   if (Number.isFinite(Number(limit)) && Number(limit) > 0) rows = rows.slice(0, Number(limit));
 
   if (Array.isArray(fields) && fields.length) {
-    rows = rows.map((row) => Object.fromEntries(fields.map((f) => [f, row?.[f]])));
+    rows = rows.map((row) => Object.fromEntries(fields.map((f) => [f, readField(row, f)])));
   }
 
   return { matched, of: value.length, returned: rows.length, items: rows };

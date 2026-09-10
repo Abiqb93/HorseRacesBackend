@@ -472,3 +472,35 @@ test("a value we do not hold is not a small value", async () => {
   assert.deepEqual(names({ where: { eisAdj: { present: true } } }), ["Rated", "Blank"],
     "present is about the key being there, which is a different question");
 });
+
+test("a nested field is reachable by path", async () => {
+  // The published datasets nest. An APEX sire keeps its change under `move`
+  // and its row per edition under `by`, so without this the whole file is
+  // filterable only on the two fields that happen to sit at the top level -
+  // and "which sires are improving" is not answerable.
+  const { applySelect } = await import("./agent.mjs");
+  const rows = [
+    { sire: "A", move: { abci: 0.9, status: "both" } },
+    { sire: "B", move: { abci: 0.2, status: "both" } },
+    { sire: "C", move: { abci: null, status: "new" } },
+  ];
+  const out = applySelect(rows, {
+    where: { "move.status": "both" },
+    sort: "move.abci desc",
+    fields: ["sire", "move.abci"],
+  });
+  assert.equal(out.matched, 2);
+  assert.deepEqual(out.items, [
+    { sire: "A", "move.abci": 0.9 },
+    { sire: "B", "move.abci": 0.2 },
+  ]);
+});
+
+test("a path through nothing is nothing, not a crash", async () => {
+  const { applySelect } = await import("./agent.mjs");
+  const rows = [{ sire: "A" }, { sire: "B", move: null }];
+  const out = applySelect(rows, { where: { "move.abci": { present: true } } });
+  assert.equal(out.matched, 0);
+  assert.deepEqual(applySelect(rows, { fields: ["move.abci"] }).items,
+    [{ "move.abci": undefined }, { "move.abci": undefined }]);
+});
