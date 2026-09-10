@@ -155,7 +155,33 @@ export const TOOLS = [
           type: "string",
           description:
             "Optional dot/bracket path into the JSON, to avoid pulling a large file whole - " +
-            'for example "meetings[0]" or "windows.w7". Omit for the top of the file.',
+            'for example "meetings[0]", "windows.w7", or a slice "stallions[0:50]". ' +
+            "Omit for the top of the file.",
+        },
+        select: {
+          type: "object",
+          description:
+            "Filter, sort and thin an ARRAY at that path, server-side. Use this instead of " +
+            "pulling a big array and reading it yourself - these files run to thousands of " +
+            "rows in the order the page wanted, so the head of one answers nothing. " +
+            'Example: path "stallions" with select ' +
+            '{"where":{"stage":"first"},"sort":"eisAdj desc","limit":20,' +
+            '"fields":["n","cc","eis","eisAdj","reliability"]}.',
+          properties: {
+            where: {
+              type: "object",
+              description:
+                'Field to value for equality, or an operator object: {"in":[...]}, ' +
+                '{"gte":n}, {"lte":n}, {"ne":v}, {"present":true} for is-not-null.',
+            },
+            sort: { type: "string", description: 'Field, optionally "field desc".' },
+            limit: { type: "integer", description: "How many rows to return." },
+            fields: {
+              type: "array",
+              items: { type: "string" },
+              description: "Only these keys per row. Rows here can be 3 kB each, so name what you need.",
+            },
+          },
         },
       },
       required: ["name"],
@@ -221,12 +247,111 @@ function runQuery(db, sql, params = []) {
 function pick(value, path) {
   if (!path) return value;
   let at = value;
-  for (const part of String(path).replace(/\[(\d+)\]/g, ".$1").split(".")) {
+  // "rows[2]" and "rows[10:40]" both work. The slice matters: when an array is
+  // too big to return whole the result says to fetch a narrower slice, and
+  // until now there was no syntax that did.
+  const parts = String(path)
+    .replace(/\[(\d+)\]/g, ".$1")
+    .replace(/\[(\d*):(\d*)\]/g, ".:$1:$2")
+    .split(".");
+  for (const part of parts) {
     if (!part) continue;
     if (at === null || at === undefined) return undefined;
+    const slice = /^:(\d*):(\d*)$/.exec(part);
+    if (slice) {
+      if (!Array.isArray(at)) return undefined;
+      at = at.slice(slice[1] ? Number(slice[1]) : 0, slice[2] ? Number(slice[2]) : undefined);
+      continue;
+    }
     at = at[part];
   }
   return at;
+}
+
+/**
+ * Filter, sort and thin an array from a dataset, before it is sent back.
+ *
+ * The published datasets are built for pages, not for questions: the early
+ * indicators file holds 1,384 stallions at ~2.9 kB each, 4.4 MB in all, in
+ * alphabetical order. Against a 60 kB cap, asking for `stallions` returned the
+ * twenty sires whose names begin with A, which answers nothing — and the only
+ * escapes offered were a numeric index or the whole file.
+ *
+ * So "the top first-season sires" was unanswerable from the dataset built to
+ * answer it. The assistant tried `stallions[?stage==first]`, then
+ * `stallions[0:200]`, then abandoned the dataset and hand-rolled fifteen steps
+ * of SQL against the warehouse instead, timing one out.
+ *
+ * Selecting server-side is what makes these files usable: filter to the 85
+ * first-season sires, sort by the index, keep six fields, and the answer is one
+ * call and 4 kB.
+ */
+/** A number, or nothing. Trim first: `Number("  ")` is 0, and 0 is finite. */
+function numeric(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "string" && v.trim() === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function applySelect(value, select) {
+  if (!select || !Array.isArray(value)) return value;
+  const { where, sort, limit, fields } = select;
+
+  let rows = value;
+
+  if (where && typeof where === "object") {
+    rows = rows.filter((row) =>
+      Object.entries(where).every(([field, want]) => {
+        const got = row?.[field];
+        if (want && typeof want === "object" && !Array.isArray(want)) {
+          if (want.in !== undefined && !(Array.isArray(want.in) && want.in.includes(got))) return false;
+          // Nullish first. `Number(null)` is 0, so a stallion with no index
+          // passed every "lte" test and failed every "gte" above zero - it came
+          // back as the cheapest, the slowest, the worst-rated of anything.
+          // A value we do not hold is not a small value; it is not a value.
+          if (want.gte !== undefined) {
+            const n = numeric(got);
+            if (n === null || !(n >= Number(want.gte))) return false;
+          }
+          if (want.lte !== undefined) {
+            const n = numeric(got);
+            if (n === null || !(n <= Number(want.lte))) return false;
+          }
+          if (want.ne !== undefined && got === want.ne) return false;
+          // "is not null" — the commonest thing to ask of a sparse dataset.
+          if (want.present === true && (got === null || got === undefined)) return false;
+          return true;
+        }
+        return got === want;
+      }),
+    );
+  }
+
+  const matched = rows.length;
+
+  if (typeof sort === "string" && sort.trim()) {
+    const [field, dir] = sort.trim().split(/\s+/);
+    const desc = String(dir || "").toLowerCase() === "desc";
+    rows = [...rows].sort((a, b) => {
+      const x = a?.[field];
+      const y = b?.[field];
+      // Nothing sorts last whichever way round it is asked for: a stallion with
+      // no index is not the best one, and it is not the worst one either.
+      if (x === null || x === undefined) return y === null || y === undefined ? 0 : 1;
+      if (y === null || y === undefined) return -1;
+      const c = typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y));
+      return desc ? -c : c;
+    });
+  }
+
+  if (Number.isFinite(Number(limit)) && Number(limit) > 0) rows = rows.slice(0, Number(limit));
+
+  if (Array.isArray(fields) && fields.length) {
+    rows = rows.map((row) => Object.fromEntries(fields.map((f) => [f, row?.[f]])));
+  }
+
+  return { matched, of: value.length, returned: rows.length, items: rows };
 }
 
 /**
@@ -250,7 +375,7 @@ function summariseValue(value, limit = 60_000) {
     }
     return JSON.stringify({
       truncated: true,
-      note: `Array of ${value.length} items, too large to return whole. First ${head.length} shown. Use the path argument to fetch a narrower slice.`,
+      note: `Array of ${value.length} items, too large to return whole. The first ${head.length} are shown, in file order, which is probably not the order you want. Use select {where, sort, limit, fields} to get the rows that answer the question, or a slice such as "field[0:50]".`,
       items: head,
     });
   }
@@ -266,13 +391,13 @@ function summariseValue(value, limit = 60_000) {
   return json.slice(0, limit);
 }
 
-async function fetchDataset(name, path) {
+async function fetchDataset(name, path, select) {
   const entry = DATASETS[name];
   if (!entry) throw new Error(`Unknown dataset "${name}".`);
   const res = await fetch(`${SITE_ORIGIN}${entry[0]}`, { signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`Dataset "${name}" returned HTTP ${res.status}.`);
   const json = await res.json();
-  const picked = pick(json, path);
+  const picked = applySelect(pick(json, path), select);
   if (picked === undefined) {
     throw new Error(
       `Path "${path}" is not present in "${name}". ` +
@@ -339,7 +464,7 @@ export async function runTool({ name, input }, { db, allowedTables, userId }) {
     }
 
     if (name === "get_dataset") {
-      const value = await fetchDataset(input?.name, input?.path);
+      const value = await fetchDataset(input?.name, input?.path, input?.select);
       return { content: summariseValue(value) };
     }
 
@@ -599,3 +724,6 @@ export async function runTurn({ messages, userId, db, allowedTables, emit, signa
 export const AI_LIMITS = { MAX_STEPS, ROW_CAP, QUERY_TIMEOUT_MS };
 export const AI_SITE_PAGES = SITE_PAGES;
 export const AI_DATASETS = DATASETS;
+// Exported to be tested. Reaching a big published array is the whole job of
+// get_dataset, and it was silently failing at it.
+export { pick as pickPath, applySelect };
