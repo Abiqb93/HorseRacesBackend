@@ -63,6 +63,7 @@ const SITE_PAGES = [
   ["Trainer Form", "/dashboard/TrainerForm", "Trainer form and uplift"],
   ["Trainer Uplift", "/dashboard/TrainerUplift", "Horses that improved on joining a yard"],
   ["HIT Sales", "/dashboard/hitsales", "Horses-in-training catalogues: every lot rated and ranked, with Auto List and sales tracking"],
+  ["APEX Ratings", "/dashboard/BillApex", "APEX sire ratings by edition, the trend between them, and an Excel export"],
   ["BlandfordAI", "/dashboard/BlandfordAI", "This assistant"],
 ];
 
@@ -87,6 +88,12 @@ const DATASETS = {
   "early-indicators": ["/data/stallions/early.json", "Young-sire first and second season figures"],
   "fee-model": ["/data/stallions/fee-model.json", "Stud fee history and the fee-change model"],
   "stallion-population": ["/data/stallions/population.json", "The stallion population by year and market"],
+
+  // APEX. Two editions side by side, plus the movement between them, so
+  // "which sires are improving" is one call rather than a diff the model has
+  // to do in its head. `sires` is an array of ~750 entries, each with `by`
+  // (the row per edition) and `move` (the change) - select on it.
+  "apex": ["/data/apex/index.json", "APEX ratings, Year-End 2025 and Mid-Year 2026: index by progeny age group (2YO-5YO+) and by grade (A/B/C, ABCI), runners, and for 2026 earnings, winners, wins and the NA/EU/JP splits. Each sire carries `move` with its ABCI/AI/BI/CI change between editions and a status of both/new/gone. There is no 3YO figure for 2025 - that column was destroyed in storage."],
 
   // Horses in Training sales. One set per sale: the catalogue with every lot's
   // rating and rank, what the desk has listed and enquired on, and the digest
