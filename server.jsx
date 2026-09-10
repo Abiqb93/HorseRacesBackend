@@ -11182,6 +11182,172 @@ if (String(process.env.FRANCE_CRON || "").toLowerCase() === "on") {
 // ---------------------------------------------------------------------------
 const loadAiAgent = () => import("./ai/agent.mjs");
 
+// ---------------------------------------------------------------------------
+// Pedigrees
+//
+// The frontend is a static deploy, so it cannot hold the pedigree source's API
+// key: anything shipped to the browser is readable by anyone who opens dev
+// tools. These two routes are the proxy — they hold the key, cache what comes
+// back, and stand between the source and everyone using the site.
+//
+// The caching is not an optimisation, it is most of the point. A pedigree
+// never changes, so a horse is fetched once ever and read from MySQL after
+// that. Upstream calls are serialised through one queue with a 45-second gap
+// (see pedigree/client.mjs), which is slower than a person clicking through
+// the source's own website — deliberately, because it answered one request
+// during development with "Site protection is currently blocking all proxies".
+//
+// The raw response is stored and returned. Normalising it into a grid and an
+// inbreeding list happens in the frontend, which already has a tested module
+// for it; a second normaliser here would drift from that one.
+// ---------------------------------------------------------------------------
+const loadPedigreeClient = () => import("./pedigree/client.mjs");
+const loadPedigreeStore = () => import("./pedigree/store.mjs");
+
+loadPedigreeStore().then(({ CREATE_TABLE }) => {
+  db.query(CREATE_TABLE, (err) => {
+    if (err) console.error("pedigree_cache table check failed:", err.message);
+  });
+}).catch((err) => console.error("pedigree store failed to load:", err.message));
+
+const queryOne = (sql, args) =>
+  new Promise((resolve, reject) => {
+    db.query(sql, args, (err, rows) => (err ? reject(err) : resolve(rows?.[0] ?? null)));
+  });
+
+const runQuery = (sql, args) =>
+  new Promise((resolve, reject) => {
+    db.query(sql, args, (err, rows) => (err ? reject(err) : resolve(rows)));
+  });
+
+/**
+ * A pedigree, from the cache where we have it and from the source where we do
+ * not.
+ *
+ * `refresh=1` forces an upstream call. It exists for the case where a stored
+ * payload is known to be wrong, not for routine use — a pedigree does not
+ * change, and every forced call spends the source's patience.
+ */
+app.get("/api/pedigree", async (req, res) => {
+  const name = (req.query.name ?? "").toString().trim();
+  const ref = (req.query.ref ?? "").toString().trim() || null;
+  const yearRaw = Number(req.query.year);
+  const year = Number.isFinite(yearRaw) && yearRaw > 1700 ? yearRaw : null;
+  const refresh = req.query.refresh === "1";
+
+  if (!name && !ref) {
+    return res.status(400).json({ error: "give a name, or a reference number" });
+  }
+
+  try {
+    const store = await loadPedigreeStore();
+
+    if (!refresh) {
+      const q = store.findQuery({ name, year, ref });
+      const hit = q ? await queryOne(q.sql, q.args) : null;
+      if (hit) {
+        return res.json({
+          source: "cache",
+          reference: hit.reference,
+          fetched: hit.fetched_at,
+          data: JSON.parse(hit.payload),
+        });
+      }
+    }
+
+    const client = await loadPedigreeClient();
+
+    // A caller that would sit behind a long queue is told so rather than left
+    // hanging on a request that may take minutes to reach the front.
+    const wait = client.throttle.waitEstimateMs();
+    if (client.throttle.isBlocked) {
+      return res.status(503).json({
+        error: "the pedigree source is throttling us; try again shortly",
+        retryAfterSeconds: Math.ceil(wait / 1000),
+        blocked: true,
+      });
+    }
+
+    const payload = await client.getPedigree({ name, year, ref });
+    const row = store.rowFor(payload);
+    if (row) {
+      await runQuery(store.UPSERT, store.upsertArgs(row));
+    } else {
+      // Returned but not cached: without a reference number there is no key to
+      // file it under, and inventing one would collide two horses.
+      console.warn("pedigree not cacheable (no reference):", name || ref);
+    }
+    return res.json({
+      source: "upstream",
+      reference: row?.reference ?? null,
+      cached: Boolean(row),
+      data: payload,
+    });
+  } catch (err) {
+    if (err?.unconfigured) {
+      return res.status(501).json({ error: "pedigree lookup is not configured on this server" });
+    }
+    if (err?.blocked) {
+      return res.status(503).json({ error: err.message, blocked: true });
+    }
+    if (err?.ambiguous) {
+      // The source names the reference numbers in its message; pass it through
+      // so the caller can pick one rather than guess.
+      return res.status(409).json({ error: err.message, ambiguous: true });
+    }
+    console.error("pedigree lookup failed:", err.message);
+    return res.status(502).json({ error: "pedigree lookup failed" });
+  }
+});
+
+/** What we already hold, so a page can list without asking the source at all. */
+app.get("/api/pedigree/held", async (req, res) => {
+  try {
+    const rows = await runQuery(
+      `SELECT reference, display, name_key, foaling_year, sex, fetched_at
+         FROM pedigree_cache ORDER BY display ASC`,
+      [],
+    );
+    res.json({ count: rows.length, horses: rows });
+  } catch (err) {
+    console.error("pedigree held failed:", err.message);
+    res.status(500).json({ error: "database error" });
+  }
+});
+
+/**
+ * Name search, for resolving a horse before asking for its pedigree.
+ *
+ * Not cached: it is cheaper upstream than a pedigree, and its answer changes
+ * as the source adds horses, which a pedigree does not.
+ */
+app.get("/api/pedigree/search", async (req, res) => {
+  const name = (req.query.name ?? "").toString().trim();
+  if (!name) return res.status(400).json({ error: "name is required" });
+  const yearRaw = Number(req.query.year);
+  const year = Number.isFinite(yearRaw) && yearRaw > 1700 ? yearRaw : null;
+  try {
+    const client = await loadPedigreeClient();
+    if (client.throttle.isBlocked) {
+      return res.status(503).json({
+        error: "the pedigree source is throttling us; try again shortly",
+        retryAfterSeconds: Math.ceil(client.throttle.waitEstimateMs() / 1000),
+        blocked: true,
+      });
+    }
+    const data = await client.searchHorses({ name, year });
+    res.json({ matches: data?.matches ?? [], count: data?.count ?? 0 });
+  } catch (err) {
+    if (err?.unconfigured) {
+      return res.status(501).json({ error: "pedigree lookup is not configured on this server" });
+    }
+    if (err?.blocked) return res.status(503).json({ error: err.message, blocked: true });
+    console.error("pedigree search failed:", err.message);
+    res.status(502).json({ error: "pedigree search failed" });
+  }
+});
+
+
 /**
  * What the AI can read.
  *
