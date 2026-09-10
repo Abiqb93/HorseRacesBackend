@@ -11300,6 +11300,169 @@ app.get("/api/pedigree", async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Mares
+//
+// The starting point for every female is the Timeform results table: it holds
+// every horse that has run, with its sex, sire, dam, foaling date and ratings,
+// which is everything a mare needs to be found and identified.
+//
+// "Female" is BOTH 'f' and 'm'. Timeform records the sex as at the running, so
+// a filly becomes a mare with age and the same horse carries different codes
+// across her career: Enable's Arc run says 'm' while Treve, Zarkava and Ouija
+// Board all say 'f'. Filtering on 'm' alone silently loses most of the best
+// mares in the database, which looks exactly like a search that simply found
+// nothing.
+//
+// One row per horse, not per run. A mare with forty starts must appear once,
+// with her best figures rather than her latest, because a search result is a
+// horse and a career is what identifies her.
+// ---------------------------------------------------------------------------
+const FEMALE_CODES = ["f", "m"];
+
+db.query(
+  `CREATE TABLE IF NOT EXISTS my_mares (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    horse_name VARCHAR(191) NOT NULL,
+    name_key VARCHAR(191) NOT NULL,
+    country_code VARCHAR(8),
+    foaling_year SMALLINT NULL,
+    sire_name VARCHAR(191),
+    dam_name VARCHAR(191),
+    best_rating SMALLINT NULL,
+    pedigree_reference VARCHAR(32) NULL,
+    note TEXT,
+    added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_user_mare (user_id, name_key, foaling_year),
+    KEY idx_my_mares_user (user_id)
+  )`,
+  (err) => { if (err) console.error("my_mares table check failed:", err.message); }
+);
+
+/** The same reduction the pedigree cache uses, so the two can be joined. */
+const mareNameKey = (raw) =>
+  String(raw ?? "")
+    .trim()
+    .replace(/^[*=$]+/, "")
+    .replace(/\s*\([A-Za-z]{2,3}\)\s*$/, "")
+    .toLowerCase()
+    .replace(/['\u2019`\u00b4]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+/**
+ * Find females in the Timeform data by name.
+ *
+ * Grouped by horse so one mare is one result. `MAX(performanceRating)` is her
+ * best, not her most recent — a mare rated 115 once and 80 since is a 115 mare
+ * for the purposes of finding her.
+ *
+ * The name match is a prefix (`LIKE 'x%'`) rather than a contains: on a table
+ * of this size a leading wildcard cannot use the index and turns a keystroke
+ * into a full scan.
+ */
+app.get("/api/mares/search", (req, res) => {
+  const q = (req.query.q ?? "").toString().trim();
+  if (q.length < 2) return res.status(400).json({ error: "give at least two characters" });
+  const limit = Math.min(Number(req.query.limit) || 25, 100);
+
+  const sql = `
+    SELECT horseName AS horse_name,
+           MAX(countryCode)          AS country_code,
+           MAX(horseGender)          AS sex,
+           MAX(sireName)             AS sire_name,
+           MAX(damName)              AS dam_name,
+           MAX(YEAR(foalingDate))    AS foaling_year,
+           MAX(performanceRating)    AS best_rating,
+           MAX(preRaceMasterRating)  AS best_master_rating,
+           COUNT(*)                  AS runs,
+           MAX(meetingDate)          AS last_run
+      FROM APIData_Table2
+     WHERE horseGender IN (?, ?)
+       AND horseName LIKE ?
+     GROUP BY horseName
+     ORDER BY best_rating DESC, runs DESC
+     LIMIT ?`;
+
+  db.query(sql, [...FEMALE_CODES, `${q}%`, limit], (err, rows) => {
+    if (err) {
+      console.error("mare search failed:", err.message);
+      return res.status(500).json({ error: "database error" });
+    }
+    res.json({
+      count: rows.length,
+      mares: rows.map((r) => ({ ...r, name_key: mareNameKey(r.horse_name) })),
+    });
+  });
+});
+
+/** One user's mares. */
+app.get("/api/mares/:userId", (req, res) => {
+  db.query(
+    "SELECT * FROM my_mares WHERE user_id = ? ORDER BY horse_name ASC",
+    [req.params.userId],
+    (err, rows) => {
+      if (err) {
+        console.error("my_mares read failed:", err.message);
+        return res.status(500).json({ error: "database error" });
+      }
+      res.json({ count: rows.length, mares: rows });
+    },
+  );
+});
+
+app.post("/api/mares", express.json(), (req, res) => {
+  const b = req.body ?? {};
+  const userId = (b.userId ?? "").toString().trim();
+  const horseName = (b.horseName ?? "").toString().trim();
+  if (!userId || !horseName) {
+    return res.status(400).json({ error: "userId and horseName are required" });
+  }
+  const year = Number.isFinite(Number(b.foalingYear)) ? Number(b.foalingYear) : null;
+  db.query(
+    `INSERT INTO my_mares
+       (user_id, horse_name, name_key, country_code, foaling_year,
+        sire_name, dam_name, best_rating, pedigree_reference, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       horse_name = VALUES(horse_name), country_code = VALUES(country_code),
+       sire_name = VALUES(sire_name), dam_name = VALUES(dam_name),
+       best_rating = VALUES(best_rating),
+       pedigree_reference = COALESCE(VALUES(pedigree_reference), pedigree_reference),
+       note = COALESCE(VALUES(note), note)`,
+    [
+      userId, horseName, mareNameKey(horseName),
+      b.countryCode ?? null, year, b.sireName ?? null, b.damName ?? null,
+      Number.isFinite(Number(b.bestRating)) ? Number(b.bestRating) : null,
+      b.pedigreeReference ?? null, b.note ?? null,
+    ],
+    (err) => {
+      if (err) {
+        console.error("my_mares insert failed:", err.message);
+        return res.status(500).json({ error: "database error" });
+      }
+      res.status(201).json({ ok: true });
+    },
+  );
+});
+
+app.delete("/api/mares/:userId/:id", (req, res) => {
+  db.query(
+    "DELETE FROM my_mares WHERE user_id = ? AND id = ?",
+    [req.params.userId, req.params.id],
+    (err, result) => {
+      if (err) {
+        console.error("my_mares delete failed:", err.message);
+        return res.status(500).json({ error: "database error" });
+      }
+      // Scoped by user_id as well as id, so an id from another user's list
+      // deletes nothing rather than someone else's mare.
+      res.json({ ok: true, removed: result?.affectedRows ?? 0 });
+    },
+  );
+});
+
 /** What we already hold, so a page can list without asking the source at all. */
 app.get("/api/pedigree/held", async (req, res) => {
   try {
