@@ -308,9 +308,31 @@ test("every dataset path is one that exists on the site", async () => {
   // existed - the roster is index.json - so every request for the roster 404d
   const { AI_DATASETS } = await import("./agent.mjs");
   assert.equal(AI_DATASETS.stallions[0], "/data/stallions/index.json");
+  // The sales datasets are a directory per sale, so a path may carry one more
+  // segment than the flat ones. Both of these were checked against the live
+  // site rather than assumed: /data/hitsales/tatts-july-2026/index.json is
+  // 1.76 MB and the Arc catalogue 74 kB, both HTTP 200.
   for (const [name, [path]] of Object.entries(AI_DATASETS)) {
-    assert.match(path, /^\/data\/[a-z-]+\/[a-z0-9-]+\.json$/, `${name} has an odd path`);
+    assert.match(path, /^\/data\/[a-z-]+(\/[a-z0-9-]+)?\/[a-z0-9-]+\.json$/, `${name} has an odd path`);
   }
+  assert.equal(AI_DATASETS["hit-sale-tatts-july"][0], "/data/hitsales/tatts-july-2026/index.json");
+  assert.equal(AI_DATASETS["hit-sale-arc"][0], "/data/hitsales/arc-sale-2026/index.json");
+});
+
+test("the assistant can reach the desk's own working lists", async () => {
+  // The Review List, the Client List and the notification history are what the
+  // product is for, and none of them were reachable: they route through
+  // hand-written endpoints, so they were absent from the generic /api/:table
+  // allow-list the assistant inherited.
+  const { TABLE_NOTES } = await import("./tableNotes.mjs");
+  for (const t of [
+    "review_horses", "review_horse_actions", "review_conditions",
+    "review_rule_preferences", "bloodstock_clients",
+  ]) {
+    assert.ok(TABLE_NOTES[t], `${t} has no note, so the assistant cannot tell what it holds`);
+  }
+  assert.match(TABLE_NOTES.bloodstock_clients, /user_id/, "it has to know to scope by user");
+  assert.match(TABLE_NOTES.review_horses, /user_id/);
 });
 
 test("the brief tells it to bound large tables and not to retry a dead step", () => {
@@ -318,4 +340,21 @@ test("the brief tells it to bound large tables and not to retry a dead step", ()
   assert.match(p, /Bound every query on a large table/);
   assert.match(p, /do not repeat it in another form/);
   assert.match(p, /rather than describing your way through the schema/);
+});
+
+test("no table is described twice", async () => {
+  // A second entry for the same table silently wins, and the first is dead
+  // text that reads as if it were in force. bloodstock_clients had two, and the
+  // fuller one was the one being discarded. The object cannot show this once
+  // it is built, so the source is what gets checked.
+  const fs = await import("node:fs");
+  const url = await import("node:url");
+  const src = fs.readFileSync(
+    url.fileURLToPath(new URL("./tableNotes.mjs", import.meta.url)),
+    "utf8",
+  );
+  const keys = [...src.matchAll(/^ {2}"?([A-Za-z_][A-Za-z0-9_-]*)"?:/gm)].map((m) => m[1]);
+  const seen = new Set();
+  const twice = keys.filter((k) => (seen.has(k) ? true : (seen.add(k), false)));
+  assert.deepEqual([...new Set(twice)], [], "these tables are described more than once");
 });
