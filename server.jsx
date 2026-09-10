@@ -11447,6 +11447,47 @@ app.post("/api/mares", express.json(), (req, res) => {
   );
 });
 
+/**
+ * Distance profiles for many sires at once.
+ *
+ * One request for a whole shortlist rather than one per stallion: the mating
+ * search compares dozens of candidates, and a request each would be dozens of
+ * round trips for a chart that is drawn in one go.
+ *
+ * Rows come back grouped by sire and otherwise untouched. The table holds more
+ * than one row per (sire, band) for some sires — Lope de Vega has two sets, one
+ * summing to roughly 4,700 band-appearances and another to 375, with no column
+ * distinguishing them — so the aggregation is a judgement and belongs in one
+ * place the frontend can test, not scattered across SQL.
+ */
+app.post("/api/sires/distance-profiles", (req, res) => {
+  const names = Array.isArray(req.body?.names) ? req.body.names : [];
+  const cleaned = names
+    .map((n) => String(n ?? "").trim())
+    .filter(Boolean)
+    .slice(0, 200);
+  if (!cleaned.length) return res.status(400).json({ error: "names[] is required" });
+
+  const placeholders = cleaned.map(() => "LOWER(TRIM(?))").join(", ");
+  const sql = `
+    SELECT Sire, Distancecategory, Runners, Winners, Wins
+      FROM sire_distance_reports
+     WHERE LOWER(TRIM(Sire)) IN (${placeholders})`;
+
+  db.query(sql, cleaned, (err, rows) => {
+    if (err) {
+      console.error("distance profiles failed:", err.message);
+      return res.status(500).json({ error: "database error" });
+    }
+    const bySire = {};
+    for (const r of rows) {
+      const key = String(r.Sire ?? "").trim().toLowerCase();
+      (bySire[key] = bySire[key] || []).push(r);
+    }
+    res.json({ asked: cleaned.length, found: Object.keys(bySire).length, profiles: bySire });
+  });
+});
+
 app.delete("/api/mares/:userId/:id", (req, res) => {
   db.query(
     "DELETE FROM my_mares WHERE user_id = ? AND id = ?",
