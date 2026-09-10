@@ -62,6 +62,8 @@ const SITE_PAGES = [
   ["Dam Profile", "/dashboard/DamProfile", "Broodmare records"],
   ["Trainer Form", "/dashboard/TrainerForm", "Trainer form and uplift"],
   ["Trainer Uplift", "/dashboard/TrainerUplift", "Horses that improved on joining a yard"],
+  ["HIT Sales", "/dashboard/hitsales", "Horses-in-training catalogues: every lot rated and ranked, with Auto List and sales tracking"],
+  ["BlandfordAI", "/dashboard/BlandfordAI", "This assistant"],
 ];
 
 /**
@@ -85,6 +87,14 @@ const DATASETS = {
   "early-indicators": ["/data/stallions/early.json", "Young-sire first and second season figures"],
   "fee-model": ["/data/stallions/fee-model.json", "Stud fee history and the fee-change model"],
   "stallion-population": ["/data/stallions/population.json", "The stallion population by year and market"],
+
+  // Horses in Training sales. One set per sale: the catalogue with every lot's
+  // rating and rank, what the desk has listed and enquired on, and the digest
+  // that goes out each morning.
+  "hit-sale-tatts-july": ["/data/hitsales/tatts-july-2026/index.json", "Tattersalls July 2026 HIT catalogue: every lot with its rating, rank against the sale and against the GB/IRE/FRA population, pedigree, form and sectionals"],
+  "hit-sale-tatts-july-tracking": ["/data/hitsales/tatts-july-2026/tracking.json", "Tattersalls July 2026: the desk's lists, categories and enquiries"],
+  "hit-sale-arc": ["/data/hitsales/arc-sale-2026/index.json", "Arqana Arc 2026 HIT catalogue: every lot with its rating and rank"],
+  "hit-sale-arc-tracking": ["/data/hitsales/arc-sale-2026/tracking.json", "Arqana Arc 2026: the desk's lists, categories and enquiries"],
 
   // Prospects
   "prospects": ["/data/prospects/index.json", "The prospects index"],

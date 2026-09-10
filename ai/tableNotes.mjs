@@ -18,6 +18,26 @@
  */
 
 export const TABLE_NOTES = {
+  // --- the desk's own working lists ----------------------------------------
+  // These are what the product is for, and the assistant could not see any of
+  // them until now: they route through hand-written endpoints rather than the
+  // generic /api/:table one, so they were never on the allow-list it inherited.
+  review_horses:
+    "The Review List: horses put up for review, with the rating and figures " +
+    "they were put up on. Scope by user_id.",
+  review_horse_actions:
+    "What the desk decided about a reviewed horse - the Enquire actions and " +
+    "their state. This is the record of what was actually done about a horse.",
+  review_conditions: "The conditions a horse had to meet to reach the Review List.",
+  review_rule_preferences: "Each user's Review List rules and thresholds.",
+  bloodstock_clients:
+    "The Client List: one row per bloodstock client with their brief in `prefs`, " +
+    "their pipeline and scored suggestions, all JSON. Scope by user_id.",
+  notifications: "Notifications raised for a user, and whether they were read.",
+  daily_notifications_all_users: "The daily digest as it was sent, per user.",
+  DeclarationsTracking: "Declarations feed. Largely dormant - check for recent rows before relying on it.",
+  EntriesTracking: "Entries feed. Largely dormant - check for recent rows before relying on it.",
+
   // --- the main race record -------------------------------------------------
   APIData_Table2:
     "THE MAIN WAREHOUSE. One row per horse per run: name, age, sex, sire, dam, " +
@@ -45,7 +65,6 @@ export const TABLE_NOTES = {
   reviewed_results: "Results a user has marked reviewed.",
   horse_tracking_shares: "Tracking lists shared between users.",
   UserAccounts: "Platform users. Names here are what user_id refers to elsewhere.",
-  bloodstock_clients: "Bloodstock clients per user, with their brief and pipeline as JSON.",
   ai_questions: "Questions put to BlandfordAI - read this through team_activity, not SQL.",
 
   // --- sectionals, stride and pars ------------------------------------------

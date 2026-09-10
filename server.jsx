@@ -11182,8 +11182,39 @@ if (String(process.env.FRANCE_CRON || "").toLowerCase() === "on") {
 // ---------------------------------------------------------------------------
 const loadAiAgent = () => import("./ai/agent.mjs");
 
-/** What the AI can read: the same tables the REST API exposes. */
-const aiAllowedTables = () => validTables;
+/**
+ * What the AI can read.
+ *
+ * It used to be exactly `validTables`, the generic `/api/:table` allow-list,
+ * and that left the assistant unable to answer questions about several of the
+ * product's own features: the Review List, the Client List and the notification
+ * history are all real tables that route through hand-written endpoints rather
+ * than the generic one, so they were never on that list.
+ *
+ * They get their own list rather than being appended to `validTables`, because
+ * those two lists answer different questions. `validTables` is "what may anyone
+ * fetch wholesale over REST"; this is "what may the assistant read on behalf of
+ * a signed-in member of the desk". Widening the first to fix the second would
+ * have opened a public, unauthenticated route onto every user's client list.
+ *
+ * Note what this does and does not scope. The assistant reads these tables as
+ * the desk, not as one user: it can see any user's tracker, review list or
+ * clients, in the same way that the sharing features already let colleagues see
+ * each other's. It cannot write to any of them - `sqlGuard` allows SELECT and
+ * nothing else.
+ */
+const AI_EXTRA_TABLES = [
+  // Review List
+  "review_horses", "review_horse_actions", "review_conditions", "review_rule_preferences",
+  // Client List
+  "bloodstock_clients",
+  // What the desk has been told, and when
+  "notifications", "daily_notifications_all_users",
+  // Entry feeds the generic route does not carry
+  "DeclarationsTracking", "EntriesTracking",
+];
+
+const aiAllowedTables = () => [...new Set([...validTables, ...AI_EXTRA_TABLES])];
 
 app.get("/api/ai/status", async (req, res) => {
   try {
