@@ -19,7 +19,29 @@
  * the cache in store.mjs answers everything after that.
  */
 
-const SCRAPER = "28f5d3ac-8f20-4d52-93f4-51720c4e6496";
+/**
+ * Which parse.bot resource we call.
+ *
+ * An id, in configuration, because it is somebody else's identifier and it has
+ * already moved once. parse.bot's own SDK example reaches Equineline through a
+ * *named* API — `parse_apis.equineline_com_api`, `client.horses.search(...)`,
+ * `client.pedigrees.get(reference_number=...)` — while this UUID is a personal
+ * scraper instance created for us. On 11 September calls to it began returning
+ * "Scraper with ID 28f5d3ac-… not found", intermittently, between successes:
+ * exactly what a resource being retired underneath us looks like.
+ *
+ * Probing api.parse.bot without a key shows `/scraper/{id}/{endpoint}` is the
+ * only route family it serves — `/api/...`, `/v1/...` and the rest are 404 —
+ * so the SDK sits on this same surface with a different id. Switching to it is
+ * therefore a change of one environment variable rather than a deploy, and
+ * the two can be compared without touching code:
+ *
+ *   PARSE_SCRAPER_ID=equineline_com_api
+ *
+ * The default stays the UUID we have always used, so nothing changes until
+ * someone sets it.
+ */
+const SCRAPER = process.env.PARSE_SCRAPER_ID || "28f5d3ac-8f20-4d52-93f4-51720c4e6496";
 const BASE = `https://api.parse.bot/scraper/${SCRAPER}`;
 
 /**
