@@ -5076,6 +5076,25 @@ app.get("/api/pedigree", async (req, res) => {
       }
     }
 
+    // A bare reference is not a query the source accepts.
+    //
+    // It answers "Provide horse_name, or horse_name with foaling_year, or
+    // foaling_year with dam_name": the reference tells two horses of a name
+    // apart, it does not identify one on its own. Worth refusing here rather
+    // than upstream, because upstream costs a place in the queue and the better
+    // part of a minute to be told the same thing — and most of the time it came
+    // back as an opaque 500 instead, which is why this took a day to find.
+    //
+    // The cache above is not subject to this: there a reference is a primary
+    // key and answers perfectly well by itself.
+    if (!name && !(year && (req.query.dam ?? "").toString().trim())) {
+      return res.status(400).json({
+        error:
+          "a reference alone cannot be looked up: give a name as well, or a foaling year and dam",
+        needsName: true,
+      });
+    }
+
     const client = await loadPedigreeClient();
 
     // A caller that would sit behind a long queue is told so rather than left
