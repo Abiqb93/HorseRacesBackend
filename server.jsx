@@ -5269,19 +5269,51 @@ app.post("/api/mares", express.json(), (req, res) => {
  * distinguishing them — so the aggregation is a judgement and belongs in one
  * place the frontend can test, not scattered across SQL.
  */
+/**
+ * Distance records for a set of sires, one request for the whole set.
+ *
+ * Two things about the shape of this, both driven by the caller asking for
+ * every stallion on the roster rather than a shortlist of forty.
+ *
+ * **It aggregates here rather than there.** The table holds more than one row
+ * per (sire, band) for some sires — different magnitudes, different rates, and
+ * nothing in the data distinguishing them. Summing in SQL sends one row per
+ * band instead of up to a dozen, which for the full roster is the difference
+ * between a few hundred kilobytes and several megabytes. `sourceRows` carries
+ * how many rows were folded together, so a reader can still see that a figure
+ * is an aggregate rather than being handed a single clean number that isn't
+ * one.
+ *
+ * **The cap is 2,000, not 200.** The roster is about 1,860 active stallions
+ * and a cap below that silently truncated the field to whichever names
+ * happened to be first. The cap still exists because an unbounded IN list is
+ * a denial-of-service waiting to happen; it is now above the real workload
+ * rather than below it, and `truncated` says plainly when it bites.
+ */
+const DISTANCE_PROFILE_LIMIT = 2000;
+
 app.post("/api/sires/distance-profiles", (req, res) => {
   const names = Array.isArray(req.body?.names) ? req.body.names : [];
-  const cleaned = names
-    .map((n) => String(n ?? "").trim())
-    .filter(Boolean)
-    .slice(0, 200);
+  const all = names.map((n) => String(n ?? "").trim()).filter(Boolean);
+  // De-duplicated before the cap, so a caller sending the same name twice does
+  // not spend two of its allowance on one sire.
+  const cleaned = [...new Set(all.map((n) => n.toLowerCase()))].slice(
+    0,
+    DISTANCE_PROFILE_LIMIT,
+  );
   if (!cleaned.length) return res.status(400).json({ error: "names[] is required" });
 
-  const placeholders = cleaned.map(() => "LOWER(TRIM(?))").join(", ");
+  const placeholders = cleaned.map(() => "?").join(", ");
   const sql = `
-    SELECT Sire, Distancecategory, Runners, Winners, Wins
+    SELECT LOWER(TRIM(Sire)) AS sireKey,
+           Distancecategory,
+           SUM(Runners) AS Runners,
+           SUM(Winners) AS Winners,
+           SUM(Wins)    AS Wins,
+           COUNT(*)     AS sourceRows
       FROM sire_distance_reports
-     WHERE LOWER(TRIM(Sire)) IN (${placeholders})`;
+     WHERE LOWER(TRIM(Sire)) IN (${placeholders})
+     GROUP BY sireKey, Distancecategory`;
 
   db.query(sql, cleaned, (err, rows) => {
     if (err) {
@@ -5290,10 +5322,24 @@ app.post("/api/sires/distance-profiles", (req, res) => {
     }
     const bySire = {};
     for (const r of rows) {
-      const key = String(r.Sire ?? "").trim().toLowerCase();
-      (bySire[key] = bySire[key] || []).push(r);
+      const key = String(r.sireKey ?? "").trim();
+      if (!key) continue;
+      (bySire[key] = bySire[key] || []).push({
+        Distancecategory: r.Distancecategory,
+        // SUM() comes back as a string from the driver for DECIMAL columns,
+        // and a string here would reach the client and be summed as text.
+        Runners: Number(r.Runners) || 0,
+        Winners: Number(r.Winners) || 0,
+        Wins: Number(r.Wins) || 0,
+        sourceRows: Number(r.sourceRows) || 1,
+      });
     }
-    res.json({ asked: cleaned.length, found: Object.keys(bySire).length, profiles: bySire });
+    res.json({
+      asked: cleaned.length,
+      found: Object.keys(bySire).length,
+      truncated: all.length > cleaned.length ? all.length - cleaned.length : 0,
+      profiles: bySire,
+    });
   });
 });
 
