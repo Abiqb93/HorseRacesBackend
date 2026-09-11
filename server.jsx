@@ -5111,6 +5111,9 @@ app.get("/api/pedigree", async (req, res) => {
     if (err?.blocked) {
       return res.status(503).json({ error: err.message, blocked: true });
     }
+    // Which parse.bot resource answered, so a caller comparing the personal
+    // scraper against the named Equineline API can tell them apart in the
+    // response rather than by reading the server's environment.
     if (err?.ambiguous) {
       // The source names the reference numbers in its message; pass it through
       // so the caller can pick one rather than guess.
@@ -5126,6 +5129,7 @@ app.get("/api/pedigree", async (req, res) => {
     return res.status(502).json({
       error: "pedigree lookup failed",
       detail: String(err.message ?? "").slice(0, 300),
+      scraper: process.env.PARSE_SCRAPER_ID || "default",
     });
   }
 });
@@ -5564,6 +5568,7 @@ app.get("/api/pedigree/search", async (req, res) => {
     res.status(502).json({
       error: "pedigree search failed",
       detail: String(err.message ?? "").slice(0, 300),
+      scraper: process.env.PARSE_SCRAPER_ID || "default",
     });
   }
 });
