@@ -5167,16 +5167,26 @@ const mareNameKey = (raw) =>
  * best, not her most recent — a mare rated 115 once and 80 since is a 115 mare
  * for the purposes of finding her.
  *
- * The name match is a prefix (`LIKE 'x%'`) rather than a contains: on a table
- * of this size a leading wildcard cannot use the index and turns a keystroke
- * into a full scan.
+ * ## Two passes, because one of them has to be cheap
+ *
+ * A prefix (`LIKE 'x%'`) can use the index on the name; a contains cannot, and
+ * on a table of this size a leading wildcard turns every keystroke into a full
+ * scan. But a prefix alone cannot find a mare by a word inside her name —
+ * "in the hand" returns nothing for Cash in the Hand — which is exactly how
+ * someone searches when they remember part of a name and not its first word.
+ *
+ * So: the prefix runs first and answers most searches on the index. Only when
+ * it comes back short of the limit does the second pass look for the term at
+ * the start of any *later* word (`LIKE '% x%'`), and it asks only for the rows
+ * the first pass did not fill. A common prefix stays fast; an unusual fragment
+ * pays for a scan once.
+ *
+ * Neither pass can find a mare who never ran, or whose races our feeds do not
+ * cover. That is not a bug in the query and cannot be fixed by widening it:
+ * the stud book is the other half of the answer, and the mares page searches
+ * it separately.
  */
-app.get("/api/mares/search", (req, res) => {
-  const q = (req.query.q ?? "").toString().trim();
-  if (q.length < 2) return res.status(400).json({ error: "give at least two characters" });
-  const limit = Math.min(Number(req.query.limit) || 25, 100);
-
-  const sql = `
+const MARE_SEARCH_SQL = `
     SELECT horseName AS horse_name,
            MAX(countryCode)          AS country_code,
            MAX(horseGender)          AS sex,
@@ -5194,15 +5204,52 @@ app.get("/api/mares/search", (req, res) => {
      ORDER BY best_rating DESC, runs DESC
      LIMIT ?`;
 
-  db.query(sql, [...FEMALE_CODES, `${q}%`, limit], (err, rows) => {
-    if (err) {
-      console.error("mare search failed:", err.message);
-      return res.status(500).json({ error: "database error" });
-    }
+app.get("/api/mares/search", (req, res) => {
+  const q = (req.query.q ?? "").toString().trim();
+  if (q.length < 2) return res.status(400).json({ error: "give at least two characters" });
+  const limit = Math.min(Number(req.query.limit) || 25, 100);
+
+  const send = (rows) =>
     res.json({
       count: rows.length,
       mares: rows.map((r) => ({ ...r, name_key: mareNameKey(r.horse_name) })),
     });
+
+  const fail = (err) => {
+    console.error("mare search failed:", err.message);
+    return res.status(500).json({ error: "database error" });
+  };
+
+  db.query(MARE_SEARCH_SQL, [...FEMALE_CODES, `${q}%`, limit], (err, rows) => {
+    if (err) return fail(err);
+    if (rows.length >= limit) return send(rows);
+
+    // The mid-name pass. `% q%` is the start of a later word, not any position
+    // inside one: "ash" should not offer every horse with those letters buried
+    // in the middle of a name.
+    db.query(
+      MARE_SEARCH_SQL,
+      // The full limit, not the shortfall: this pass can return rows the first
+      // one already has, and asking only for the gap would leave it short after
+      // de-duplication.
+      [...FEMALE_CODES, `% ${q}%`, limit],
+      (err2, more) => {
+        if (err2) {
+          // The expensive half failing is not a reason to lose the cheap half.
+          console.error("mare search (mid-name) failed:", err2.message);
+          return send(rows);
+        }
+        const seen = new Set(rows.map((r) => r.horse_name));
+        const merged = [...rows];
+        for (const r of more) {
+          if (merged.length >= limit) break;
+          if (seen.has(r.horse_name)) continue;
+          seen.add(r.horse_name);
+          merged.push(r);
+        }
+        return send(merged);
+      },
+    );
   });
 });
 
