@@ -4,6 +4,7 @@ require("dotenv").config();
 
 // Import required modules
 const express = require('express');
+const compression = require('compression');
 const mysql = require('mysql');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
@@ -31,6 +32,17 @@ if (!GMAIL_USER || !GMAIL_PASS) {
     "Everything else runs normally."
   );
 }
+
+/**
+ * Gzip, which this API has never had.
+ *
+ * `compression` was in package.json and wired into nothing, so every response
+ * went out raw — a 23 kB mare search, a 1.4 MB dataset. These payloads are
+ * JSON with heavily repeated keys and names, which is the case gzip is best at:
+ * the pedigree grids below come down from megabytes to a few hundred kilobytes.
+ * It costs a little CPU per response and nothing else.
+ */
+app.use(compression());
 
 // Updated CORS middleware
 app.use(cors({
@@ -5105,7 +5117,16 @@ app.get("/api/pedigree", async (req, res) => {
       return res.status(409).json({ error: err.message, ambiguous: true });
     }
     console.error("pedigree lookup failed:", err.message);
-    return res.status(502).json({ error: "pedigree lookup failed" });
+    // Pass the source's own words through. "pedigree lookup failed" told a
+    // reader nothing and told us nothing either: a horse the source does not
+    // have, a scrape that came back empty and a service having a bad afternoon
+    // all arrived as the same sentence, so there was no way to tell a wasted
+    // retry from a worthwhile one. The key never appears in these messages —
+    // it travels in a header, and this is the scraper describing a scrape.
+    return res.status(502).json({
+      error: "pedigree lookup failed",
+      detail: String(err.message ?? "").slice(0, 300),
+    });
   }
 });
 
@@ -5228,14 +5249,22 @@ app.get("/api/mares/search", (req, res) => {
     // inside one: "ash" should not offer every horse with those letters buried
     // in the middle of a name.
     db.query(
-      MARE_SEARCH_SQL,
+      // Capped, because this is the pass that cannot use the index. Measured
+      // on the live table: "the hand" took 75 seconds uncapped, which is past
+      // the browser's own timeout — so a rare term did not read as a slow
+      // search, it read as a broken one. Six seconds is the budget; over it,
+      // MySQL interrupts the statement, the error handler below keeps the
+      // prefix results, and the reader gets a fast partial answer instead of
+      // no answer at all.
+      MARE_SEARCH_SQL.replace("SELECT ", "SELECT /*+ MAX_EXECUTION_TIME(6000) */ "),
       // The full limit, not the shortfall: this pass can return rows the first
       // one already has, and asking only for the gap would leave it short after
       // de-duplication.
       [...FEMALE_CODES, `% ${q}%`, limit],
       (err2, more) => {
         if (err2) {
-          // The expensive half failing is not a reason to lose the cheap half.
+          // The expensive half failing — including being cut off at the cap
+          // above — is not a reason to lose the cheap half.
           console.error("mare search (mid-name) failed:", err2.message);
           return send(rows);
         }
@@ -5422,6 +5451,89 @@ app.get("/api/pedigree/held", async (req, res) => {
 });
 
 /**
+ * Every cached pedigree as a bare grid of ancestor names.
+ *
+ * ## The request this replaces
+ *
+ * The Matings page screens a mare against the whole stallion roster for
+ * inbreeding, and to do that it needs each horse's five generations. It used to
+ * get them by asking for every held pedigree individually. At ten cached
+ * horses that is ten small requests and nobody notices. The roster is 1,862,
+ * and the pedigree cache is being filled towards it — so that same code was on
+ * its way to firing 1,862 concurrent requests for 40 MB of JSON on every page
+ * load. One request for the lot, before it gets there.
+ *
+ * ## Why names and nothing else
+ *
+ * The cross only asks one question of an ancestor: does the same horse appear
+ * on both sides, and in which generations. That needs the name and the slot,
+ * and the slot is the position in the array. Colour, foaling year, reference
+ * and the rest are what the *chart* needs, and the chart is drawn for one horse
+ * at a time from the full record.
+ *
+ * So each horse is five arrays — 2, 4, 8, 16, 32 — of display names, with null
+ * where the pedigree runs out. A hole must stay a hole: close it up and every
+ * ancestor after it shifts into the wrong generation and the grid lies.
+ *
+ * The client re-derives its own matching key from the name, exactly as it does
+ * for a full pedigree, so the two paths cannot disagree about what counts as
+ * the same horse.
+ *
+ * Roughly 1.2 kB per horse before gzip, and these payloads are mostly the same
+ * few hundred ancestor names over and over, so they compress hard.
+ */
+app.get("/api/pedigree/grids", async (req, res) => {
+  const WIDTHS = [2, 4, 8, 16, 32];
+  const PATH = /^[SD]{1,5}$/;
+  // S is 0 and D is 1, which makes the path a binary numeral and the numeral
+  // the row order a tabulated pedigree is drawn in.
+  const slot = (path) =>
+    [...path].reduce((n, c) => n * 2 + (c === "D" ? 1 : 0), 0);
+
+  try {
+    const rows = await runQuery(
+      "SELECT reference, display, name_key, sex, foaling_year, payload FROM pedigree_cache",
+      [],
+    );
+
+    const horses = {};
+    for (const row of rows) {
+      let data;
+      try {
+        data = JSON.parse(row.payload);
+      } catch {
+        // A row we cannot parse is one horse missing from the screen, not a
+        // failed request for everybody else.
+        console.warn("pedigree grids: unreadable payload for", row.reference);
+        continue;
+      }
+      const grid = WIDTHS.map((w) => new Array(w).fill(null));
+      for (const a of data?.ancestors ?? []) {
+        const path = String(a?.path ?? "");
+        if (!PATH.test(path)) continue;
+        const g = path.length;
+        const i = slot(path);
+        if (i >= grid[g - 1].length) continue;
+        const written = String(a?.display_name ?? a?.name ?? "").trim();
+        if (written) grid[g - 1][i] = written;
+      }
+      horses[String(row.reference)] = {
+        name: row.display,
+        key: row.name_key,
+        sex: row.sex,
+        year: row.foaling_year,
+        grid,
+      };
+    }
+
+    res.json({ count: Object.keys(horses).length, horses });
+  } catch (err) {
+    console.error("pedigree grids failed:", err.message);
+    res.status(500).json({ error: "database error" });
+  }
+});
+
+/**
  * Name search, for resolving a horse before asking for its pedigree.
  *
  * Not cached: it is cheaper upstream than a pedigree, and its answer changes
@@ -5449,7 +5561,10 @@ app.get("/api/pedigree/search", async (req, res) => {
     }
     if (err?.blocked) return res.status(503).json({ error: err.message, blocked: true });
     console.error("pedigree search failed:", err.message);
-    res.status(502).json({ error: "pedigree search failed" });
+    res.status(502).json({
+      error: "pedigree search failed",
+      detail: String(err.message ?? "").slice(0, 300),
+    });
   }
 });
 
