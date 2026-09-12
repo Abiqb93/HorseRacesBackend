@@ -5659,13 +5659,20 @@ async function worldwidePopulation() {
        FROM breeding_horses`,
     [],
   );
+  const { EXPECTED_ROWS } = await loadHorses();
   const value = {
     n: Number(row?.n) || 0,
     stakesWinners: Number(row?.stakesWinners) || 0,
     groupWinners: Number(row?.groupWinners) || 0,
     group1Winners: Number(row?.group1Winners) || 0,
+    complete: (Number(row?.n) || 0) >= EXPECTED_ROWS,
   };
-  if (value.n) worldwideBaseline = { createdAt: Date.now(), value };
+  // Only a full table is a population. The first request after a fresh
+  // deploy landed while the fill was 4,500 rows in — the top of the 2014
+  // file, which is sorted by class — and cached a 15% stakes-winner rate
+  // for a day against a true 2.6%. A partial count is read fresh every time
+  // and never served as the baseline.
+  if (value.complete) worldwideBaseline = { createdAt: Date.now(), value };
   return value;
 }
 
@@ -5714,13 +5721,16 @@ async function worldwideDamsiresOf(damKeys) {
  */
 async function worldwideOutlook({ sire, dam, damsire, damYear, damsireOf }) {
   const { describeWorldwide } = await loadHorses();
-  const [sireHorses, damProduce, damRows, population] = await Promise.all([
+  const population = await worldwidePopulation().catch(() => null);
+  if (!population?.complete) return null;
+  const [sireHorses, damProduce, damRows] = await Promise.all([
     worldwideWhere("sire_key = ?", [sire]),
     worldwideWhere("dam_key = ?", [dam], 200),
     worldwideWhere("horse_name = ?", [dam], 5),
-    worldwidePopulation().catch(() => null),
   ]);
-  if (!population?.n) return null;
+  // No section at all while the table is filling: a partial file is not a
+  // smaller sample of the world, it is the best horses of 2014.
+  if (!population?.complete) return null;
 
   const damOwn =
     damRows.find((r) => damYear && r.foalingYear === damYear) ??
