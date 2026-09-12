@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { describe, quantile, studBookName, summariseHorse } from "./mating.mjs";
+import { describe, pickOwnRow, quantile, studBookName, summariseHorse } from "./mating.mjs";
 
 test("a name is written the way the results table writes it", () => {
   assert.equal(studBookName("=Frankel (GB)"), "FRANKEL");
@@ -43,4 +43,20 @@ test("describe counts the rated, the winners and the black type", () => {
   assert.equal(d.groupWinners, 1);
   assert.equal(d.group1Winners, 0);
   assert.equal(describe([]).mean, null);
+});
+
+test("the mare's own row is picked by year, then by sire, then by career", () => {
+  const rows = [
+    { name: "ENABLE", foalingYear: 2008, sire: null, runs: 1 },
+    { name: "ENABLE", foalingYear: 2014, sire: "NATHANIEL", runs: 20 },
+  ];
+  assert.equal(pickOwnRow(rows, { year: 2014 }).foalingYear, 2014);
+  assert.equal(pickOwnRow(rows, { sire: "Nathaniel (GB)" }).foalingYear, 2014);
+  assert.equal(pickOwnRow(rows, {}).foalingYear, 2014);
+  assert.equal(pickOwnRow([], {}), null);
+});
+
+test("the foaling year comes from the grouped column, never from a namesake's row", () => {
+  assert.equal(summariseHorse({ horseName: "X", foalYear: "2014", foaled: "2008-03-12" }).foalingYear, 2014);
+  assert.equal(summariseHorse({ horseName: "X", foaled: "2019-05-01T00:00:00Z" }).foalingYear, 2019);
 });
