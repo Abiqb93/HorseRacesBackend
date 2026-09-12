@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "node --test france/*.test.mjs ai/*.test.mjs",
+    "test": "node --test france/*.test.mjs ai/*.test.mjs pedigree/*.test.mjs breeding/*.test.mjs",
     "start": "node server.jsx",
     "france:schema": "node france/cli.mjs schema",
     "france:ingest": "node france/cli.mjs ingest",

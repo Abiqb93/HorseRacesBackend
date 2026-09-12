@@ -5592,6 +5592,214 @@ app.get("/api/pedigree/search", async (req, res) => {
   }
 });
 
+
+/* ------------------------------------------------------------------------- */
+/* Breeding: what a hypothetical mating's relatives have actually done        */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * The results table, read as a stud book.
+ *
+ * Every run in APIData_Table2 names the horse's sire and dam, and every horse
+ * that raced is therefore a data point about a mating that happened. Put a
+ * mare to a stallion in your head and the question a breeder asks next is
+ * "what did the ones like it do?" — the stallion's other runners, the mare's
+ * own produce, and above all the same cross: his runners out of mares by her
+ * sire. This endpoint answers that in one request, as per-horse career
+ * summaries grouped by how they relate to the foal.
+ *
+ * ## Damsire, derived
+ *
+ * `damsireName` is a recent column: 2% of rows carry it and none before 2018.
+ * So the damsire is read the way a stud book would read it — the dam is a
+ * horse, her sire is on her own rows — by looking each dam up as a runner. A
+ * dam who never raced has no rows and her sire stays unknown; that is a gap
+ * in the record, reported as such, not a horse with no sire.
+ *
+ * ## Ratings
+ *
+ * Timeform's master rating is the horse's level; the performance rating is one
+ * run's. Both carry a 999 sentinel for "none" which would make every horse a
+ * champion if summed, so only figures inside the scale (1–140) count. A
+ * horse's "best" is the higher of its best master and best performance rating.
+ *
+ * ## What stays server-side
+ *
+ * Only retrieval. Relationship coefficients and the expected rating are
+ * arithmetic over what comes back, computed in the client where they can be
+ * unit-tested against fixtures and shown with their working.
+ */
+const loadMating = () => import("./breeding/mating.mjs");
+const BREEDING_HINT = "/*+ MAX_EXECUTION_TIME(9000) */";
+
+/** Horses by one condition, best first. A timeout is an empty group, flagged. */
+async function horsesWhere(where, params, limit = 5000) {
+  const { HORSE_SUMMARY_SELECT, summariseHorse } = await loadMating();
+  const sql = `${HORSE_SUMMARY_SELECT.replace("SELECT ", `SELECT ${BREEDING_HINT} `)}
+   WHERE ${where}
+   GROUP BY horseName
+   ORDER BY GREATEST(COALESCE(bestMaster, 0), COALESCE(bestPerformance, 0)) DESC, runs DESC
+   LIMIT ${Number(limit)}`;
+  try {
+    return { horses: (await runQuery(sql, params)).map(summariseHorse), truncated: false, timedOut: false };
+  } catch (err) {
+    // ER_QUERY_TIMEOUT: the cap above fired. A group we could not read in time
+    // is reported as unread, never as empty — "no runners" and "did not finish
+    // counting" must not look the same.
+    if (err?.code === "ER_QUERY_TIMEOUT" || /max_execution_time|maximum statement execution/i.test(err?.message ?? "")) {
+      return { horses: [], truncated: false, timedOut: true };
+    }
+    throw err;
+  }
+}
+
+/**
+ * Each dam's sire, from her own rows. Chunked, because a big sire's runners
+ * are out of a couple of thousand different mares and one IN-list that long
+ * is not a query MySQL enjoys.
+ */
+async function damsiresOf(damNames) {
+  const out = new Map();
+  const names = [...new Set(damNames.filter(Boolean))];
+  for (let i = 0; i < names.length; i += 400) {
+    const chunk = names.slice(i, i + 400);
+    const rows = await runQuery(
+      `SELECT ${BREEDING_HINT} horseName, MAX(sireName) AS sireName
+         FROM APIData_Table2
+        WHERE horseName IN (${chunk.map(() => "?").join(", ")})
+        GROUP BY horseName`,
+      chunk,
+    ).catch(() => []);
+    for (const r of rows) if (r.sireName) out.set(String(r.horseName).toUpperCase(), r.sireName);
+  }
+  return out;
+}
+
+/**
+ * The population the groups are measured against: every horse that has run
+ * in the last two seasons, by its best figure. Cached for a day — it moves by
+ * a tenth of a point a week and the query is the dearest one here.
+ */
+const BREEDING_BASELINE_TTL_MS = 24 * 60 * 60 * 1000;
+let breedingBaseline = null;
+async function populationBaseline() {
+  if (breedingBaseline && Date.now() - breedingBaseline.createdAt < BREEDING_BASELINE_TTL_MS) {
+    return breedingBaseline.value;
+  }
+  const since = new Date();
+  since.setUTCFullYear(since.getUTCFullYear() - 2);
+  try {
+    const [row] = await runQuery(
+      `SELECT /*+ MAX_EXECUTION_TIME(25000) */ COUNT(*) AS n, AVG(best) AS mean, STDDEV_SAMP(best) AS sd
+         FROM (
+           SELECT GREATEST(
+                    COALESCE(MAX(CASE WHEN preRaceMasterRating BETWEEN 1 AND 140 THEN preRaceMasterRating END), 0),
+                    COALESCE(MAX(CASE WHEN performanceRating    BETWEEN 1 AND 140 THEN performanceRating    END), 0)
+                  ) AS best
+             FROM APIData_Table2
+            WHERE meetingDate >= ?
+            GROUP BY horseName
+         ) t
+        WHERE best > 0`,
+      [since.toISOString().slice(0, 10)],
+    );
+    const value = {
+      n: Number(row?.n) || 0,
+      mean: Number(row?.mean) || null,
+      sd: Number(row?.sd) || null,
+      since: since.toISOString().slice(0, 10),
+      measured: true,
+    };
+    if (value.n > 0 && value.mean) {
+      breedingBaseline = { createdAt: Date.now(), value };
+      return value;
+    }
+  } catch (err) {
+    console.warn("breeding baseline unavailable:", err.message);
+  }
+  // A fallback that says it is one. The figures are the last measured values
+  // rather than a guess, and `measured: false` tells the page to say so.
+  return { n: 0, mean: 68, sd: 17, since: null, measured: false };
+}
+
+app.get("/api/breeding/mating", async (req, res) => {
+  const { studBookName, describe } = await loadMating();
+  const sire = studBookName(req.query.sire);
+  const dam = studBookName(req.query.dam);
+  let damsire = studBookName(req.query.damsire) || null;
+  if (!sire || !dam) return res.status(400).json({ error: "sire and dam are required" });
+
+  try {
+    const [bySire, outOfDam, damOwn] = await Promise.all([
+      horsesWhere("sireName = ?", [sire]),
+      horsesWhere("damName = ?", [dam], 200),
+      horsesWhere("horseName = ?", [dam], 1),
+    ]);
+
+    // The mare's own sire, if the caller did not know it: her own rows say.
+    if (!damsire && damOwn.horses[0]?.sire) damsire = studBookName(damOwn.horses[0].sire);
+
+    // Damsires for the sire's runners, so the same cross can be picked out.
+    const damsireOf = await damsiresOf(bySire.horses.map((h) => h.dam));
+    for (const h of bySire.horses) {
+      if (!h.damsire && h.dam) h.damsire = damsireOf.get(h.dam.toUpperCase()) ?? null;
+    }
+    const nick = damsire
+      ? bySire.horses.filter((h) => h.damsire && studBookName(h.damsire) === damsire)
+      : [];
+
+    // Every runner out of a daughter of the damsire, by any sire — what the
+    // damsire brings, independent of this stallion. His daughters that raced
+    // are the only ones we can name, so this is the raced-dam subset.
+    let byDamsire = { horses: [], timedOut: false };
+    if (damsire) {
+      const daughters = await runQuery(
+        `SELECT ${BREEDING_HINT} DISTINCT horseName
+           FROM APIData_Table2
+          WHERE sireName = ? AND horseGender IN ('f', 'm')
+          LIMIT 3000`,
+        [damsire],
+      ).catch(() => []);
+      const names = daughters.map((d) => d.horseName).filter(Boolean);
+      if (names.length) {
+        const got = { horses: [], timedOut: false };
+        for (let i = 0; i < names.length; i += 400) {
+          const chunk = names.slice(i, i + 400);
+          const part = await horsesWhere(`damName IN (${chunk.map(() => "?").join(", ")})`, chunk, 2000);
+          got.horses.push(...part.horses);
+          got.timedOut = got.timedOut || part.timedOut;
+        }
+        for (const h of got.horses) if (!h.damsire) h.damsire = damsire;
+        got.horses.sort((a, b) => (b.best ?? 0) - (a.best ?? 0));
+        byDamsire = got;
+      }
+    }
+
+    const population = await populationBaseline();
+    const top = (list, n) => list.slice(0, n);
+
+    res.json({
+      asked: { sire, dam, damsire },
+      population,
+      dam: {
+        own: damOwn.horses[0] ?? null,
+        produce: { ...describe(outOfDam.horses), horses: outOfDam.horses, timedOut: outOfDam.timedOut },
+      },
+      sire: {
+        progeny: { ...describe(bySire.horses), horses: top(bySire.horses, 40), timedOut: bySire.timedOut },
+        damsKnown: bySire.horses.filter((h) => h.damsire).length,
+      },
+      damsire: damsire
+        ? { progeny: { ...describe(byDamsire.horses), horses: top(byDamsire.horses, 40), timedOut: byDamsire.timedOut } }
+        : null,
+      nick: damsire ? { ...describe(nick), horses: nick } : null,
+    });
+  } catch (err) {
+    console.error("breeding mating failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
 app.get('/api/:tableName', (req, res) => {
   const { tableName } = req.params;
   const {
