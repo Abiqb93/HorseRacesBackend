@@ -20,12 +20,19 @@ export const studBookName = (raw) =>
 /**
  * One row per horse: parentage, sex, foaling year, career, best figures.
  *
+ * Grouped on the name *and* the foaling year, because a name is not a horse.
+ * Enable's own record merged with a single 2008 row for another Enable — no
+ * sire, one run — and reported the Arc winner as foaled six years early. Two
+ * horses of a name and a year is rare enough to live with; two of a name is
+ * not. The route uses `GROUP BY horseName, foalYear` with this select.
+ *
  * Timeform's master rating is the horse's level and the performance rating is
  * one run's; both carry a 999 sentinel for "none", which would make every
  * horse a champion if it were summed, so only figures inside the scale count.
  */
 export const HORSE_SUMMARY_SELECT = `
   SELECT horseName,
+         YEAR(foalingDate)                    AS foalYear,
          MAX(sireName)                        AS sireName,
          MAX(damName)                         AS damName,
          MAX(NULLIF(damsireName, ''))         AS damsireName,
@@ -45,13 +52,14 @@ export const summariseHorse = (r) => {
   const bestMaster = Number(r.bestMaster) || null;
   const bestPerformance = Number(r.bestPerformance) || null;
   const foaled = r.foaled ? new Date(r.foaled) : null;
+  const foalYear = Number(r.foalYear) || (foaled && !Number.isNaN(foaled.getTime()) ? foaled.getUTCFullYear() : null);
   return {
     name: r.horseName,
     sire: r.sireName || null,
     dam: r.damName || null,
     damsire: r.damsireName || null,
     sex: r.sex || null,
-    foalingYear: foaled && !Number.isNaN(foaled.getTime()) ? foaled.getUTCFullYear() : null,
+    foalingYear: foalYear,
     // The higher of the two: a horse's best figure is its best figure
     // whichever scale recorded it.
     best: Math.max(bestMaster ?? 0, bestPerformance ?? 0) || null,
@@ -64,6 +72,22 @@ export const summariseHorse = (r) => {
     group1Wins: Number(r.group1Wins) || 0,
     lastRun: r.lastRun ? String(r.lastRun).slice(0, 10) : null,
   };
+};
+
+/**
+ * Which of several horses of the mare's name is the mare.
+ *
+ * Her foaling year settles it where the caller knows it; failing that her
+ * sire, where the caller knows him; failing both, the one with the career —
+ * a namesake with a single run and no sire is a stray row, not a broodmare.
+ */
+export const pickOwnRow = (rows, { year = null, sire = null } = {}) => {
+  if (!rows?.length) return null;
+  const byYear = year ? rows.find((r) => r.foalingYear === Number(year)) : null;
+  if (byYear) return byYear;
+  const bySire = sire ? rows.find((r) => studBookName(r.sire) === studBookName(sire)) : null;
+  if (bySire) return bySire;
+  return [...rows].sort((a, b) => b.runs - a.runs)[0];
 };
 
 /** Linear interpolation between order statistics; null on an empty list. */

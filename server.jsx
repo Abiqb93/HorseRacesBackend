@@ -5637,7 +5637,7 @@ async function horsesWhere(where, params, limit = 5000) {
   const { HORSE_SUMMARY_SELECT, summariseHorse } = await loadMating();
   const sql = `${HORSE_SUMMARY_SELECT.replace("SELECT ", `SELECT ${BREEDING_HINT} `)}
    WHERE ${where}
-   GROUP BY horseName
+   GROUP BY horseName, foalYear
    ORDER BY GREATEST(COALESCE(bestMaster, 0), COALESCE(bestPerformance, 0)) DESC, runs DESC
    LIMIT ${Number(limit)}`;
   try {
@@ -5682,59 +5682,88 @@ async function damsiresOf(damNames) {
  */
 const BREEDING_BASELINE_TTL_MS = 24 * 60 * 60 * 1000;
 let breedingBaseline = null;
+let breedingBaselineInFlight = null;
+
+/**
+ * Measure the population, off the request path.
+ *
+ * The first version ran this inline under a 25-second cap and never once
+ * finished: two seasons of runs grouped by horse is the dearest query on
+ * this server, and every request got the fallback. Now the first caller
+ * starts it, gets the fallback at once, and the measurement lands in the
+ * cache for everyone after — two minutes' grace, because nobody is waiting.
+ */
+function measureBaseline() {
+  if (breedingBaselineInFlight) return breedingBaselineInFlight;
+  const since = new Date();
+  since.setUTCFullYear(since.getUTCFullYear() - 2);
+  breedingBaselineInFlight = runQuery(
+    `SELECT /*+ MAX_EXECUTION_TIME(120000) */ COUNT(*) AS n, AVG(best) AS mean, STDDEV_SAMP(best) AS sd
+       FROM (
+         SELECT GREATEST(
+                  COALESCE(MAX(CASE WHEN preRaceMasterRating BETWEEN 1 AND 140 THEN preRaceMasterRating END), 0),
+                  COALESCE(MAX(CASE WHEN performanceRating    BETWEEN 1 AND 140 THEN performanceRating    END), 0)
+                ) AS best
+           FROM APIData_Table2
+          WHERE meetingDate >= ?
+          GROUP BY horseName, YEAR(foalingDate)
+       ) t
+      WHERE best > 0`,
+    [since.toISOString().slice(0, 10)],
+  )
+    .then(([row]) => {
+      const value = {
+        n: Number(row?.n) || 0,
+        mean: Number(row?.mean) || null,
+        sd: Number(row?.sd) || null,
+        since: since.toISOString().slice(0, 10),
+        measured: true,
+      };
+      if (value.n > 0 && value.mean) {
+        breedingBaseline = { createdAt: Date.now(), value };
+        console.log(`breeding baseline measured: ${value.n} horses, mean ${value.mean.toFixed(2)}, sd ${value.sd?.toFixed(2)}`);
+      } else {
+        console.warn("breeding baseline came back empty");
+      }
+      return value;
+    })
+    .catch((err) => {
+      console.warn("breeding baseline failed:", err.message);
+      return null;
+    })
+    .finally(() => {
+      breedingBaselineInFlight = null;
+    });
+  return breedingBaselineInFlight;
+}
+
 async function populationBaseline() {
   if (breedingBaseline && Date.now() - breedingBaseline.createdAt < BREEDING_BASELINE_TTL_MS) {
     return breedingBaseline.value;
   }
-  const since = new Date();
-  since.setUTCFullYear(since.getUTCFullYear() - 2);
-  try {
-    const [row] = await runQuery(
-      `SELECT /*+ MAX_EXECUTION_TIME(25000) */ COUNT(*) AS n, AVG(best) AS mean, STDDEV_SAMP(best) AS sd
-         FROM (
-           SELECT GREATEST(
-                    COALESCE(MAX(CASE WHEN preRaceMasterRating BETWEEN 1 AND 140 THEN preRaceMasterRating END), 0),
-                    COALESCE(MAX(CASE WHEN performanceRating    BETWEEN 1 AND 140 THEN performanceRating    END), 0)
-                  ) AS best
-             FROM APIData_Table2
-            WHERE meetingDate >= ?
-            GROUP BY horseName
-         ) t
-        WHERE best > 0`,
-      [since.toISOString().slice(0, 10)],
-    );
-    const value = {
-      n: Number(row?.n) || 0,
-      mean: Number(row?.mean) || null,
-      sd: Number(row?.sd) || null,
-      since: since.toISOString().slice(0, 10),
-      measured: true,
-    };
-    if (value.n > 0 && value.mean) {
-      breedingBaseline = { createdAt: Date.now(), value };
-      return value;
-    }
-  } catch (err) {
-    console.warn("breeding baseline unavailable:", err.message);
-  }
-  // A fallback that says it is one. The figures are the last measured values
-  // rather than a guess, and `measured: false` tells the page to say so.
-  return { n: 0, mean: 68, sd: 17, since: null, measured: false };
+  measureBaseline();
+  // A fallback that says it is one. `measured: false` tells the page to say
+  // so; the figures are a stated guess in the range all-comers sit in, not a
+  // measurement, and they are replaced the moment the measurement lands.
+  return { n: 0, mean: 68, sd: 17, since: null, measured: false, pending: true };
 }
 
 app.get("/api/breeding/mating", async (req, res) => {
-  const { studBookName, describe } = await loadMating();
+  const { studBookName, describe, pickOwnRow } = await loadMating();
   const sire = studBookName(req.query.sire);
   const dam = studBookName(req.query.dam);
   let damsire = studBookName(req.query.damsire) || null;
+  const damYear = Number(req.query.year) || null;
   if (!sire || !dam) return res.status(400).json({ error: "sire and dam are required" });
 
   try {
-    const [bySire, outOfDam, damOwn] = await Promise.all([
+    const [bySire, outOfDam, damRows] = await Promise.all([
       horsesWhere("sireName = ?", [sire]),
       horsesWhere("damName = ?", [dam], 200),
-      horsesWhere("horseName = ?", [dam], 1),
+      horsesWhere("horseName = ?", [dam], 5),
     ]);
+    // Her own row, among any namesakes: by year, then by sire, then by career.
+    const damOwn = { horses: [pickOwnRow(damRows.horses, { year: damYear, sire: damsire })].filter(Boolean) };
 
     // The mare's own sire, if the caller did not know it: her own rows say.
     if (!damsire && damOwn.horses[0]?.sire) damsire = studBookName(damOwn.horses[0].sire);
@@ -5779,7 +5808,7 @@ app.get("/api/breeding/mating", async (req, res) => {
     const top = (list, n) => list.slice(0, n);
 
     res.json({
-      asked: { sire, dam, damsire },
+      asked: { sire, dam, damsire, year: damYear },
       population,
       dam: {
         own: damOwn.horses[0] ?? null,
