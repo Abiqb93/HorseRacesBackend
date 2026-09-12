@@ -5630,6 +5630,146 @@ app.get("/api/pedigree/search", async (req, res) => {
  * unit-tested against fixtures and shown with their working.
  */
 const loadMating = () => import("./breeding/mating.mjs");
+const loadHorses = () => import("./breeding/horses.mjs");
+
+/**
+ * The worldwide horse file, loaded into its table once, off the boot path.
+ *
+ * Five seconds after start, so the server is answering before the fill
+ * begins; the fill itself is ~930 batched inserts and takes a couple of
+ * minutes the first time and no time after — every later boot finds the
+ * table full and returns. See breeding/horses.mjs.
+ */
+setTimeout(() => {
+  loadHorses()
+    .then(({ ensureWorldwideHorses }) => ensureWorldwideHorses(runQuery))
+    .then((r) => console.log(`breeding horses: ready (${r.rows} rows${r.filled ? ", filled this boot" : ""})`))
+    .catch((err) => console.warn("breeding horses: not loaded:", err.message));
+}, 5000);
+
+/** Worldwide population black-type rates: one scan, cached for a day. */
+let worldwideBaseline = null;
+async function worldwidePopulation() {
+  if (worldwideBaseline && Date.now() - worldwideBaseline.createdAt < BREEDING_BASELINE_TTL_MS) {
+    return worldwideBaseline.value;
+  }
+  const [row] = await runQuery(
+    `SELECT /*+ MAX_EXECUTION_TIME(20000) */ COUNT(*) AS n,
+            SUM(s_wins > 0) AS stakesWinners, SUM(g_wins > 0) AS groupWinners, SUM(g1_wins > 0) AS group1Winners
+       FROM breeding_horses`,
+    [],
+  );
+  const value = {
+    n: Number(row?.n) || 0,
+    stakesWinners: Number(row?.stakesWinners) || 0,
+    groupWinners: Number(row?.groupWinners) || 0,
+    group1Winners: Number(row?.group1Winners) || 0,
+  };
+  if (value.n) worldwideBaseline = { createdAt: Date.now(), value };
+  return value;
+}
+
+/** Worldwide rows by one condition, best class first. Empty on a missing table. */
+async function worldwideWhere(where, params, limit = 5000) {
+  const { summariseWorldwide, classScore } = await loadHorses();
+  try {
+    const rows = await runQuery(
+      `SELECT ${BREEDING_HINT} * FROM breeding_horses WHERE ${where} LIMIT ${Number(limit)}`,
+      params,
+    );
+    return rows.map(summariseWorldwide).sort((a, b) => classScore(b) - classScore(a));
+  } catch (err) {
+    // Before the first fill the table may not exist; the response then
+    // carries no worldwide section rather than failing the request.
+    console.warn("breeding worldwide read failed:", err.message);
+    return [];
+  }
+}
+
+/**
+ * Each dam's sire from the worldwide file — only for dams young enough to be
+ * in it themselves (2014 crops on), so this is the results table's map with
+ * the file's added behind it.
+ */
+async function worldwideDamsiresOf(damKeys) {
+  const out = new Map();
+  const names = [...new Set(damKeys.filter(Boolean))];
+  for (let i = 0; i < names.length; i += 400) {
+    const chunk = names.slice(i, i + 400);
+    const rows = await runQuery(
+      `SELECT ${BREEDING_HINT} horse_name, MAX(sire_key) AS sire_key
+         FROM breeding_horses WHERE horse_name IN (${chunk.map(() => "?").join(", ")}) AND sex = 'F'
+        GROUP BY horse_name`,
+      chunk,
+    ).catch(() => []);
+    for (const r of rows) if (r.sire_key) out.set(String(r.horse_name).toUpperCase(), r.sire_key);
+  }
+  return out;
+}
+
+/**
+ * What the worldwide file says about this mating: the stallion's runners on
+ * every continent, the same cross, the mare's produce and her own row, and
+ * every runner out of a daughter of the damsire.
+ */
+async function worldwideOutlook({ sire, dam, damsire, damYear, damsireOf }) {
+  const { describeWorldwide } = await loadHorses();
+  const [sireHorses, damProduce, damRows, population] = await Promise.all([
+    worldwideWhere("sire_key = ?", [sire]),
+    worldwideWhere("dam_key = ?", [dam], 200),
+    worldwideWhere("horse_name = ?", [dam], 5),
+    worldwidePopulation().catch(() => null),
+  ]);
+  if (!population?.n) return null;
+
+  const damOwn =
+    damRows.find((r) => damYear && r.foalingYear === damYear) ??
+    damRows.find((r) => damsire && r.sire === damsire) ??
+    damRows.sort((a, b) => b.runs - a.runs)[0] ??
+    null;
+
+  // Damsires for the sire's foals: the results table's map first (older
+  // dams), the file's own rows behind it (younger ones).
+  const missing = sireHorses.filter((h) => h.dam && !damsireOf.has(h.dam)).map((h) => h.dam);
+  const fromFile = missing.length ? await worldwideDamsiresOf(missing) : new Map();
+  for (const h of sireHorses) {
+    h.damsire = damsireOf.get(h.dam) ?? fromFile.get(h.dam) ?? null;
+  }
+  const nick = damsire ? sireHorses.filter((h) => h.damsire === damsire) : [];
+
+  // Foals out of the damsire's daughters, wherever they ran.
+  let damsireHorses = [];
+  if (damsire) {
+    const daughters = await runQuery(
+      `SELECT ${BREEDING_HINT} DISTINCT horse_name FROM breeding_horses WHERE sire_key = ? AND sex = 'F' LIMIT 3000`,
+      [damsire],
+    ).catch(() => []);
+    const ours = await runQuery(
+      `SELECT ${BREEDING_HINT} DISTINCT horseName AS horse_name FROM APIData_Table2 WHERE sireName = ? AND horseGender IN ('f','m') LIMIT 3000`,
+      [damsire],
+    ).catch(() => []);
+    const names = [...new Set([...daughters, ...ours].map((d) => String(d.horse_name).toUpperCase()))].slice(0, 4000);
+    for (let i = 0; i < names.length; i += 400) {
+      const chunk = names.slice(i, i + 400);
+      const part = await worldwideWhere(`dam_key IN (${chunk.map(() => "?").join(", ")})`, chunk, 2000);
+      for (const h of part) h.damsire = damsire;
+      damsireHorses.push(...part);
+    }
+  }
+
+  return {
+    population,
+    sire: describeWorldwide(sireHorses),
+    sireHorses: sireHorses.slice(0, 40),
+    nick: describeWorldwide(nick),
+    nickHorses: nick.slice(0, 200),
+    damProduce: describeWorldwide(damProduce),
+    damProduceHorses: damProduce,
+    damOwn,
+    damsire: damsire ? describeWorldwide(damsireHorses) : null,
+    damsireHorses: damsireHorses.slice(0, 20),
+  };
+}
 const BREEDING_HINT = "/*+ MAX_EXECUTION_TIME(9000) */";
 
 /** Horses by one condition, best first. A timeout is an empty group, flagged. */
@@ -5809,6 +5949,10 @@ app.get("/api/breeding/mating", async (req, res) => {
 
     const population = await populationBaseline();
     const top = (list, n) => list.slice(0, n);
+    const worldwide = await worldwideOutlook({ sire, dam, damsire, damYear, damsireOf }).catch((err) => {
+      console.warn("breeding worldwide outlook failed:", err.message);
+      return null;
+    });
 
     res.json({
       asked: { sire, dam, damsire, year: damYear },
@@ -5825,6 +5969,7 @@ app.get("/api/breeding/mating", async (req, res) => {
         ? { progeny: { ...describe(byDamsire.horses), horses: top(byDamsire.horses, 40), timedOut: byDamsire.timedOut } }
         : null,
       nick: damsire ? { ...describe(nick), horses: nick } : null,
+      worldwide,
     });
   } catch (err) {
     console.error("breeding mating failed:", err.message);
