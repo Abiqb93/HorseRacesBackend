@@ -5743,9 +5743,12 @@ async function populationBaseline() {
   }
   measureBaseline();
   // A fallback that says it is one. `measured: false` tells the page to say
-  // so; the figures are a stated guess in the range all-comers sit in, not a
-  // measurement, and they are replaced the moment the measurement lands.
-  return { n: 0, mean: 68, sd: 17, since: null, measured: false, pending: true };
+  // so, and the figures are the last measurement rather than a guess: on 12
+  // September 2026 the query counted 38,596 horses that had run in the two
+  // seasons before, mean 85.3, standard deviation 23.6. The first version
+  // guessed 68, which was fifteen points low and would have flattered every
+  // sire effect until the measurement replaced it.
+  return { n: 0, mean: 85.3, sd: 23.6, since: null, measured: false, pending: true };
 }
 
 app.get("/api/breeding/mating", async (req, res) => {
