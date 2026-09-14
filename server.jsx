@@ -207,6 +207,146 @@ app.delete("/api/bloodstock_clients/:id", (req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// HIT Sales: a user's shortlist for one sale, and their saved briefs.
+//
+// Until now both lived in the browser's localStorage under the signed-in user
+// id, which the page said in words: "Saved in this browser for TomWilson. It
+// will not follow you to another machine." A list kept for a sale is the kind
+// of thing a buyer discovers is missing on a new laptop the morning of the
+// sale, so it is kept here instead, keyed by user AND sale — horseTracking is
+// keyed by horse name and has no sale dimension, so it cannot tell lot 412 of
+// July from the same horse next year.
+//
+// The document is stored whole. The frontend owns its shape (src/utils/
+// hitLists.js normalises whatever comes back), the same arrangement as
+// bloodstock_clients.prefs, and a PUT replaces the document rather than
+// merging: the page always holds the latest copy it saved, and a merge would
+// have to invent a rule for two people editing one person's list.
+//
+// Briefs are per user and NOT per sale: a Hong Kong brief is written once and
+// run on every catalogue that comes along.
+// ---------------------------------------------------------------------------
+db.query(
+  `CREATE TABLE IF NOT EXISTS hit_sale_lists (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    sale_id VARCHAR(64) NOT NULL,
+    list JSON,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_user_sale (user_id, sale_id),
+    KEY idx_hsl_sale (sale_id)
+  )`,
+  (err) => { if (err) console.error("hit_sale_lists table check failed:", err.message); }
+);
+db.query(
+  `CREATE TABLE IF NOT EXISTS hit_sale_briefs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    briefs JSON,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_user (user_id)
+  )`,
+  (err) => { if (err) console.error("hit_sale_briefs table check failed:", err.message); }
+);
+
+/** mysql2 hands a JSON column back parsed on some drivers and as text on others. */
+const parseJsonCol = (v) => {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== "string") return v;
+  try { return JSON.parse(v); } catch { return null; }
+};
+
+// Every list a user keeps, across sales — the tracker and the daily mail ask
+// "which sales does this user follow", and this answers it in one call.
+app.get("/api/hitsales/lists/:userId", (req, res) => {
+  db.query(
+    "SELECT sale_id, list, updated_at FROM hit_sale_lists WHERE user_id = ? ORDER BY updated_at DESC",
+    [String(req.params.userId)],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ data: rows.map((r) => ({ saleId: r.sale_id, list: parseJsonCol(r.list), updatedAt: r.updated_at })) });
+    }
+  );
+});
+
+app.get("/api/hitsales/lists/:userId/:saleId", (req, res) => {
+  db.query(
+    "SELECT list, updated_at FROM hit_sale_lists WHERE user_id = ? AND sale_id = ?",
+    [String(req.params.userId), String(req.params.saleId)],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!rows.length) return res.json({ data: null, updatedAt: null });
+      res.json({ data: parseJsonCol(rows[0].list), updatedAt: rows[0].updated_at });
+    }
+  );
+});
+
+app.put("/api/hitsales/lists/:userId/:saleId", express.json({ limit: "2mb" }), (req, res) => {
+  const list = req.body && typeof req.body === "object" ? req.body.list : undefined;
+  if (!list || typeof list !== "object") return res.status(400).json({ error: "A list document is required." });
+  db.query(
+    `INSERT INTO hit_sale_lists (user_id, sale_id, list) VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE list = VALUES(list)`,
+    [String(req.params.userId), String(req.params.saleId), JSON.stringify(list)],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ ok: true });
+    }
+  );
+});
+
+app.delete("/api/hitsales/lists/:userId/:saleId", (req, res) => {
+  db.query(
+    "DELETE FROM hit_sale_lists WHERE user_id = ? AND sale_id = ?",
+    [String(req.params.userId), String(req.params.saleId)],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ ok: true });
+    }
+  );
+});
+
+// Every user's list for one sale. Read by the daily sale mail, which sends
+// each user the horses on THEIR list — the desk-level read the client list
+// and the review list already allow.
+app.get("/api/hitsales/sale-lists/:saleId", (req, res) => {
+  db.query(
+    "SELECT user_id, list, updated_at FROM hit_sale_lists WHERE sale_id = ?",
+    [String(req.params.saleId)],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ data: rows.map((r) => ({ userId: r.user_id, list: parseJsonCol(r.list), updatedAt: r.updated_at })) });
+    }
+  );
+});
+
+app.get("/api/hitsales/briefs/:userId", (req, res) => {
+  db.query(
+    "SELECT briefs, updated_at FROM hit_sale_briefs WHERE user_id = ?",
+    [String(req.params.userId)],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      const briefs = rows.length ? parseJsonCol(rows[0].briefs) : null;
+      res.json({ data: Array.isArray(briefs) ? briefs : [], updatedAt: rows.length ? rows[0].updated_at : null });
+    }
+  );
+});
+
+app.put("/api/hitsales/briefs/:userId", express.json({ limit: "1mb" }), (req, res) => {
+  const briefs = req.body && typeof req.body === "object" ? req.body.briefs : undefined;
+  if (!Array.isArray(briefs)) return res.status(400).json({ error: "An array of briefs is required." });
+  db.query(
+    `INSERT INTO hit_sale_briefs (user_id, briefs) VALUES (?, ?)
+     ON DUPLICATE KEY UPDATE briefs = VALUES(briefs)`,
+    [String(req.params.userId), JSON.stringify(briefs)],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ ok: true });
+    }
+  );
+});
+
 
 // Minimal iCalendar (ICS) meeting request
 function buildICSInvite({
