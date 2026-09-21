@@ -120,7 +120,7 @@ const validTables = [
   'RacesAndEntries', 'horseTracking', 'attheraces', 'FranceRaceRecords', 'IrelandRaceRecords', 'UserAccounts', 'reviewed_results', 'horse_tracking_shares', 'race_watchlist', 
   'sire_tracking', 'dam_tracking', 'owner_tracking', 'predicted_timeform', 'racingpost', 'notify_horses', 'pars_data', 'potential_stallion', 'StrideParsPercentilesPerTrack', 
   'StrideParsPerMeeting', 'RaceNet_Data', 'sire_uplift', 'foalSale_Dashboard', 'foalSale_Pedigree', 'foalSale_StallionStats', 'foalSale_Sales', 'foalSale_StudFeeAnalysis', 'jockey_tracking', 'report_potential_stallions',
-  'sectionsparsed', 'stallion-fee', 'racingpost_results',
+  'sectionsparsed', 'stallion-fee', 'racingpost_results', 'tracker_entries', 'tracker_horses',
   'report_trainer_uplift_moves', 'report_trainer_uplift_summary',
   'report_track_pars_tf', 'report_track_pars_rtv', 'report_track_pars_atr', 'report_track_pars_atr_going', 'report_trainer_form'
 ];
@@ -635,6 +635,121 @@ app.get('/api/ClosingEntries', (req, res) => {
 
     res.status(200).json({ data: results });
   });
+});
+
+// ---------------------------------------------------------------------------
+// Tracker entries, from At The Races.
+//
+// The Tracker's Entries tab draws six feeds and on 21 September 2026 three of
+// them were dead -- ClosingEntries, DeclarationsTracking and EntriesTracking
+// held 2,250 rows between them and not one parseable date -- while the one
+// that lives, RacesAndEntries, carried 760 forward rows at three Irish tracks
+// and no British meeting at all. A tracked horse declared at Beverley showed
+// nothing.
+//
+// So scrapper_pipeline/atr_tracker_entries.py (daily-horse-scraper) asks each
+// tracked horse's own At The Races page instead, and writes what it finds
+// here: `tracker_entries`, one row per horse per coming race in the column
+// names the Tracker's processEntries already reads, and `tracker_horses`, one
+// row per horse saying where it was found and why a horse that was not could
+// not be. The tables are created here as well as there so this route answers
+// with an empty list before the job's first run rather than a 500.
+// ---------------------------------------------------------------------------
+db.query(
+  `CREATE TABLE IF NOT EXISTS tracker_entries (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    horseKey VARCHAR(160) NOT NULL,
+    Horse VARCHAR(160) NOT NULL,
+    Date DATE NOT NULL,
+    RaceTime VARCHAR(8),
+    Track VARCHAR(120),
+    RaceTitle VARCHAR(320),
+    Distance VARCHAR(40),
+    Going VARCHAR(40),
+    RaceURL VARCHAR(400),
+    atrHorseId VARCHAR(32),
+    Source VARCHAR(32) NOT NULL DEFAULT 'At The Races',
+    checkedAt DATETIME NOT NULL,
+    UNIQUE KEY uniq_tracker_entry (horseKey, Date, RaceTime, Track),
+    KEY idx_tracker_entry_date (Date),
+    KEY idx_tracker_entry_horse (horseKey)
+  )`,
+  (err) => { if (err) console.error("tracker_entries table check failed:", err.message); }
+);
+
+db.query(
+  `CREATE TABLE IF NOT EXISTS tracker_horses (
+    horseKey VARCHAR(160) NOT NULL PRIMARY KEY,
+    Horse VARCHAR(160) NOT NULL,
+    atrHorseId VARCHAR(32),
+    atrProfileUrl VARCHAR(400),
+    atrCountry VARCHAR(8),
+    trainer VARCHAR(160),
+    sire VARCHAR(160),
+    dam VARCHAR(160),
+    formFigures VARCHAR(160),
+    totalRuns INT,
+    lastRunDate DATE,
+    lastRunCourse VARCHAR(120),
+    entriesCount INT NOT NULL DEFAULT 0,
+    nextEntryDate DATE,
+    matchState VARCHAR(24) NOT NULL,
+    matchWhy VARCHAR(400),
+    checkedAt DATETIME NOT NULL
+  )`,
+  (err) => { if (err) console.error("tracker_horses table check failed:", err.message); }
+);
+
+/**
+ * GET /api/trackerEntries[?from=YYYY-MM-DD][&days=14]
+ *
+ * Today's and the coming days' entries for every tracked horse, and a row
+ * per horse for the page to show where the figure came from. `from` defaults
+ * to today, so a race already run is not served as an entry; `days` caps how
+ * far ahead, and is left off for everything the job has found.
+ */
+app.get('/api/trackerEntries', (req, res) => {
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.from || '').trim())
+    ? String(req.query.from).trim()
+    : new Date().toISOString().slice(0, 10);
+  const days = Number.parseInt(String(req.query.days || ''), 10);
+  const conditions = ['Date >= ?'];
+  const params = [from];
+  if (Number.isFinite(days) && days > 0) {
+    conditions.push('Date <= DATE_ADD(?, INTERVAL ? DAY)');
+    params.push(from, days);
+  }
+
+  db.query(
+    `SELECT Horse, horseKey, Date, RaceTime, Track, RaceTitle, Distance, Going, RaceURL, Source
+     FROM tracker_entries
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY Date, RaceTime, Horse`,
+    params,
+    (err, entries) => {
+      if (err) {
+        console.error("Error fetching tracker_entries:", err);
+        return res.status(500).json({ error: "Database error" });
+      }
+      db.query(
+        `SELECT horseKey, Horse, atrProfileUrl, atrCountry, trainer, formFigures, totalRuns,
+                lastRunDate, lastRunCourse, entriesCount, nextEntryDate, matchState, matchWhy, checkedAt
+         FROM tracker_horses
+         ORDER BY Horse`,
+        (horsesErr, horses) => {
+          if (horsesErr) {
+            console.error("Error fetching tracker_horses:", horsesErr);
+            return res.status(500).json({ error: "Database error" });
+          }
+          const checked = horses.reduce(
+            (latest, h) => (h.checkedAt && (!latest || h.checkedAt > latest) ? h.checkedAt : latest),
+            null,
+          );
+          res.status(200).json({ data: entries, horses, from, updated: checked });
+        },
+      );
+    },
+  );
 });
 
 // ✅ Route to fetch all rows from hit_sales1
