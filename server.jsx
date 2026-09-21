@@ -5612,11 +5612,30 @@ app.get("/api/mares/:userId", async (req, res) => {
           ORDER BY mare_id, version DESC`,
         [...ids, season],
       ).catch(() => []),
+      // Two ways a mare can have a chart, and the second is the common one.
+      //
+      // `pedigree_reference` is exact and is what a mare added through the
+      // pedigree search carries. A mare who arrived from a seed or a client's
+      // index has no reference at all, and the warming script that later
+      // fetches her chart writes it into the cache under her name and year
+      // without ever coming back to her row. So a band read on the reference
+      // alone reports "no chart" for every mare the desk has just spent a
+      // night warming — which is the one moment the answer matters, because
+      // it is what decides whether a report can draw a grid.
+      //
+      // Name and year together, which is the rule `findQuery` uses: a name on
+      // its own is not an identity, and two horses of the same name foaled in
+      // different years are different horses.
       runQuery(
-        `SELECT reference FROM pedigree_cache WHERE reference IN (${
-          mares.filter((m) => m.pedigree_reference).map(() => "?").join(", ") || "NULL"
-        })`,
-        mares.filter((m) => m.pedigree_reference).map((m) => String(m.pedigree_reference)),
+        `SELECT reference, name_key, foaling_year FROM pedigree_cache
+          WHERE reference IN (${
+            mares.filter((m) => m.pedigree_reference).map(() => "?").join(", ") || "NULL"
+          })
+             OR name_key IN (${mares.map(() => "?").join(", ") || "NULL"})`,
+        [
+          ...mares.filter((m) => m.pedigree_reference).map((m) => String(m.pedigree_reference)),
+          ...mares.map((m) => String(m.name_key ?? "")),
+        ],
       ).catch(() => []),
     ]);
 
@@ -5632,6 +5651,39 @@ app.get("/api/mares/:userId", async (req, res) => {
       planOf.set(p.mare_id, { ...p, preferences: parseJsonCol(p.preferences) });
     }
     const heldRefs = new Set(held.map((h) => String(h.reference)));
+    // Keyed on name and year, and only where the year is known on both sides.
+    // A chart with no foaling year against a mare with no foaling year is two
+    // unknowns agreeing, which is not a match.
+    const byNameYear = new Map();
+    for (const h of held) {
+      if (h.foaling_year === null || h.foaling_year === undefined) continue;
+      byNameYear.set(`${h.name_key}|${h.foaling_year}`, String(h.reference));
+    }
+    const chartFor = (m) => {
+      if (m.pedigree_reference && heldRefs.has(String(m.pedigree_reference))) {
+        return String(m.pedigree_reference);
+      }
+      if (!m.foaling_year) return null;
+      return byNameYear.get(`${m.name_key}|${m.foaling_year}`) ?? null;
+    };
+
+    // Adopt the reference onto the mare, once, so the link is exact from here
+    // on and the next read does not have to match on a name at all. After the
+    // response: the answer does not depend on the write, and a write that
+    // fails must not cost the desk its band.
+    const adopt = mares
+      .filter((m) => !m.pedigree_reference && chartFor(m))
+      .map((m) => [chartFor(m), m.id]);
+    if (adopt.length) {
+      setImmediate(() => {
+        Promise.all(
+          adopt.map(([ref, id]) =>
+            runQuery("UPDATE my_mares SET pedigree_reference = ? WHERE id = ? AND pedigree_reference IS NULL", [ref, id])
+              .catch(() => null),
+          ),
+        ).then(() => console.log(`mares: linked ${adopt.length} newly warmed pedigree(s) to their mare`));
+      });
+    }
 
     res.json({
       count: mares.length,
@@ -5641,7 +5693,8 @@ app.get("/api/mares/:userId", async (req, res) => {
         season: byMare.get(m.id)?.[season] ?? null,
         previous: byMare.get(m.id)?.[season - 1] ?? null,
         plan: planOf.get(m.id) ?? null,
-        pedigreeHeld: Boolean(m.pedigree_reference && heldRefs.has(String(m.pedigree_reference))),
+        pedigreeReference: m.pedigree_reference ?? chartFor(m),
+        pedigreeHeld: Boolean(chartFor(m)),
       })),
     });
   } catch (err) {
@@ -5884,11 +5937,24 @@ app.get("/api/mares/:userId/:id/plan", async (req, res) => {
           WHERE mare_id = ? ORDER BY season DESC, version DESC`,
         [id],
       ).catch(() => []),
+      // Same two ways as the band read above: her own reference if she has
+      // one, else a chart filed under her name and year by the warmer.
       mare.pedigree_reference
         ? runQuery("SELECT reference FROM pedigree_cache WHERE reference = ?", [String(mare.pedigree_reference)]).catch(() => [])
-        : Promise.resolve([]),
+        : mare.foaling_year
+          ? runQuery(
+              "SELECT reference FROM pedigree_cache WHERE name_key = ? AND foaling_year = ? LIMIT 1",
+              [String(mare.name_key ?? ""), Number(mare.foaling_year)],
+            ).catch(() => [])
+          : Promise.resolve([]),
     ]);
-    res.json({ mare, seasons, plans, pedigreeHeld: held.length > 0 });
+    res.json({
+      mare,
+      seasons,
+      plans,
+      pedigreeHeld: held.length > 0,
+      pedigreeReference: mare.pedigree_reference ?? (held[0] ? String(held[0].reference) : null),
+    });
   } catch (err) {
     console.error("mare plan read failed:", err.message);
     res.status(500).json({ error: "database error" });
