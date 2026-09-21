@@ -5164,6 +5164,7 @@ app.get("/api/review_horse_actions", (req, res) => {
 // ---------------------------------------------------------------------------
 const loadPedigreeClient = () => import("./pedigree/client.mjs");
 const loadPedigreeStore = () => import("./pedigree/store.mjs");
+const loadPedigreeGrid = () => import("./pedigree/grid.mjs");
 
 loadPedigreeStore().then(({ CREATE_TABLE }) => {
   db.query(CREATE_TABLE, (err) => {
@@ -5330,8 +5331,19 @@ db.query(
     UNIQUE KEY uniq_user_mare (user_id, name_key, foaling_year),
     KEY idx_my_mares_user (user_id)
   )`,
-  (err) => { if (err) console.error("my_mares table check failed:", err.message); }
+  (err) => {
+    if (err) return console.error("my_mares table check failed:", err.message);
+    // The band, the season and the plan — the three things a mating pack
+    // needs that a mare's identity row cannot carry. Chained off the table
+    // check rather than fired beside it, because widening my_mares before it
+    // exists is a race the pool would win on a cold database.
+    loadMares()
+      .then(({ ensureMareSchema }) => ensureMareSchema(runQuery))
+      .catch((e) => console.error("mare schema check failed:", e.message));
+  },
 );
+
+const loadMares = () => import("./breeding/mares.mjs");
 
 /** The same reduction the pedigree cache uses, so the two can be joined. */
 const mareNameKey = (raw) =>
@@ -5445,54 +5457,517 @@ app.get("/api/mares/search", (req, res) => {
   });
 });
 
-/** One user's mares. */
-app.get("/api/mares/:userId", (req, res) => {
-  db.query(
-    "SELECT * FROM my_mares WHERE user_id = ? ORDER BY horse_name ASC",
-    [req.params.userId],
-    (err, rows) => {
-      if (err) {
-        console.error("my_mares read failed:", err.message);
-        return res.status(500).json({ error: "database error" });
-      }
-      res.json({ count: rows.length, mares: rows });
-    },
-  );
+/**
+ * One user's mares.
+ *
+ * Bare, this is the list the My Mares page has always read and the shape must
+ * not change. With `?season=` it becomes the band index a bloodstock desk
+ * works from, and each mare carries three more things:
+ *
+ *   season     what happened in that covering year - who she went to,
+ *              whether she held, when she was last served, what she foaled
+ *   previous   the year before, so "she was covered by X last year" is on the
+ *              same row as "she is suggested for Y next year"
+ *   plan       the latest mating plan for that season, as a summary
+ *
+ * They are attached rather than joined in SQL because a mare with no season
+ * row and a mare with an empty one are different facts, and a LEFT JOIN
+ * flattens both to nulls.
+ */
+app.get("/api/mares/:userId", async (req, res) => {
+  const userId = String(req.params.userId);
+  const client = (req.query.client ?? "").toString().trim();
+  const seasonRaw = Number(req.query.season);
+  const season = Number.isFinite(seasonRaw) && seasonRaw > 1900 ? seasonRaw : null;
+
+  try {
+    const where = ["user_id = ?"];
+    const args = [userId];
+    if (client) {
+      where.push("client_name = ?");
+      args.push(client);
+    }
+    const mares = await runQuery(
+      `SELECT * FROM my_mares WHERE ${where.join(" AND ")} ORDER BY horse_name ASC`,
+      args,
+    );
+    if (!season || !mares.length) return res.json({ count: mares.length, mares });
+
+    const ids = mares.map((m) => m.id);
+    const holes = ids.map(() => "?").join(", ");
+    const [seasons, plans, held] = await Promise.all([
+      runQuery(
+        `SELECT * FROM mare_seasons WHERE mare_id IN (${holes}) AND season IN (?, ?)`,
+        [...ids, season, season - 1],
+      ).catch(() => []),
+      // The newest version of each mare's plan for the season. Ordered so the
+      // first row per mare wins; the map below keeps it.
+      runQuery(
+        `SELECT mare_id, id, season, version, status, author, preferences, updated_at
+           FROM mating_plans WHERE mare_id IN (${holes}) AND season = ?
+          ORDER BY mare_id, version DESC`,
+        [...ids, season],
+      ).catch(() => []),
+      runQuery(
+        `SELECT reference FROM pedigree_cache WHERE reference IN (${
+          mares.filter((m) => m.pedigree_reference).map(() => "?").join(", ") || "NULL"
+        })`,
+        mares.filter((m) => m.pedigree_reference).map((m) => String(m.pedigree_reference)),
+      ).catch(() => []),
+    ]);
+
+    const byMare = new Map();
+    for (const s of seasons) {
+      const at = byMare.get(s.mare_id) ?? {};
+      at[s.season] = s;
+      byMare.set(s.mare_id, at);
+    }
+    const planOf = new Map();
+    for (const p of plans) {
+      if (planOf.has(p.mare_id)) continue;
+      planOf.set(p.mare_id, { ...p, preferences: parseJsonCol(p.preferences) });
+    }
+    const heldRefs = new Set(held.map((h) => String(h.reference)));
+
+    res.json({
+      count: mares.length,
+      season,
+      mares: mares.map((m) => ({
+        ...m,
+        season: byMare.get(m.id)?.[season] ?? null,
+        previous: byMare.get(m.id)?.[season - 1] ?? null,
+        plan: planOf.get(m.id) ?? null,
+        pedigreeHeld: Boolean(m.pedigree_reference && heldRefs.has(String(m.pedigree_reference))),
+      })),
+    });
+  } catch (err) {
+    console.error("my_mares read failed:", err.message);
+    res.status(500).json({ error: "database error" });
+  }
 });
 
-app.post("/api/mares", express.json(), (req, res) => {
+/**
+ * Add a mare, or fold new facts onto one already held.
+ *
+ * Two identity traps, both met in production and both handled here rather
+ * than by the caller:
+ *
+ * **A blank foaling year is not a year.** The unique key is
+ * (user_id, name_key, foaling_year), so a mare stored with 0 because our
+ * results feed did not know her age cannot be reached by an upsert carrying
+ * her real year — it writes a second row for the same horse. When the body
+ * gives no year, an existing row of that name is found first and updated by
+ * id; when it gives one and a yearless row exists, that row is adopted rather
+ * than duplicated.
+ *
+ * **A seeded field must never blank a typed one.** Every column the desk can
+ * edit is written with COALESCE(VALUES(x), x), so re-running an import fills
+ * gaps and overwrites nothing with null.
+ */
+app.post("/api/mares", express.json(), async (req, res) => {
   const b = req.body ?? {};
   const userId = (b.userId ?? "").toString().trim();
   const horseName = (b.horseName ?? "").toString().trim();
   if (!userId || !horseName) {
     return res.status(400).json({ error: "userId and horseName are required" });
   }
-  const year = Number.isFinite(Number(b.foalingYear)) ? Number(b.foalingYear) : null;
-  db.query(
-    `INSERT INTO my_mares
-       (user_id, horse_name, name_key, country_code, foaling_year,
-        sire_name, dam_name, best_rating, pedigree_reference, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-       horse_name = VALUES(horse_name), country_code = VALUES(country_code),
-       sire_name = VALUES(sire_name), dam_name = VALUES(dam_name),
-       best_rating = VALUES(best_rating),
-       pedigree_reference = COALESCE(VALUES(pedigree_reference), pedigree_reference),
-       note = COALESCE(VALUES(note), note)`,
-    [
-      userId, horseName, mareNameKey(horseName),
-      b.countryCode ?? null, year, b.sireName ?? null, b.damName ?? null,
-      Number.isFinite(Number(b.bestRating)) ? Number(b.bestRating) : null,
-      b.pedigreeReference ?? null, b.note ?? null,
-    ],
-    (err) => {
-      if (err) {
-        console.error("my_mares insert failed:", err.message);
-        return res.status(500).json({ error: "database error" });
+  const nameKey = mareNameKey(horseName);
+  const yearRaw = Number(b.foalingYear);
+  const year = Number.isFinite(yearRaw) && yearRaw > 1900 ? yearRaw : null;
+  const str = (v) => {
+    const s = v === undefined || v === null ? "" : String(v).trim();
+    return s === "" ? null : s;
+  };
+  const rating = Number.isFinite(Number(b.bestRating)) ? Number(b.bestRating) : null;
+
+  try {
+    // Which row, if any, is already this mare: the exact key first, then any
+    // row of the name whose year is unset or agrees.
+    const existing = await runQuery(
+      "SELECT id, foaling_year FROM my_mares WHERE user_id = ? AND name_key = ?",
+      [userId, nameKey],
+    );
+    const mine =
+      existing.find((r) => Number(r.foaling_year) === Number(year)) ??
+      existing.find((r) => !r.foaling_year) ??
+      (year === null ? existing[0] : null) ??
+      null;
+
+    // The band's client id, where the desk keeps that client on the Client
+    // List. Absent is fine: the name is what groups a band.
+    let clientId = Number.isFinite(Number(b.clientId)) ? Number(b.clientId) : null;
+    const clientName = str(b.clientName);
+    if (clientName && clientId === null) {
+      const found = await queryOne(
+        "SELECT id FROM bloodstock_clients WHERE user_id = ? AND name = ? LIMIT 1",
+        [userId, clientName],
+      ).catch(() => null);
+      if (found) clientId = found.id;
+    }
+
+    const fields = {
+      horse_name: horseName,
+      country_code: str(b.countryCode),
+      sire_name: str(b.sireName),
+      dam_name: str(b.damName),
+      damsire_name: str(b.damsireName),
+      client_name: clientName,
+      client_id: clientId,
+      location: str(b.location),
+      physical: str(b.physical),
+      best_rating: rating,
+      pedigree_reference: str(b.pedigreeReference),
+      note: str(b.note),
+    };
+    const role = str(b.role);
+
+    if (mine) {
+      const sets = Object.keys(fields).map((k) => `${k} = COALESCE(?, ${k})`);
+      const args = Object.values(fields);
+      if (year !== null) { sets.push("foaling_year = ?"); args.push(year); }
+      if (role) { sets.push("role = ?"); args.push(role); }
+      await runQuery(`UPDATE my_mares SET ${sets.join(", ")} WHERE id = ?`, [...args, mine.id]);
+      return res.json({ ok: true, id: mine.id, updated: true });
+    }
+
+    const result = await runQuery(
+      `INSERT INTO my_mares
+         (user_id, horse_name, name_key, country_code, foaling_year, sire_name, dam_name,
+          damsire_name, client_name, client_id, location, physical, role, best_rating,
+          pedigree_reference, note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        userId, horseName, nameKey, fields.country_code, year, fields.sire_name, fields.dam_name,
+        fields.damsire_name, fields.client_name, fields.client_id, fields.location,
+        fields.physical, role || "broodmare", fields.best_rating,
+        fields.pedigree_reference, fields.note,
+      ],
+    );
+    res.status(201).json({ ok: true, id: result?.insertId ?? null, created: true });
+  } catch (err) {
+    console.error("my_mares insert failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/** Edit a mare's identity or her place in a band. */
+app.patch("/api/mares/:userId/:id", express.json(), async (req, res) => {
+  const b = req.body ?? {};
+  const str = (v) => {
+    if (v === undefined) return undefined;
+    const s = v === null ? "" : String(v).trim();
+    return s === "" ? null : s;
+  };
+  const map = {
+    horse_name: str(b.horseName),
+    country_code: str(b.countryCode),
+    sire_name: str(b.sireName),
+    dam_name: str(b.damName),
+    damsire_name: str(b.damsireName),
+    client_name: str(b.clientName),
+    location: str(b.location),
+    physical: str(b.physical),
+    role: str(b.role),
+    note: str(b.note),
+    pedigree_reference: str(b.pedigreeReference),
+  };
+  const sets = [];
+  const args = [];
+  for (const [column, value] of Object.entries(map)) {
+    if (value === undefined) continue;
+    sets.push(`${column} = ?`);
+    args.push(value);
+  }
+  if (b.foalingYear !== undefined) {
+    const y = Number(b.foalingYear);
+    sets.push("foaling_year = ?");
+    args.push(Number.isFinite(y) && y > 1900 ? y : null);
+  }
+  if (map.horse_name !== undefined && map.horse_name !== null) {
+    sets.push("name_key = ?");
+    args.push(mareNameKey(map.horse_name));
+  }
+  if (b.bestRating !== undefined) {
+    const r = Number(b.bestRating);
+    sets.push("best_rating = ?");
+    args.push(Number.isFinite(r) ? r : null);
+  }
+  if (!sets.length) return res.status(400).json({ error: "nothing to update" });
+
+  try {
+    const result = await runQuery(
+      `UPDATE my_mares SET ${sets.join(", ")} WHERE user_id = ? AND id = ?`,
+      [...args, String(req.params.userId), Number(req.params.id)],
+    );
+    if (!result?.affectedRows) return res.status(404).json({ error: "no such mare for this user" });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("my_mares patch failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/**
+ * The bands a user keeps, counted.
+ *
+ * Declared above `/api/mares/:userId/:id` so "bands" is read as the word it
+ * is rather than as a mare's id.
+ */
+app.get("/api/mares/:userId/bands", async (req, res) => {
+  const userId = String(req.params.userId);
+  const seasonRaw = Number(req.query.season);
+  const season = Number.isFinite(seasonRaw) && seasonRaw > 1900 ? seasonRaw : null;
+  try {
+    const rows = await runQuery(
+      `SELECT COALESCE(client_name, '') AS client, MAX(client_id) AS clientId,
+              COUNT(*) AS mares,
+              SUM(role = 'broodmare') AS broodmares,
+              SUM(role <> 'broodmare') AS others
+         FROM my_mares WHERE user_id = ?
+        GROUP BY COALESCE(client_name, '') ORDER BY client`,
+      [userId],
+    );
+    let byStatus = {};
+    let planned = 0;
+    if (season) {
+      const s = await runQuery(
+        `SELECT COALESCE(m.client_name, '') AS client, s.status, COUNT(*) AS n
+           FROM mare_seasons s JOIN my_mares m ON m.id = s.mare_id
+          WHERE s.user_id = ? AND s.season = ? GROUP BY client, s.status`,
+        [userId, season - 1],
+      ).catch(() => []);
+      for (const r of s) {
+        byStatus[r.client] = byStatus[r.client] ?? {};
+        byStatus[r.client][r.status ?? "unknown"] = Number(r.n);
       }
-      res.status(201).json({ ok: true });
-    },
-  );
+      const p = await runQuery(
+        `SELECT COALESCE(m.client_name, '') AS client, COUNT(DISTINCT p.mare_id) AS n
+           FROM mating_plans p JOIN my_mares m ON m.id = p.mare_id
+          WHERE p.user_id = ? AND p.season = ? GROUP BY client`,
+        [userId, season],
+      ).catch(() => []);
+      planned = Object.fromEntries(p.map((r) => [r.client, Number(r.n)]));
+    }
+    res.json({
+      season,
+      bands: rows.map((r) => ({
+        client: r.client || null,
+        clientId: r.clientId ?? null,
+        mares: Number(r.mares),
+        broodmares: Number(r.broodmares),
+        others: Number(r.others),
+        byStatus: byStatus[r.client] ?? {},
+        planned: (planned && planned[r.client]) || 0,
+      })),
+    });
+  } catch (err) {
+    console.error("mare bands failed:", err.message);
+    res.status(500).json({ error: "database error" });
+  }
+});
+
+/** One mare's whole file: her row, every season, every plan. */
+app.get("/api/mares/:userId/:id/plan", async (req, res) => {
+  const userId = String(req.params.userId);
+  const id = Number(req.params.id);
+  try {
+    const mare = await queryOne("SELECT * FROM my_mares WHERE user_id = ? AND id = ?", [userId, id]);
+    if (!mare) return res.status(404).json({ error: "no such mare for this user" });
+    const [seasons, plans, held] = await Promise.all([
+      runQuery("SELECT * FROM mare_seasons WHERE mare_id = ? ORDER BY season DESC", [id]).catch(() => []),
+      runQuery(
+        `SELECT id, season, version, status, author, updated_at FROM mating_plans
+          WHERE mare_id = ? ORDER BY season DESC, version DESC`,
+        [id],
+      ).catch(() => []),
+      mare.pedigree_reference
+        ? runQuery("SELECT reference FROM pedigree_cache WHERE reference = ?", [String(mare.pedigree_reference)]).catch(() => [])
+        : Promise.resolve([]),
+    ]);
+    res.json({ mare, seasons, plans, pedigreeHeld: held.length > 0 });
+  } catch (err) {
+    console.error("mare plan read failed:", err.message);
+    res.status(500).json({ error: "database error" });
+  }
+});
+
+/**
+ * What happened to a mare in one covering season.
+ *
+ * A PUT replaces the row. The alternative — merging — would have to invent a
+ * rule for "she is no longer in foal", and a status that can only be set and
+ * never cleared is the wrong shape for a fact that changes twice a year.
+ */
+app.put("/api/mares/:userId/:id/seasons/:season", express.json(), async (req, res) => {
+  const userId = String(req.params.userId);
+  const id = Number(req.params.id);
+  const season = Number(req.params.season);
+  if (!Number.isFinite(season) || season < 1900) return res.status(400).json({ error: "season must be a year" });
+
+  try {
+    const mare = await queryOne("SELECT id FROM my_mares WHERE user_id = ? AND id = ?", [userId, id]);
+    if (!mare) return res.status(404).json({ error: "no such mare for this user" });
+
+    const { seasonRowFrom } = await loadMares();
+    let row;
+    try {
+      row = seasonRowFrom(req.body ?? {});
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+    await runQuery(
+      `INSERT INTO mare_seasons
+         (mare_id, user_id, season, status, covering_sire, last_service_date, foaled_date, foal_sex, foal_by, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         status = VALUES(status), covering_sire = VALUES(covering_sire),
+         last_service_date = VALUES(last_service_date), foaled_date = VALUES(foaled_date),
+         foal_sex = VALUES(foal_sex), foal_by = VALUES(foal_by), notes = VALUES(notes)`,
+      [id, userId, season, row.status, row.covering_sire, row.last_service_date,
+       row.foaled_date, row.foal_sex, row.foal_by, row.notes],
+    );
+    res.json({ ok: true, season: { season, ...row } });
+  } catch (err) {
+    console.error("mare season write failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+app.delete("/api/mares/:userId/:id/seasons/:season", async (req, res) => {
+  try {
+    const result = await runQuery(
+      "DELETE FROM mare_seasons WHERE user_id = ? AND mare_id = ? AND season = ?",
+      [String(req.params.userId), Number(req.params.id), Number(req.params.season)],
+    );
+    res.json({ ok: true, removed: result?.affectedRows ?? 0 });
+  } catch (err) {
+    console.error("mare season delete failed:", err.message);
+    res.status(500).json({ error: "database error" });
+  }
+});
+
+/* ----------------------------------------------------------- mating plans */
+
+const planOut = (row) =>
+  row && {
+    ...row,
+    preferences: parseJsonCol(row.preferences) ?? [],
+    ruledOut: parseJsonCol(row.ruled_out) ?? [],
+    brief: parseJsonCol(row.brief),
+    statsSnapshot: parseJsonCol(row.stats_snapshot),
+    draftMeta: parseJsonCol(row.draft_meta),
+  };
+
+/** The latest plan for a season, or a named version of it. */
+app.get("/api/mares/:userId/:id/plans/:season", async (req, res) => {
+  const versionRaw = Number(req.query.version);
+  const version = Number.isFinite(versionRaw) ? versionRaw : null;
+  try {
+    const row = await queryOne(
+      `SELECT * FROM mating_plans
+        WHERE user_id = ? AND mare_id = ? AND season = ?${version ? " AND version = ?" : ""}
+        ORDER BY version DESC LIMIT 1`,
+      version
+        ? [String(req.params.userId), Number(req.params.id), Number(req.params.season), version]
+        : [String(req.params.userId), Number(req.params.id), Number(req.params.season)],
+    );
+    if (!row) return res.status(404).json({ error: "no plan for that mare and season" });
+    res.json({ plan: planOut(row) });
+  } catch (err) {
+    console.error("mating plan read failed:", err.message);
+    res.status(500).json({ error: "database error" });
+  }
+});
+
+const planBody = (b = {}) => {
+  const sections = b.sections ?? b;
+  const text = (v) => {
+    const s = v === undefined || v === null ? "" : String(v).trim();
+    return s === "" ? null : s;
+  };
+  return {
+    status: b.status === "final" ? "final" : "draft",
+    author: text(b.author),
+    preferences: jsonOrNull(b.preferences ?? []),
+    ruled_out: jsonOrNull(b.ruledOut ?? []),
+    brief: jsonOrNull(b.brief ?? null),
+    race_record: text(sections.race_record ?? sections.raceRecord),
+    pedigree: text(sections.pedigree),
+    produce_record: text(sections.produce_record ?? sections.produceRecord),
+    analysis: text(sections.analysis),
+    stats_snapshot: jsonOrNull(b.statsSnapshot ?? null),
+    draft_meta: jsonOrNull(b.draftMeta ?? null),
+  };
+};
+
+/**
+ * Write a new version of a plan.
+ *
+ * Always a new version, never an overwrite: version 1 is what was sent to the
+ * client, and the desk changing its mind in March must not rewrite what they
+ * read in January.
+ */
+app.post("/api/mares/:userId/:id/plans/:season", express.json({ limit: "4mb" }), async (req, res) => {
+  const userId = String(req.params.userId);
+  const id = Number(req.params.id);
+  const season = Number(req.params.season);
+  if (!Number.isFinite(season) || season < 1900) return res.status(400).json({ error: "season must be a year" });
+  try {
+    const mare = await queryOne("SELECT id FROM my_mares WHERE user_id = ? AND id = ?", [userId, id]);
+    if (!mare) return res.status(404).json({ error: "no such mare for this user" });
+
+    const last = await queryOne(
+      "SELECT MAX(version) AS v FROM mating_plans WHERE mare_id = ? AND season = ?",
+      [id, season],
+    );
+    const version = Number(last?.v ?? 0) + 1;
+    const p = planBody(req.body);
+    const result = await runQuery(
+      `INSERT INTO mating_plans
+         (mare_id, user_id, season, version, status, author, preferences, ruled_out, brief,
+          race_record, pedigree, produce_record, analysis, stats_snapshot, draft_meta)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, userId, season, version, p.status, p.author, p.preferences, p.ruled_out, p.brief,
+       p.race_record, p.pedigree, p.produce_record, p.analysis, p.stats_snapshot, p.draft_meta],
+    );
+    res.status(201).json({ ok: true, id: result?.insertId ?? null, version });
+  } catch (err) {
+    console.error("mating plan write failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/** Edit the latest draft in place. A final plan is answered with a 409. */
+app.patch("/api/mares/:userId/:id/plans/:season", express.json({ limit: "4mb" }), async (req, res) => {
+  const userId = String(req.params.userId);
+  const id = Number(req.params.id);
+  const season = Number(req.params.season);
+  try {
+    const latest = await queryOne(
+      "SELECT id, version, status FROM mating_plans WHERE user_id = ? AND mare_id = ? AND season = ? ORDER BY version DESC LIMIT 1",
+      [userId, id, season],
+    );
+    if (!latest) return res.status(404).json({ error: "no plan for that mare and season" });
+    if (latest.status === "final") {
+      return res.status(409).json({
+        error: "that plan is final; POST a new version rather than editing what was sent",
+        version: latest.version,
+      });
+    }
+    const p = planBody(req.body);
+    await runQuery(
+      `UPDATE mating_plans SET status = ?, author = COALESCE(?, author), preferences = ?, ruled_out = ?,
+         brief = COALESCE(?, brief), race_record = ?, pedigree = ?, produce_record = ?, analysis = ?,
+         stats_snapshot = COALESCE(?, stats_snapshot), draft_meta = COALESCE(?, draft_meta)
+       WHERE id = ?`,
+      [p.status, p.author, p.preferences, p.ruled_out, p.brief, p.race_record, p.pedigree,
+       p.produce_record, p.analysis, p.stats_snapshot, p.draft_meta, latest.id],
+    );
+    res.json({ ok: true, version: latest.version });
+  } catch (err) {
+    console.error("mating plan patch failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
 });
 
 /**
@@ -5646,13 +6121,7 @@ app.get("/api/pedigree/held", async (req, res) => {
  * few hundred ancestor names over and over, so they compress hard.
  */
 app.get("/api/pedigree/grids", async (req, res) => {
-  const WIDTHS = [2, 4, 8, 16, 32];
-  const PATH = /^[SD]{1,5}$/;
-  // S is 0 and D is 1, which makes the path a binary numeral and the numeral
-  // the row order a tabulated pedigree is drawn in.
-  const slot = (path) =>
-    [...path].reduce((n, c) => n * 2 + (c === "D" ? 1 : 0), 0);
-
+  const { gridFromPayload } = await loadPedigreeGrid();
   try {
     const rows = await runQuery(
       "SELECT reference, display, name_key, sex, foaling_year, payload FROM pedigree_cache",
@@ -5670,22 +6139,12 @@ app.get("/api/pedigree/grids", async (req, res) => {
         console.warn("pedigree grids: unreadable payload for", row.reference);
         continue;
       }
-      const grid = WIDTHS.map((w) => new Array(w).fill(null));
-      for (const a of data?.ancestors ?? []) {
-        const path = String(a?.path ?? "");
-        if (!PATH.test(path)) continue;
-        const g = path.length;
-        const i = slot(path);
-        if (i >= grid[g - 1].length) continue;
-        const written = String(a?.display_name ?? a?.name ?? "").trim();
-        if (written) grid[g - 1][i] = written;
-      }
       horses[String(row.reference)] = {
         name: row.display,
         key: row.name_key,
         sex: row.sex,
         year: row.foaling_year,
-        grid,
+        grid: gridFromPayload(data),
       };
     }
 
@@ -6041,88 +6500,570 @@ async function populationBaseline() {
   return { n: 0, mean: 85.3, sd: 23.6, since: null, measured: false, pending: true };
 }
 
-app.get("/api/breeding/mating", async (req, res) => {
+/**
+ * The outlook for one hypothetical mating, as data.
+ *
+ * Lifted out of the route so the report can ask for three stallions in one
+ * request without three round trips through HTTP to our own server. The
+ * route below is now a thin wrapper; everything either caller sees comes
+ * from here, so they cannot drift.
+ */
+async function matingOutlook({ sire, dam, damsire: askedDamsire = null, damYear = null }) {
   const { studBookName, describe, pickOwnRow } = await loadMating();
+  let damsire = askedDamsire ? studBookName(askedDamsire) : null;
+
+  const [bySire, outOfDam, damRows] = await Promise.all([
+    horsesWhere("sireName = ?", [sire]),
+    horsesWhere("damName = ?", [dam], 200),
+    horsesWhere("horseName = ?", [dam], 5),
+  ]);
+  // Her own row, among any namesakes: by year, then by sire, then by career.
+  const damOwn = { horses: [pickOwnRow(damRows.horses, { year: damYear, sire: damsire })].filter(Boolean) };
+
+  // The mare's own sire, if the caller did not know it: her own rows say.
+  if (!damsire && damOwn.horses[0]?.sire) damsire = studBookName(damOwn.horses[0].sire);
+
+  // Damsires for the sire's runners, so the same cross can be picked out.
+  const damsireOf = await damsiresOf(bySire.horses.map((h) => h.dam));
+  for (const h of bySire.horses) {
+    if (!h.damsire && h.dam) h.damsire = damsireOf.get(h.dam.toUpperCase()) ?? null;
+  }
+  const nick = damsire
+    ? bySire.horses.filter((h) => h.damsire && studBookName(h.damsire) === damsire)
+    : [];
+
+  // Every runner out of a daughter of the damsire, by any sire — what the
+  // damsire brings, independent of this stallion. His daughters that raced
+  // are the only ones we can name, so this is the raced-dam subset.
+  let byDamsire = { horses: [], timedOut: false };
+  if (damsire) {
+    const daughters = await runQuery(
+      `SELECT ${BREEDING_HINT} DISTINCT horseName
+         FROM APIData_Table2
+        WHERE sireName = ? AND horseGender IN ('f', 'm')
+        LIMIT 3000`,
+      [damsire],
+    ).catch(() => []);
+    const names = daughters.map((d) => d.horseName).filter(Boolean);
+    if (names.length) {
+      const got = { horses: [], timedOut: false };
+      for (let i = 0; i < names.length; i += 400) {
+        const chunk = names.slice(i, i + 400);
+        const part = await horsesWhere(`damName IN (${chunk.map(() => "?").join(", ")})`, chunk, 2000);
+        got.horses.push(...part.horses);
+        got.timedOut = got.timedOut || part.timedOut;
+      }
+      for (const h of got.horses) if (!h.damsire) h.damsire = damsire;
+      got.horses.sort((a, b) => (b.best ?? 0) - (a.best ?? 0));
+      byDamsire = got;
+    }
+  }
+
+  const population = await populationBaseline();
+  const top = (list, n) => list.slice(0, n);
+  const worldwide = await worldwideOutlook({ sire, dam, damsire, damYear, damsireOf }).catch((err) => {
+    console.warn("breeding worldwide outlook failed:", err.message);
+    return null;
+  });
+
+  return {
+    asked: { sire, dam, damsire, year: damYear },
+    population,
+    dam: {
+      own: damOwn.horses[0] ?? null,
+      produce: { ...describe(outOfDam.horses), horses: outOfDam.horses, timedOut: outOfDam.timedOut },
+    },
+    sire: {
+      progeny: { ...describe(bySire.horses), horses: top(bySire.horses, 40), timedOut: bySire.timedOut },
+      damsKnown: bySire.horses.filter((h) => h.damsire).length,
+    },
+    damsire: damsire
+      ? { progeny: { ...describe(byDamsire.horses), horses: top(byDamsire.horses, 40), timedOut: byDamsire.timedOut } }
+      : null,
+    nick: damsire ? { ...describe(nick), horses: nick } : null,
+    worldwide,
+  };
+}
+
+app.get("/api/breeding/mating", async (req, res) => {
+  const { studBookName } = await loadMating();
   const sire = studBookName(req.query.sire);
   const dam = studBookName(req.query.dam);
-  let damsire = studBookName(req.query.damsire) || null;
-  const damYear = Number(req.query.year) || null;
   if (!sire || !dam) return res.status(400).json({ error: "sire and dam are required" });
-
   try {
-    const [bySire, outOfDam, damRows] = await Promise.all([
-      horsesWhere("sireName = ?", [sire]),
-      horsesWhere("damName = ?", [dam], 200),
-      horsesWhere("horseName = ?", [dam], 5),
-    ]);
-    // Her own row, among any namesakes: by year, then by sire, then by career.
-    const damOwn = { horses: [pickOwnRow(damRows.horses, { year: damYear, sire: damsire })].filter(Boolean) };
-
-    // The mare's own sire, if the caller did not know it: her own rows say.
-    if (!damsire && damOwn.horses[0]?.sire) damsire = studBookName(damOwn.horses[0].sire);
-
-    // Damsires for the sire's runners, so the same cross can be picked out.
-    const damsireOf = await damsiresOf(bySire.horses.map((h) => h.dam));
-    for (const h of bySire.horses) {
-      if (!h.damsire && h.dam) h.damsire = damsireOf.get(h.dam.toUpperCase()) ?? null;
-    }
-    const nick = damsire
-      ? bySire.horses.filter((h) => h.damsire && studBookName(h.damsire) === damsire)
-      : [];
-
-    // Every runner out of a daughter of the damsire, by any sire — what the
-    // damsire brings, independent of this stallion. His daughters that raced
-    // are the only ones we can name, so this is the raced-dam subset.
-    let byDamsire = { horses: [], timedOut: false };
-    if (damsire) {
-      const daughters = await runQuery(
-        `SELECT ${BREEDING_HINT} DISTINCT horseName
-           FROM APIData_Table2
-          WHERE sireName = ? AND horseGender IN ('f', 'm')
-          LIMIT 3000`,
-        [damsire],
-      ).catch(() => []);
-      const names = daughters.map((d) => d.horseName).filter(Boolean);
-      if (names.length) {
-        const got = { horses: [], timedOut: false };
-        for (let i = 0; i < names.length; i += 400) {
-          const chunk = names.slice(i, i + 400);
-          const part = await horsesWhere(`damName IN (${chunk.map(() => "?").join(", ")})`, chunk, 2000);
-          got.horses.push(...part.horses);
-          got.timedOut = got.timedOut || part.timedOut;
-        }
-        for (const h of got.horses) if (!h.damsire) h.damsire = damsire;
-        got.horses.sort((a, b) => (b.best ?? 0) - (a.best ?? 0));
-        byDamsire = got;
-      }
-    }
-
-    const population = await populationBaseline();
-    const top = (list, n) => list.slice(0, n);
-    const worldwide = await worldwideOutlook({ sire, dam, damsire, damYear, damsireOf }).catch((err) => {
-      console.warn("breeding worldwide outlook failed:", err.message);
-      return null;
-    });
-
-    res.json({
-      asked: { sire, dam, damsire, year: damYear },
-      population,
-      dam: {
-        own: damOwn.horses[0] ?? null,
-        produce: { ...describe(outOfDam.horses), horses: outOfDam.horses, timedOut: outOfDam.timedOut },
-      },
-      sire: {
-        progeny: { ...describe(bySire.horses), horses: top(bySire.horses, 40), timedOut: bySire.timedOut },
-        damsKnown: bySire.horses.filter((h) => h.damsire).length,
-      },
-      damsire: damsire
-        ? { progeny: { ...describe(byDamsire.horses), horses: top(byDamsire.horses, 40), timedOut: byDamsire.timedOut } }
-        : null,
-      nick: damsire ? { ...describe(nick), horses: nick } : null,
-      worldwide,
-    });
+    res.json(await matingOutlook({
+      sire,
+      dam,
+      damsire: req.query.damsire ?? null,
+      damYear: Number(req.query.year) || null,
+    }));
   } catch (err) {
     console.error("breeding mating failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+
+/* ------------------------------------------------------------------------- */
+/* One request that assembles a whole mating report                          */
+/* ------------------------------------------------------------------------- */
+
+/** A sire's rows from one of the Arion-derived report tables. */
+const sireTable = (table, name) =>
+  runQuery(
+    `SELECT ${BREEDING_HINT} * FROM \`${table}\` WHERE LOWER(TRIM(Sire)) = LOWER(?) LIMIT 200`,
+    [name],
+  ).catch(() => []);
+
+/** A pedigree we already hold, as a grid. Never goes upstream. */
+async function heldGrid({ reference = null, name = null, year = null }) {
+  const { gridFromPayload, heldIn } = await loadPedigreeGrid();
+  const { findQuery, normaliseName } = await loadPedigreeStore();
+  let row = null;
+  if (reference) {
+    row = await queryOne("SELECT * FROM pedigree_cache WHERE reference = ?", [String(reference)]).catch(() => null);
+  }
+  if (!row && name) {
+    // findQuery answers null for a name that reduces to nothing, and wants a
+    // real number for the year or none at all.
+    //
+    // The conversion has to reject blank before it reaches Number(), because
+    // Number(null) is 0 and Number.isFinite(0) is true — so a stallion asked
+    // for without a year was looked up as a horse foaled in the year nought,
+    // which matches nothing and reported every chart we hold as missing.
+    const asked = year === null || year === undefined || year === "" ? null : Number(year);
+    const q = findQuery({ name, year: Number.isFinite(asked) ? asked : undefined });
+    if (q) row = await queryOne(q.sql, q.args).catch(() => null);
+  }
+  if (!row) return null;
+  let payload;
+  try {
+    payload = JSON.parse(row.payload);
+  } catch {
+    return null;
+  }
+  const grid = gridFromPayload(payload);
+  return {
+    reference: String(row.reference),
+    name: row.display,
+    key: row.name_key ?? normaliseName(row.display),
+    year: row.foaling_year ?? null,
+    sex: row.sex ?? null,
+    grid,
+    ancestorsHeld: heldIn(grid),
+  };
+}
+
+/**
+ * Everything a mating report needs, in one request.
+ *
+ * The report is a two-page document about one mare and two or three
+ * stallions, and it draws on eight sources: her row in the band, her career,
+ * her produce, her siblings, her chart, each stallion's chart, each
+ * stallion's record at four widths, and each stallion's fee. Fetching those
+ * from the page would be a dozen round trips with no way to say which of them
+ * failed.
+ *
+ * ## Nothing here goes upstream
+ *
+ * Pedigrees come from the cache and only from the cache. `/api/pedigree` on a
+ * miss queues behind a deliberate 45-second gap and can take minutes; a
+ * report that waits on it does not render, and a report that renders an empty
+ * grid claims a mating is free of inbreeding when nobody checked. A chart we
+ * do not hold is named in `missing` and the grid is null.
+ *
+ * ## Stallions are fetched one at a time
+ *
+ * Each stallion's outlook is four grouped reads of the results table plus the
+ * worldwide file. Three of those in parallel is a dozen concurrent queries
+ * against a pool of ten, which is how a request that should take thirty
+ * seconds takes two minutes. Sequential, capped at three, measured at about
+ * eleven seconds each.
+ *
+ * Every block carries its own failure. A stallion whose figures time out
+ * still appears, with `timedOut` set, because "we could not count in time" and
+ * "he has no runners" must never look the same.
+ */
+app.get("/api/breeding/report-data", async (req, res) => {
+  const { studBookName } = await loadMating();
+  const userId = (req.query.userId ?? "").toString().trim();
+  const mareId = Number(req.query.mareId);
+  const seasonRaw = Number(req.query.season);
+  const season = Number.isFinite(seasonRaw) && seasonRaw > 1900 ? seasonRaw : null;
+  const stallions = String(req.query.stallions ?? "")
+    .split(",")
+    .map((s) => studBookName(s))
+    .filter(Boolean)
+    .slice(0, 3);
+
+  const missing = [];
+  try {
+    // The mare: from the band where the caller named one, from the query
+    // otherwise, so a report can be drawn for a mare nobody has saved.
+    let mare = null;
+    if (userId && Number.isFinite(mareId)) {
+      mare = await queryOne("SELECT * FROM my_mares WHERE user_id = ? AND id = ?", [userId, mareId]);
+      if (!mare) return res.status(404).json({ error: "no such mare for this user" });
+    }
+    const name = studBookName(mare?.horse_name ?? req.query.mare);
+    if (!name) return res.status(400).json({ error: "give a mare: userId and mareId, or mare" });
+    const year = Number(mare?.foaling_year ?? req.query.year) || null;
+    const sire = studBookName(mare?.sire_name ?? req.query.sire) || null;
+    const dam = studBookName(mare?.dam_name ?? req.query.dam) || null;
+    const damsire = studBookName(mare?.damsire_name ?? req.query.damsire) || sire || null;
+
+    const [seasons, plan] = mare
+      ? await Promise.all([
+          runQuery("SELECT * FROM mare_seasons WHERE mare_id = ? ORDER BY season DESC", [mare.id]).catch(() => []),
+          season
+            ? queryOne(
+                "SELECT * FROM mating_plans WHERE mare_id = ? AND season = ? ORDER BY version DESC LIMIT 1",
+                [mare.id, season],
+              ).catch(() => null)
+            : Promise.resolve(null),
+        ])
+      : [[], null];
+
+    // Her own career, her produce and her siblings. Her sire is the damsire of
+    // her foals, which is what makes her side of every cross below.
+    const [own, runs, produce, siblings] = await Promise.all([
+      horsesWhere("horseName = ?", [name], 5).catch(() => ({ horses: [], timedOut: false })),
+      runQuery(
+        `SELECT ${BREEDING_HINT} meetingDate, courseName, countryCode, raceTitle, distance, going,
+                positionOfficial, numberOfRunners, performanceRating, preRaceMasterRating, raceType
+           FROM APIData_Table2 WHERE horseName = ?${year ? " AND YEAR(foalingDate) = ?" : ""}
+          ORDER BY meetingDate ASC LIMIT 60`,
+        year ? [name, year] : [name],
+      ).catch(() => []),
+      dam ? horsesWhere("damName = ?", [name], 60).catch(() => ({ horses: [], timedOut: false })) : Promise.resolve({ horses: [], timedOut: false }),
+      dam ? horsesWhere("damName = ?", [dam], 60).catch(() => ({ horses: [], timedOut: false })) : Promise.resolve({ horses: [], timedOut: false }),
+    ]);
+
+    const { pickOwnRow, describe } = await loadMating();
+    const herRow = pickOwnRow(own.horses, { year, sire });
+
+    const marePedigree = await heldGrid({
+      reference: mare?.pedigree_reference ?? null,
+      name,
+      year,
+    }).catch(() => null);
+    if (!marePedigree) missing.push("pedigree.mare");
+
+    const out = [];
+    for (const stallion of stallions) {
+      const block = { name: stallion, missing: [] };
+      try {
+        block.mating = await matingOutlook({ sire: stallion, dam: name, damsire: sire, damYear: year });
+      } catch (err) {
+        block.mating = null;
+        block.missing.push("mating");
+        missing.push(`mating:${stallion}`);
+        console.warn(`report-data: mating outlook failed for ${stallion}:`, err.message);
+      }
+      const [fee, crop, byAge, bySex, byDistance, worldwide, grid] = await Promise.all([
+        queryOne(
+          "SELECT * FROM stallion_fee WHERE LOWER(TRIM(stallion)) = LOWER(?) LIMIT 1",
+          [stallion],
+        ).catch(() => null),
+        sireTable("sire_crop_reports", stallion),
+        sireTable("sire_age_reports", stallion),
+        sireTable("sire_sex_reports", stallion),
+        sireTable("sire_distance_reports", stallion),
+        sireTable("sire_worldwide_reports", stallion),
+        heldGrid({ name: stallion }).catch(() => null),
+      ]);
+      block.fee = fee;
+      if (!fee) block.missing.push("fee");
+      block.crop = crop;
+      block.byAge = byAge;
+      block.bySex = bySex;
+      block.byDistance = byDistance;
+      block.worldwide = worldwide;
+      block.pedigree = grid;
+      if (!grid) {
+        block.missing.push("pedigree");
+        missing.push(`pedigree:${stallion}`);
+      }
+      out.push(block);
+    }
+
+    res.json({
+      asked: { userId: userId || null, mareId: mare?.id ?? null, mare: name, year, sire, dam, damsire, season, stallions },
+      generatedAt: new Date().toISOString(),
+      missing,
+      mare: {
+        row: mare,
+        own: herRow,
+        runs,
+        seasons,
+        plan: plan ? { ...plan, preferences: parseJsonCol(plan.preferences), ruledOut: parseJsonCol(plan.ruled_out) } : null,
+        timedOut: own.timedOut,
+      },
+      produce: { ...describe(produce.horses), horses: produce.horses, timedOut: produce.timedOut },
+      family: { siblings: siblings.horses.filter((h) => h.name !== name), timedOut: siblings.timedOut },
+      pedigree: marePedigree,
+      stallions: out,
+    });
+  } catch (err) {
+    console.error("report-data failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/**
+ * Which pedigrees a band still needs, in the order they are worth fetching.
+ *
+ * One mare's chart turns the inbreeding screen on for her whole shortlist;
+ * one more stallion adds one row to it. So mares come first, and among them
+ * the ones with a plan already written, because those are the reports someone
+ * is waiting to print. The warming script reads this rather than deciding for
+ * itself, so the queue follows the desk's work.
+ */
+app.get("/api/breeding/warm-targets", async (req, res) => {
+  const userId = (req.query.userId ?? "").toString().trim();
+  try {
+    const mares = await runQuery(
+      `SELECT m.id, m.horse_name, m.foaling_year, m.pedigree_reference, m.client_name,
+              (SELECT COUNT(*) FROM mating_plans p WHERE p.mare_id = m.id) AS plans
+         FROM my_mares m
+        WHERE ${userId ? "m.user_id = ? AND " : ""}m.client_name IS NOT NULL
+        ORDER BY plans DESC, m.horse_name`,
+      userId ? [userId] : [],
+    ).catch(() => []);
+
+    const wanted = await runQuery(
+      `SELECT DISTINCT p.preferences, p.season FROM mating_plans p${userId ? " WHERE p.user_id = ?" : ""}`,
+      userId ? [userId] : [],
+    ).catch(() => []);
+    const stallions = new Map();
+    for (const row of wanted) {
+      for (const pref of parseJsonCol(row.preferences) ?? []) {
+        const n = String(pref?.stallion ?? "").trim();
+        if (n) stallions.set(n.toUpperCase(), { name: n, season: row.season });
+      }
+    }
+    const covering = await runQuery(
+      `SELECT DISTINCT covering_sire FROM mare_seasons WHERE covering_sire IS NOT NULL${userId ? " AND user_id = ?" : ""}`,
+      userId ? [userId] : [],
+    ).catch(() => []);
+
+    const held = new Set(
+      (await runQuery("SELECT reference, name_key FROM pedigree_cache", []).catch(() => [])).map((r) => String(r.name_key)),
+    );
+    const { mareNameKey: key } = await loadMares();
+
+    const targets = [];
+    for (const m of mares) {
+      if (held.has(key(m.horse_name))) continue;
+      targets.push({
+        name: m.horse_name,
+        year: m.foaling_year || null,
+        ref: m.pedigree_reference || null,
+        what: "mare",
+        mareId: m.id,
+        client: m.client_name,
+        plans: Number(m.plans ?? 0),
+      });
+    }
+    for (const [, s] of stallions) {
+      if (held.has(key(s.name))) continue;
+      targets.push({ name: s.name, year: null, ref: null, what: "stallion", season: s.season });
+    }
+    for (const c of covering) {
+      const n = String(c.covering_sire);
+      if (held.has(key(n)) || stallions.has(n.toUpperCase())) continue;
+      targets.push({ name: n, year: null, ref: null, what: "covering" });
+    }
+
+    res.json({ count: targets.length, held: held.size, targets });
+  } catch (err) {
+    console.error("warm targets failed:", err.message);
+    res.status(500).json({ error: "database error" });
+  }
+});
+
+/**
+ * A first draft of the four paragraphs, from the figures already on the page.
+ *
+ * The desk writes these, and will go on writing them: what this does is turn
+ * a stats payload and a handful of the agent's own notes into prose in the
+ * house idiom so there is something to edit rather than a blank box. It never
+ * persists — the page saves the result through the plan routes, so an
+ * unreviewed draft cannot become the record by accident.
+ *
+ * The one rule that matters is that it may not invent a number. Every figure
+ * it writes is checked back against the payload it was given and anything
+ * unaccounted for comes back in `warnings`, where the editor can see it.
+ */
+app.post("/api/breeding/report-draft", express.json({ limit: "4mb" }), async (req, res) => {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(501).json({
+      error: "report drafting is not configured on this server; ANTHROPIC_API_KEY is not set",
+    });
+  }
+  try {
+    const { draftReport } = await import("./ai/reportDraft.mjs");
+    const { anthropicClient } = await import("./ai/agent.mjs");
+    const out = await draftReport({
+      anthropic: anthropicClient(),
+      ...(req.body ?? {}),
+    });
+    res.json(out);
+  } catch (err) {
+    console.error("report draft failed:", err.message);
+    res.status(err?.status === 400 ? 400 : 502).json({
+      error: "report draft failed",
+      detail: String(err.message ?? "").slice(0, 400),
+    });
+  }
+});
+
+/* ------------------------------------------------------------------------- */
+/* Nicks: this stallion over mares by that one, at three widths               */
+/* ------------------------------------------------------------------------- */
+
+const loadNicks = () => import("./breeding/nicks.mjs");
+
+/** Sons of a horse who stand as sires themselves — one generation, not a line. */
+async function sonsOf(key) {
+  const rows = await runQuery(
+    `SELECT ${BREEDING_HINT} DISTINCT p.horse_key
+       FROM horse_parents p
+      WHERE p.sire_key = ?
+        AND EXISTS (SELECT 1 FROM nick_stats n WHERE n.sire_key = p.horse_key)
+      LIMIT 400`,
+    [key],
+  ).catch(() => []);
+  return rows.map((r) => String(r.horse_key));
+}
+
+/**
+ * What our data says about a cross.
+ *
+ * Three widths, because the desk's own reports quote three:
+ *
+ *   direct        Frankel over Kingman mares
+ *   sireLine      Frankel over mares from Kingman's sire line
+ *   grandsireLine Galileo's sons over mares from Kingman's line
+ *
+ * Plus the damsire's own record — which stallions his daughters have worked
+ * with, ranked — because "there isn't one particular stallion or line which
+ * works" is a finding a breeder needs the table to show, not a sentence to
+ * take on trust.
+ */
+app.get("/api/breeding/nicks", async (req, res) => {
+  const { studKey, describeCross, thinnessNotes } = await loadNicks();
+  const sire = studKey(req.query.sire);
+  const damsire = studKey(req.query.damsire);
+  if (!sire || !damsire) return res.status(400).json({ error: "sire and damsire are required" });
+
+  try {
+    const built = await queryOne(
+      `SELECT MAX(crop_to) AS cropTo, COUNT(*) AS crosses FROM nick_stats`,
+      [],
+    ).catch(() => null);
+    if (!built || !Number(built.crosses)) {
+      return res.json({
+        asked: { sire, damsire },
+        missing: true,
+        reason: "nick statistics have not been built on this server yet",
+      });
+    }
+
+    const rowsFor = (sires, damsires) =>
+      runQuery(
+        `SELECT * FROM nick_stats
+          WHERE sire_key IN (${sires.map(() => "?").join(", ")})
+            AND damsire_key IN (${damsires.map(() => "?").join(", ")})`,
+        [...sires, ...damsires],
+      ).catch(() => []);
+
+    // The damsire's sire line needs his own sire, which is the parent map's
+    // job; a damsire we have no parent for gives a line of one.
+    const damsireSire = await queryOne("SELECT sire_key FROM horse_parents WHERE horse_key = ?", [damsire]).catch(() => null);
+    const sireSire = await queryOne("SELECT sire_key FROM horse_parents WHERE horse_key = ?", [sire]).catch(() => null);
+
+    const [damsireLine, sireLineKeys, grandsireLineKeys] = await Promise.all([
+      damsireSire?.sire_key
+        ? sonsOf(String(damsireSire.sire_key)).then((sons) => [...new Set([damsire, ...sons])])
+        : Promise.resolve([damsire]),
+      sonsOf(sire).then((sons) => [...new Set([sire, ...sons])]),
+      sireSire?.sire_key
+        ? sonsOf(String(sireSire.sire_key)).then((sons) => [...new Set([String(sireSire.sire_key), ...sons])])
+        : Promise.resolve([]),
+    ]);
+
+    const [directRows, sireLineRows, grandsireRows, damsireRows, leading, cover] = await Promise.all([
+      rowsFor([sire], [damsire]),
+      rowsFor([sire], damsireLine),
+      grandsireLineKeys.length ? rowsFor(grandsireLineKeys, damsireLine) : Promise.resolve([]),
+      runQuery(
+        `SELECT sire_key, runners, stakes_winners, group_winners, g1_winners, sw_pct
+           FROM nick_stats WHERE damsire_key = ? AND runners >= 3
+          ORDER BY stakes_winners DESC, runners DESC LIMIT 25`,
+        [damsire],
+      ).catch(() => []),
+      // The best of the cross, named — a figure without a horse beside it is
+      // not something a breeder can check.
+      runQuery(
+        `SELECT ${BREEDING_HINT} h.horse_name, h.foaling_year, h.foaling_country, h.sex,
+                h.g1_wins, h.g_wins, h.s_wins, h.dam,
+                COALESCE(h.turf_prize_usd, 0) + COALESCE(h.aw_prize_usd, 0) AS prize
+           FROM breeding_horses h
+           JOIN horse_parents p ON p.horse_key = h.dam_key
+          WHERE h.sire_key = ? AND p.sire_key = ?
+          ORDER BY h.g1_wins DESC, h.g_wins DESC, h.s_wins DESC, prize DESC
+          LIMIT 8`,
+        [sire, damsire],
+      ).catch(() => []),
+      runQuery(
+        `SELECT ${BREEDING_HINT} COUNT(*) AS total, SUM(p.horse_key IS NOT NULL) AS known
+           FROM breeding_horses h LEFT JOIN horse_parents p ON p.horse_key = h.dam_key
+          WHERE h.sire_key = ?`,
+        [sire],
+      ).catch(() => []),
+    ]);
+
+    const total = Number(cover?.[0]?.total ?? 0);
+    const known = Number(cover?.[0]?.known ?? 0);
+    const coverage = total ? known / total : null;
+    const direct = describeCross(directRows, { sire, damsire });
+
+    res.json({
+      asked: { sire, damsire },
+      direct,
+      sireLine: {
+        ...describeCross(sireLineRows, { sire, damsire }),
+        over: damsireLine,
+      },
+      grandsireLine: grandsireLineKeys.length
+        ? { ...describeCross(grandsireRows, { sire: sireSire?.sire_key ?? null, damsire }), by: grandsireLineKeys, over: damsireLine }
+        : null,
+      damsireRecord: damsireRows.map((r) => ({
+        sire: String(r.sire_key),
+        runners: Number(r.runners),
+        stakesWinners: Number(r.stakes_winners),
+        groupWinners: Number(r.group_winners),
+        g1Winners: Number(r.g1_winners),
+        swPct: r.sw_pct === null ? null : Number(r.sw_pct),
+      })),
+      leading: leading.map((h) => ({
+        name: String(h.horse_name),
+        year: h.foaling_year ?? null,
+        country: h.foaling_country ?? null,
+        sex: h.sex ?? null,
+        dam: h.dam ?? null,
+        g1Wins: Number(h.g1_wins ?? 0),
+        groupWins: Number(h.g_wins ?? 0),
+        stakesWins: Number(h.s_wins ?? 0),
+        prizeUsd: Number(h.prize ?? 0),
+      })),
+      coverage,
+      notes: thinnessNotes({ coverage, cropFrom: direct.cropFrom, cropTo: direct.cropTo }),
+      builtTo: built.cropTo ?? null,
+    });
+  } catch (err) {
+    console.error("breeding nicks failed:", err.message);
     res.status(500).json({ error: "database error", detail: err.message });
   }
 });
@@ -12239,6 +13180,45 @@ app.get('/api/france/racecards', (req, res) => {
       console.error("[track-pars] daily rebuild failed:", err.message);
     }
   }, { timezone: "Europe/London" });
+}
+
+// Nick statistics, nightly. A full pass over the worldwide file joined
+// through the parent map: seconds of work, but the sort of query that has no
+// business happening while somebody waits for a page. Skipped while the
+// worldwide table is still filling, for the same reason the population
+// baseline is: a partial file is not a smaller world, it is the best horses
+// of 2014.
+{
+  const cron = require("node-cron");
+  const rebuild = async (why) => {
+    try {
+      const { EXPECTED_ROWS } = await loadHorses();
+      const [row] = await runQuery("SELECT COUNT(*) AS n FROM breeding_horses", []);
+      if (Number(row?.n ?? 0) < EXPECTED_ROWS) {
+        return console.log(`[nicks] ${why}: worldwide file is still filling (${row?.n ?? 0}), skipping`);
+      }
+      const { rebuildNickStats } = await loadNicks();
+      const out = await rebuildNickStats(runQuery, {
+        log: { log: (m) => console.log("[nicks]", m), warn: (m) => console.warn("[nicks]", m) },
+      });
+      console.log(`[nicks] ${why} rebuild:`, JSON.stringify(out));
+    } catch (err) {
+      console.error(`[nicks] ${why} rebuild failed:`, err.message);
+    }
+  };
+
+  cron.schedule("20 3 * * *", () => rebuild("nightly"), { timezone: "Europe/London" });
+
+  // And once after a cold start, so a fresh database does not wait until
+  // three in the morning to answer its first cross.
+  setTimeout(async () => {
+    const found = await runQuery(
+      `SELECT 1 AS present FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nick_stats' LIMIT 1`,
+      [],
+    ).catch(() => []);
+    if (!found.length) rebuild("first");
+  }, 10 * 60 * 1000).unref?.();
 }
 
 // The schedule. Europe/Paris throughout, because that is what the fixture list
