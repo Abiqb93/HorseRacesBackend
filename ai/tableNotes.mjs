@@ -105,6 +105,25 @@ export const TABLE_NOTES = {
   report_trainer_uplift_summary: "Per-trainer summary of how horses improved on joining the yard.",
   report_trainer_uplift_moves: "The individual horse moves behind the trainer uplift summary.",
 
+  // --- the broodmare band ---------------------------------------------------
+  my_mares: "A desk's broodmare band: one row per mare per agent, keyed on user_id.",
+  mare_seasons:
+    "What happened to a mare in one season. `season` is the COVERING year: the 2026 row " +
+    "is the mare covered in 2026, and its `foaled_date` is the foal she dropped that spring " +
+    "out of the 2025 cover. Reading it the other way misdates every mare in the band.",
+  mating_plans:
+    "What is proposed for a mare in a season, one row per version. A plan whose status is " +
+    "'final' is immutable; an edit becomes version n+1.",
+  mare_foals: "The foal on the ground, filed under the season his dam was covered.",
+  nick_stats:
+    "Sire x damsire crosses from the worldwide file. Counts RUNNERS, not foals, and only " +
+    "the 2014-2024 crops - so the figures are smaller and the percentages higher than a " +
+    "commercial nicking service's. Never describe these as 'from N foals'.",
+  horse_parents:
+    "horse -> sire and dam, harvested from the results table, the worldwide file and cached " +
+    "pedigrees. It is how a damsire is derived; coverage is partial and a missing parent is " +
+    "a hole, not a zero.",
+
   // --- sales ----------------------------------------------------------------
   foalSale_Dashboard: "Foal sale dashboard rows.",
   foalSale_Pedigree: "Foal sale pedigrees.",
@@ -121,7 +140,12 @@ export const TABLE_NOTES = {
  * query that could never have finished. Saying so up front is cheaper than
  * letting it discover the limit each time.
  */
-export const LARGE_TABLES = ["APIData_Table2", "racingpost_results", "sectionsparsed", "attheraces"];
+export const LARGE_TABLES = [
+  "APIData_Table2", "racingpost_results", "sectionsparsed", "attheraces",
+  // Four hundred thousand rows of parentage and eighty thousand crosses. Both
+  // answer an indexed lookup instantly and neither survives a GROUP BY.
+  "horse_parents", "nick_stats",
+];
 
 /** Every table, each with its note where one is established. */
 export function describeTables(allowedTables) {
