@@ -623,6 +623,98 @@ const whereOf = (conditions) => {
   };
 };
 
+/**
+ * Is each of the Tracker's feeds actually being fed?
+ *
+ * Six tables sit behind the entries tab and four of them stopped updating in
+ * 2025. Nobody noticed for a year, and the reason nobody noticed is in
+ * `Tracker.jsx`: rows older than sixty days are dropped on the way in, so a
+ * feed that dies does not produce an error or an empty table on screen. It
+ * produces slightly fewer runners than yesterday, and then slightly fewer
+ * again, until one day the tab is thin and nobody can say when it started.
+ *
+ * This is the answer to that. One row per feed, saying how many rows it holds,
+ * what the newest race date in it is, and how many of those races have not yet
+ * been run. A feed whose newest date is in the past is `stale` and is named as
+ * such — a dashboard that cannot tell you its own data is a year old is worse
+ * than no dashboard.
+ *
+ * `unreadable` is its own state rather than folded into `stale`. These columns
+ * carry two date shapes and a third would parse as neither; that is a scraper
+ * that has changed its output, which is a different problem from a scraper
+ * that has stopped, and it wants a different fix.
+ */
+const TRACKER_FEEDS = [
+  { table: 'RacesAndEntries', dateColumn: 'FixtureDate', label: 'Racecards and entries' },
+  { table: 'EntriesTracking', dateColumn: 'Date', label: 'Entries tracking' },
+  { table: 'DeclarationsTracking', dateColumn: 'Date', label: 'Declarations tracking' },
+  { table: 'ClosingEntries', dateColumn: 'date', label: 'Early closing entries' },
+  { table: 'FranceRaceRecords', dateColumn: 'Date', label: 'France' },
+  { table: 'IrelandRaceRecords', dateColumn: 'Date', label: 'Ireland' },
+];
+
+app.get('/api/feeds/health', async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const check = async (feed) => {
+    const expr = raceDateExpr(feed.dateColumn);
+    try {
+      const rows = await runQuery(
+        `SELECT /*+ MAX_EXECUTION_TIME(8000) */
+                COUNT(*) AS rows_held,
+                SUM(${expr} IS NULL) AS unreadable,
+                MIN(${expr}) AS earliest,
+                MAX(${expr}) AS latest,
+                SUM(${expr} >= ?) AS forward
+           FROM \`${feed.table}\``,
+        [today],
+      );
+      const r = rows?.[0] ?? {};
+      const held = Number(r.rows_held ?? 0);
+      const unreadable = Number(r.unreadable ?? 0);
+      const iso = (v) => (v ? new Date(v).toISOString().slice(0, 10) : null);
+      const latest = iso(r.latest);
+      // Whole days, from the dates alone: an hours-based difference would make
+      // "today" read as one day stale for most of the morning.
+      const ageDays = latest
+        ? Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${latest}T00:00:00Z`)) / 86400000)
+        : null;
+      let state = 'live';
+      if (!held) state = 'empty';
+      else if (unreadable === held) state = 'unreadable';
+      else if (ageDays === null) state = 'unreadable';
+      else if (ageDays > 0) state = 'stale';
+      return {
+        ...feed,
+        rows: held,
+        unreadableDates: unreadable,
+        earliest: iso(r.earliest),
+        latest,
+        forward: Number(r.forward ?? 0),
+        ageDays,
+        state,
+      };
+    } catch (err) {
+      // A table that is not there at all is a real answer about the feed, not
+      // a reason to fail the whole report.
+      return { ...feed, state: 'missing', error: err.message, rows: 0, forward: 0 };
+    }
+  };
+
+  // Sequentially: six full scans at once against a pool of ten is how a
+  // health check becomes the thing that needs checking.
+  const feeds = [];
+  for (const feed of TRACKER_FEEDS) feeds.push(await check(feed));
+
+  res.json({
+    checkedAt: new Date().toISOString(),
+    today,
+    feeds,
+    live: feeds.filter((f) => f.state === 'live').length,
+    ailing: feeds.filter((f) => f.state !== 'live').map((f) => f.table),
+  });
+});
+
 app.get('/api/ClosingEntries', (req, res) => {
   const where = whereOf([fromDateCondition(req, 'date')]);
   const query = `SELECT * FROM ClosingEntries${where.sql}`;
