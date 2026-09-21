@@ -5165,6 +5165,9 @@ app.get("/api/review_horse_actions", (req, res) => {
 const loadPedigreeClient = () => import("./pedigree/client.mjs");
 const loadPedigreeStore = () => import("./pedigree/store.mjs");
 const loadPedigreeGrid = () => import("./pedigree/grid.mjs");
+const loadLineage = () => import("./breeding/lineage.mjs");
+const loadUpload = () => import("./pedigree/upload.mjs");
+const loadFoals = () => import("./breeding/foals.mjs");
 
 loadPedigreeStore().then(({ CREATE_TABLE }) => {
   db.query(CREATE_TABLE, (err) => {
@@ -5340,6 +5343,15 @@ db.query(
     loadMares()
       .then(({ ensureMareSchema }) => ensureMareSchema(runQuery))
       .catch((e) => console.error("mare schema check failed:", e.message));
+    // Where a chart came from, and the foal it produced a year later. Both
+    // are widenings of tables that already exist, so both are safe to apply
+    // on every boot and both no-op once applied.
+    loadUpload()
+      .then(({ ensureUploadSchema }) => ensureUploadSchema(runQuery))
+      .catch((e) => console.error("pedigree cache schema check failed:", e.message));
+    loadFoals()
+      .then(({ CREATE_FOALS }) => runQuery(CREATE_FOALS, []))
+      .catch((e) => console.error("mare_foals table check failed:", e.message));
   },
 );
 
@@ -6651,6 +6663,11 @@ async function heldGrid({ reference = null, name = null, year = null }) {
     sex: row.sex ?? null,
     grid,
     ancestorsHeld: heldIn(grid),
+    // The chart itself, for the callers that walk it rather than draw it.
+    // Five generations of parentage for a horse who may never have raced is
+    // a better pedigree than our parent map can build, so a caller that can
+    // use it should have it rather than re-reading the row.
+    payload,
   };
 }
 
@@ -7064,6 +7081,717 @@ app.get("/api/breeding/nicks", async (req, res) => {
     });
   } catch (err) {
     console.error("breeding nicks failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+
+/* ------------------------------------------------------- pedigrees we walk */
+
+/**
+ * A horse's ancestors, walked out of the parent map.
+ *
+ * Breadth-first and in SQL rather than by loading the map: `horse_parents`
+ * holds several hundred thousand rows and pulling it into the process to
+ * answer one request would cost more memory than the whole server has. Five
+ * levels, each an indexed lookup on at most sixteen keys.
+ *
+ * A hole stops that branch. Nothing is promoted into the gap — see the note
+ * at the top of `breeding/lineage.mjs` for why that matters.
+ */
+async function walkParents(rootKey, { prefix = "", maxPath = 5 } = {}) {
+  const out = new Map();
+  const root = String(rootKey ?? "").trim().toUpperCase();
+  if (!root) return out;
+  if (prefix) out.set(prefix, root);
+  let frontier = [[prefix, root]];
+  while (frontier.length && frontier[0][0].length < maxPath) {
+    const keys = [...new Set(frontier.map(([, k]) => k))];
+    const rows = await runQuery(
+      `SELECT horse_key, sire_key, dam_key FROM horse_parents
+        WHERE horse_key IN (${keys.map(() => "?").join(", ")})`,
+      keys,
+    ).catch(() => []);
+    const by = new Map(rows.map((r) => [String(r.horse_key), r]));
+    const next = [];
+    for (const [path, key] of frontier) {
+      const rec = by.get(key);
+      if (!rec) continue;
+      for (const [step, parent] of [["S", rec.sire_key], ["D", rec.dam_key]]) {
+        const p = parent ? String(parent).trim().toUpperCase() : "";
+        if (!p) continue;
+        const child = `${path}${step}`;
+        if (child.length > maxPath || out.has(child)) continue;
+        out.set(child, p);
+        next.push([child, p]);
+      }
+    }
+    frontier = next;
+  }
+  return out;
+}
+
+/**
+ * The theoretical foal's pedigree, from a chart where we hold one and from
+ * our own records where we do not.
+ *
+ * Which of the two answered is recorded per side and travels with every
+ * figure drawn from it. A chart is five generations of a horse who may never
+ * have raced; the parent map is as deep as the results and the worldwide file
+ * happen to reach, which for a well-bred European horse is usually three or
+ * four and for a mare from a small jurisdiction may be one.
+ */
+async function foalPedigree({ sire, sireYear = null, dam, damYear = null }) {
+  const { studKey } = await loadNicks();
+  const { ancestorsFromPayload } = await loadLineage();
+  const ancestors = new Map();
+  const sides = {};
+  for (const [prefix, name, year] of [["S", sire, sireYear], ["D", dam, damYear]]) {
+    const key = studKey(name);
+    if (!key) {
+      sides[prefix] = { name: null, source: "none", held: 0 };
+      continue;
+    }
+    const held = await heldGrid({ name, year }).catch(() => null);
+    let map;
+    let source;
+    if (held?.payload) {
+      map = ancestorsFromPayload(held.payload, prefix);
+      source = "chart";
+    } else {
+      map = await walkParents(key, { prefix });
+      source = map.size > 1 ? "records" : "none";
+    }
+    for (const [path, k] of map) if (!ancestors.has(path)) ancestors.set(path, k);
+    sides[prefix] = { name: held?.name ?? key, source, held: map.size, reference: held?.reference ?? null };
+  }
+  return { ancestors, sides };
+}
+
+/**
+ * Stakes winners whose pedigree repeats the theoretical foal's.
+ *
+ * The idea is the trade's — a mating whose pedigree pattern several stakes
+ * winners already share is a pattern that has worked — and the arithmetic is
+ * ours, written down in `breeding/lineage.mjs` so a figure can be argued
+ * with. It is not anybody's published index and does not reproduce one.
+ *
+ * ## Four generations, and why
+ *
+ * `sw_ancestors` is built four deep. A fifth generation would double the
+ * table for ancestors that are in half the stud book and score one point
+ * each; the names that separate one pedigree from another are nearer than
+ * that. So the match is on the foal's first four generations, and the answer
+ * says so rather than implying five.
+ */
+app.get("/api/breeding/similar-winners", async (req, res) => {
+  const { studKey } = await loadNicks();
+  const { GEN_WEIGHT, weightOf } = await loadLineage();
+  const sire = studKey(req.query.sire);
+  const dam = studKey(req.query.dam);
+  if (!sire || !dam) return res.status(400).json({ error: "sire and dam are required" });
+  const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
+
+  try {
+    // How deep the index actually goes, which is not a detail. Our parent map
+    // is built from horses that raced, and a stakes winner's own sire was
+    // usually foaled before the crops it covers — so a pedigree that should
+    // be four deep is often two. A list of twenty matches drawn from
+    // two-generation pedigrees is a list of relations, not of pattern
+    // matches, and the reader has to be told which one they are holding.
+    const built = await queryOne(
+      `SELECT COUNT(*) AS n, COUNT(DISTINCT sw_key) AS winners, MAX(gen) AS deepest
+         FROM sw_ancestors`,
+      [],
+    ).catch(() => null);
+    if (!built || !Number(built.n)) {
+      return res.json({
+        asked: { sire, dam },
+        missing: true,
+        reason: "stakes-winner pedigrees have not been built on this server yet",
+      });
+    }
+
+    const { ancestors, sides } = await foalPedigree({
+      sire, dam,
+      sireYear: req.query.sireYear ?? null,
+      damYear: req.query.damYear ?? null,
+    });
+
+    // Only the generations the index reaches. A foal ancestor in the fifth
+    // could at best meet a fourth-generation one and score a single point,
+    // for thirty-two more keys in the join.
+    const near = [...ancestors].filter(([path]) => path.length <= 4);
+    if (near.length < 4) {
+      return res.json({
+        asked: { sire, dam },
+        sides,
+        matches: [],
+        missing: true,
+        reason: "too little of this foal's pedigree is on file to match against",
+        held: near.length,
+      });
+    }
+
+    const nearest = new Map();
+    for (const [path, key] of near) {
+      const gen = path.length;
+      if (!nearest.has(key) || gen < nearest.get(key)) nearest.set(key, gen);
+    }
+    const keys = [...nearest.keys()];
+    const weights = keys.map((k) => weightOf(nearest.get(k)));
+
+    const genWeight = `CASE a.gen ${GEN_WEIGHT.map((w, i) => `WHEN ${i + 1} THEN ${w}`).join(" ")} ELSE 0 END`;
+    const foalSet = keys.map(() => "SELECT ? AS k, ? AS w").join(" UNION ALL ");
+    const args = keys.flatMap((k, i) => [k, weights[i]]);
+
+    const scored = await runQuery(
+      `SELECT ${BREEDING_HINT} a.sw_key AS sw_key,
+              SUM(LEAST(f.w, ${genWeight})) AS score,
+              COUNT(*) AS shared
+         FROM sw_ancestors a
+         JOIN (${foalSet}) f ON f.k = a.ancestor_key
+        GROUP BY a.sw_key
+        ORDER BY score DESC, shared DESC
+        LIMIT ?`,
+      [...args, limit],
+    );
+
+    // What a horse with the foal's own pedigree would score, so the figure
+    // reads as a share and does not move when a pedigree is only three deep.
+    const self = weights.reduce((a, b) => a + b, 0);
+
+    const names = scored.map((r) => String(r.sw_key));
+    const [records, sharedRows] = names.length
+      ? await Promise.all([
+          runQuery(
+            `SELECT ${BREEDING_HINT} horse_name, foaling_year, foaling_country, sex, sire, dam,
+                    g1_wins, g_wins, s_wins,
+                    COALESCE(turf_prize_usd, 0) + COALESCE(aw_prize_usd, 0) AS prize
+               FROM breeding_horses
+              WHERE horse_name IN (${names.map(() => "?").join(", ")})`,
+            names,
+          ).catch(() => []),
+          runQuery(
+            `SELECT sw_key, ancestor_key, gen FROM sw_ancestors
+              WHERE sw_key IN (${names.map(() => "?").join(", ")})
+                AND ancestor_key IN (${keys.map(() => "?").join(", ")})`,
+            [...names, ...keys],
+          ).catch(() => []),
+        ])
+      : [[], []];
+
+    // Two horses share a name often enough that it matters which row is
+    // shown. The index is keyed on the name, so the row to print is the one
+    // that earned the entry: pick on black type before prize money, or a
+    // handicapper who happened to win more money is printed beside a stakes
+    // record that is not his.
+    const rank = (r) => [
+      Number(r?.g1_wins ?? 0), Number(r?.g_wins ?? 0), Number(r?.s_wins ?? 0), Number(r?.prize ?? 0),
+    ];
+    const best = new Map();
+    for (const r of records) {
+      const k = String(r.horse_name);
+      const cur = best.get(k);
+      if (!cur) { best.set(k, r); continue; }
+      const a = rank(r);
+      const b = rank(cur);
+      for (let i = 0; i < a.length; i += 1) {
+        if (a[i] === b[i]) continue;
+        if (a[i] > b[i]) best.set(k, r);
+        break;
+      }
+    }
+
+    // Which of the foal's four quarters each shared ancestor sits in. A name
+    // in all four is the duplication pedigree people set most store by, and
+    // it is worth naming rather than folding into a total.
+    const quarterOf = new Map();
+    for (const [path, key] of near) {
+      if (path.length < 2) continue;
+      if (!quarterOf.has(key)) quarterOf.set(key, new Set());
+      quarterOf.get(key).add(path.slice(0, 2));
+    }
+
+    const byWinner = new Map();
+    for (const r of sharedRows) {
+      const k = String(r.sw_key);
+      if (!byWinner.has(k)) byWinner.set(k, []);
+      byWinner.get(k).push({ name: String(r.ancestor_key), gen: Number(r.gen) });
+    }
+
+    const matches = scored.map((r) => {
+      const name = String(r.sw_key);
+      const rec = best.get(name) ?? null;
+      const shared = (byWinner.get(name) ?? [])
+        .map((s) => ({
+          ...s,
+          foalGen: nearest.get(s.name) ?? null,
+          weight: Math.min(weightOf(nearest.get(s.name) ?? 5), weightOf(s.gen)),
+        }))
+        .sort((a, b) => b.weight - a.weight || a.name.localeCompare(b.name));
+      const quarters = new Set();
+      for (const s of shared) for (const q of quarterOf.get(s.name) ?? []) quarters.add(q);
+      return {
+        name,
+        score: Number(r.score ?? 0),
+        similarity: self > 0 ? Math.round((1000 * Number(r.score ?? 0)) / self) / 10 : null,
+        sharedCount: Number(r.shared ?? 0),
+        shared: shared.slice(0, 10),
+        quarters: [...quarters].sort(),
+        everyQuarter: quarters.size === 4,
+        year: rec?.foaling_year ?? null,
+        country: rec?.foaling_country ?? null,
+        sex: rec?.sex ?? null,
+        sire: rec?.sire ?? null,
+        dam: rec?.dam ?? null,
+        g1Wins: Number(rec?.g1_wins ?? 0),
+        groupWins: Number(rec?.g_wins ?? 0),
+        stakesWins: Number(rec?.s_wins ?? 0),
+      };
+    });
+
+    const indexed = Number(built.winners ?? 0);
+    const perWinner = indexed ? Number(built.n ?? 0) / indexed : 0;
+    res.json({
+      asked: { sire, dam },
+      sides,
+      generations: 4,
+      self,
+      weights: GEN_WEIGHT,
+      matches,
+      index: {
+        winners: indexed,
+        links: Number(built.n ?? 0),
+        ancestorsPerWinner: Math.round(perWinner * 10) / 10,
+        deepest: Number(built.deepest ?? 0),
+      },
+      basis:
+        "Stakes winners in our worldwide file, 2014–2024 crops, matched on the first four generations. " +
+        "Similarity is a weighted share of the foal's own pedigree; the weights halve each generation out.",
+      depthNote:
+        perWinner < 6
+          ? `Their pedigrees average ${Math.round(perWinner * 10) / 10} ancestors each, which is barely past ` +
+            `sire and dam: our parent map is built from horses that have run, and most of a stakes winner's ` +
+            `own ancestors were foaled before the crops it covers. Read these as close relations rather than ` +
+            `as matched pedigree patterns.`
+          : null,
+    });
+  } catch (err) {
+    console.error("similar winners failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/**
+ * How the twenty crosses behind a theoretical foal have actually gone.
+ *
+ * Four male ancestors from the stallion's side and five from the mare's; for
+ * each pairing, what the two lines have produced together against what they
+ * would be expected to produce apart. Expectation is the breed's own stakes
+ * rate adjusted by each line's record — a line twice as good as the breed
+ * scores two, and a cross of two such lines is expected to be four times the
+ * breed rate before anything is claimed for the cross itself. An index of 100
+ * is exactly that expectation; above it is the cross adding something.
+ *
+ * ## What "the line" means here
+ *
+ * A stallion plus the sons of his who stand as sires and appear in our cross
+ * table — one generation, not a whole male line. That is the width our parent
+ * map can answer for reliably, and stretching it further would quietly fold
+ * in horses whose connection to the name at the top of the cell nobody has
+ * checked. Every cell says how many runners it is drawn from, and a cell
+ * under twenty runners is marked thin rather than given a colour.
+ */
+app.get("/api/breeding/impact-profile", async (req, res) => {
+  const { studKey } = await loadNicks();
+  const { impactCells, crossIndex, bandOf, rateOf } = await loadLineage();
+  const sire = studKey(req.query.sire);
+  const dam = studKey(req.query.dam);
+  if (!sire || !dam) return res.status(400).json({ error: "sire and dam are required" });
+
+  try {
+    const par = await queryOne(
+      "SELECT SUM(runners) AS runners, SUM(stakes_winners) AS sw FROM nick_stats",
+      [],
+    ).catch(() => null);
+    const parRate = rateOf(par?.sw, par?.runners);
+    if (!parRate) {
+      return res.json({
+        asked: { sire, dam },
+        missing: true,
+        reason: "nick statistics have not been built on this server yet",
+      });
+    }
+
+    const { ancestors, sides } = await foalPedigree({
+      sire, dam,
+      sireYear: req.query.sireYear ?? null,
+      damYear: req.query.damYear ?? null,
+    });
+    const cells = impactCells(ancestors);
+
+    const sireRoots = [...new Set(cells.map((c) => c.sire).filter(Boolean))];
+    const damRoots = [...new Set(cells.map((c) => c.damsire).filter(Boolean))];
+    if (!sireRoots.length || !damRoots.length) {
+      return res.json({
+        asked: { sire, dam },
+        sides,
+        cells,
+        missing: true,
+        reason: "too little of this foal's pedigree is on file to name the crosses",
+      });
+    }
+
+    // One query for every line at once, rather than nine. A "son" only counts
+    // when he appears in the cross table himself; a son with no runners adds
+    // nothing but widens the IN list.
+    const roots = [...new Set([...sireRoots, ...damRoots])];
+    const sons = await runQuery(
+      `SELECT ${BREEDING_HINT} p.sire_key AS root, p.horse_key AS son
+         FROM horse_parents p
+        WHERE p.sire_key IN (${roots.map(() => "?").join(", ")})
+          AND EXISTS (SELECT 1 FROM nick_stats n WHERE n.sire_key = p.horse_key)
+        LIMIT 4000`,
+      roots,
+    ).catch(() => []);
+
+    const lineOf = new Map(roots.map((r) => [r, new Set([r])]));
+    for (const row of sons) lineOf.get(String(row.root))?.add(String(row.son));
+
+    const sireMembers = [...new Set(sireRoots.flatMap((r) => [...lineOf.get(r)]))];
+    const damMembers = [...new Set(damRoots.flatMap((r) => [...lineOf.get(r)]))];
+
+    const [crossRows, sireTotals, damTotals] = await Promise.all([
+      runQuery(
+        `SELECT sire_key, damsire_key, runners, stakes_winners, group_winners, g1_winners
+           FROM nick_stats
+          WHERE sire_key IN (${sireMembers.map(() => "?").join(", ")})
+            AND damsire_key IN (${damMembers.map(() => "?").join(", ")})`,
+        [...sireMembers, ...damMembers],
+      ).catch(() => []),
+      runQuery(
+        `SELECT sire_key, SUM(runners) AS runners, SUM(stakes_winners) AS sw
+           FROM nick_stats WHERE sire_key IN (${sireMembers.map(() => "?").join(", ")})
+          GROUP BY sire_key`,
+        sireMembers,
+      ).catch(() => []),
+      runQuery(
+        `SELECT damsire_key, SUM(runners) AS runners, SUM(stakes_winners) AS sw
+           FROM nick_stats WHERE damsire_key IN (${damMembers.map(() => "?").join(", ")})
+          GROUP BY damsire_key`,
+        damMembers,
+      ).catch(() => []),
+    ]);
+
+    const sireBy = new Map(sireTotals.map((r) => [String(r.sire_key), r]));
+    const damBy = new Map(damTotals.map((r) => [String(r.damsire_key), r]));
+    const crossBy = new Map();
+    for (const r of crossRows) crossBy.set(`${r.sire_key}|${r.damsire_key}`, r);
+
+    const lineRate = (members, by, field) => {
+      let runners = 0;
+      let sw = 0;
+      for (const m of members) {
+        const r = by.get(m);
+        if (!r) continue;
+        runners += Number(r.runners ?? 0);
+        sw += Number(r.sw ?? 0);
+      }
+      return { runners, sw, rate: rateOf(sw, runners) };
+    };
+
+    /** One nick_stats row, or a sum of them, in the shape a cell reads. */
+    const tally = (rows) => {
+      let runners = 0;
+      let sw = 0;
+      let gw = 0;
+      let g1 = 0;
+      for (const r of rows) {
+        if (!r) continue;
+        runners += Number(r.runners ?? 0);
+        sw += Number(r.stakes_winners ?? 0);
+        gw += Number(r.group_winners ?? 0);
+        g1 += Number(r.g1_winners ?? 0);
+      }
+      return {
+        runners,
+        stakesWinners: sw,
+        groupWinners: gw,
+        g1Winners: g1,
+        swPct: runners ? Math.round((1000 * sw) / runners) / 10 : null,
+      };
+    };
+
+    const out = cells.map((cell) => {
+      if (!cell.sire || !cell.damsire) {
+        return { ...cell, direct: null, line: null, expected: null, index: null, band: "unknown" };
+      }
+      const sireLine = [...lineOf.get(cell.sire)];
+      const damLine = [...lineOf.get(cell.damsire)];
+
+      // Two different facts, and a report that prints one of them under the
+      // other's name is wrong. `direct` is those two horses exactly — Frankel
+      // over Kingman's daughters — and is usually a handful of runners.
+      // `line` widens both sides to the sons who stand as sires, which is the
+      // "more generally" figure the desk's own reports quote and the only one
+      // of the two with a sample worth an index.
+      const direct = tally([crossBy.get(`${cell.sire}|${cell.damsire}`)]);
+      const line = tally(sireLine.flatMap((a) => damLine.map((b) => crossBy.get(`${a}|${b}`))));
+
+      const sireSide = lineRate(sireLine, sireBy);
+      const damSide = lineRate(damLine, damBy);
+      const { expected, index } = crossIndex({
+        runners: line.runners,
+        stakesWinners: line.stakesWinners,
+        sireRate: sireSide.rate,
+        damsireRate: damSide.rate,
+        par: parRate,
+      });
+      return {
+        ...cell,
+        direct,
+        line: { ...line, sireLineSize: sireLine.length, damLineSize: damLine.length },
+        sii: sireSide.rate === null ? null : Math.round((100 * sireSide.rate) / parRate) / 100,
+        bsii: damSide.rate === null ? null : Math.round((100 * damSide.rate) / parRate) / 100,
+        expected,
+        index,
+        band: bandOf(index, line.runners),
+      };
+    });
+
+    res.json({
+      asked: { sire, dam },
+      sides,
+      par: Math.round(parRate * 10000) / 100,
+      parRunners: Number(par?.runners ?? 0),
+      cells: out,
+      basis:
+        "Our own worldwide file, 2014–2024 crops, counting runners rather than foals. " +
+        "`direct` is those two horses exactly; `line` widens each side to the sons who stand as sires, " +
+        "and the index is drawn from the line because the direct cross is rarely a sample. " +
+        "Index 100 means the cross did what the two lines would do apart.",
+    });
+  } catch (err) {
+    console.error("impact profile failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/**
+ * A pedigree typed in by hand.
+ *
+ * The upstream is the bottleneck and a mare it does not know is a mare no
+ * report can be written for. The desk usually has her chart on paper; this
+ * takes it.
+ *
+ * Nothing is written until the caller has seen what was read — `dryRun`
+ * returns the grid and saves nothing. That is not politeness: a pasted block
+ * of names has an order that has to be assumed, and an order assumed wrongly
+ * puts an ancestor in the wrong generation, which is how a clean cross
+ * becomes a 3x4 on paper or a real one disappears.
+ */
+app.post("/api/pedigree/upload", express.json({ limit: "1mb" }), async (req, res) => {
+  const upload = await loadUpload();
+  const { gridFromPayload, heldIn } = await loadPedigreeGrid();
+  const body = req.body ?? {};
+  const userId = String(body.userId ?? "").trim();
+  const name = String(body.name ?? "").trim();
+  if (!name) return res.status(400).json({ error: "name is required" });
+
+  let ancestors = Array.isArray(body.ancestors) ? body.ancestors : [];
+  let format = "given";
+  let warnings = [];
+  if (!ancestors.length && body.text) {
+    const parsed = upload.parsePastedPedigree(body.text);
+    ancestors = parsed.ancestors;
+    format = parsed.format;
+    warnings = parsed.warnings;
+  }
+  if (!ancestors.length) {
+    return res.status(400).json({ error: "no ancestors could be read", format, warnings });
+  }
+
+  const payload = upload.payloadFrom({
+    name,
+    year: body.year ?? null,
+    sex: body.sex ?? null,
+    ancestors,
+    enteredBy: userId || null,
+  });
+  if (!payload) return res.status(400).json({ error: "nothing usable in that pedigree" });
+
+  const grid = gridFromPayload(payload);
+  const orphans = upload.orphanPaths(payload.ancestors);
+  const preview = {
+    reference: payload.horse.reference_number,
+    name: payload.horse.name,
+    year: body.year ?? null,
+    grid,
+    ancestorsHeld: heldIn(grid),
+    format,
+    warnings: [
+      ...warnings,
+      ...(orphans.length
+        ? [
+            `${orphans.length} name${orphans.length === 1 ? " sits" : "s sit"} below a gap ` +
+              `(${orphans.slice(0, 6).join(", ")}${orphans.length > 6 ? "…" : ""}). ` +
+              `They are kept, but check the generations.`,
+          ]
+        : []),
+    ],
+  };
+
+  // What is already on file for this horse, because a save replaces it. The
+  // reference is a digest of her name and year, so typing her in again is a
+  // correction by design — which is right when somebody is fixing a mistake
+  // and wrong when they have typed three names into a form that was meant to
+  // be prefilled with thirty. A save that would *lose* ancestors therefore
+  // has to say so out loud.
+  const existingRow = await queryOne(
+    "SELECT reference, payload, source FROM pedigree_cache WHERE reference = ?",
+    [payload.horse.reference_number],
+  ).catch(() => null);
+  let existing = null;
+  if (existingRow) {
+    try {
+      const held = heldIn(gridFromPayload(JSON.parse(existingRow.payload)));
+      existing = { reference: String(existingRow.reference), ancestorsHeld: held, source: existingRow.source ?? "upstream" };
+    } catch {
+      existing = { reference: String(existingRow.reference), ancestorsHeld: 0, source: existingRow.source ?? "upstream" };
+    }
+  }
+
+  if (body.dryRun) return res.json({ ok: true, dryRun: true, existing, ...preview });
+  if (!userId) return res.status(400).json({ error: "userId is required to save a pedigree" });
+
+  if (existing && preview.ancestorsHeld < existing.ancestorsHeld && !body.replace) {
+    return res.status(409).json({
+      error: "this would replace a fuller chart",
+      detail:
+        `We already hold ${existing.ancestorsHeld} ancestors for her and this one has ` +
+        `${preview.ancestorsHeld}. Saving replaces rather than merges, so the difference would be lost. ` +
+        `Send replace: true if that is what you mean.`,
+      existing,
+      ...preview,
+    });
+  }
+
+  try {
+    await upload.ensureUploadSchema(runQuery).catch(() => null);
+    const row = upload.rowFrom(payload, { source: "manual", enteredBy: userId });
+    await runQuery(upload.UPSERT, upload.upsertArgs(row));
+
+    // A chart typed against a mare is her chart from now on, so the report
+    // and the inbreeding screen find it without being told where to look.
+    let linked = null;
+    const mareId = Number(body.mareId);
+    if (Number.isFinite(mareId) && mareId > 0) {
+      const done = await runQuery(
+        "UPDATE my_mares SET pedigree_reference = ? WHERE id = ? AND user_id = ?",
+        [row.reference, mareId, userId],
+      ).catch(() => null);
+      linked = done?.affectedRows ? mareId : null;
+    }
+
+    res.status(201).json({ ok: true, saved: true, linked, replaced: existing, ...preview });
+  } catch (err) {
+    console.error("pedigree upload failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/* ------------------------------------------------------ the foal on the ground */
+
+/**
+ * What turned up.
+ *
+ * A mating plan ends at a covering; this is the other end of it. The record
+ * is made standing in a paddock, so every field is optional and a PATCH that
+ * mentions one field leaves the other eight alone.
+ *
+ * Photographs and video are links, not files. There is no object store behind
+ * this server, and a four-megabyte image in a MySQL column is a table nobody
+ * can back up. The media stays where the pack already keeps it and is named
+ * from here.
+ */
+app.get("/api/mares/:userId/:id/foals", async (req, res) => {
+  const { CREATE_FOALS, foalOut } = await loadFoals();
+  try {
+    await runQuery(CREATE_FOALS, []);
+    const rows = await runQuery(
+      "SELECT * FROM mare_foals WHERE user_id = ? AND mare_id = ? ORDER BY season DESC, foaled_date DESC",
+      [req.params.userId, Number(req.params.id)],
+    );
+    res.json({ foals: rows.map(foalOut) });
+  } catch (err) {
+    console.error("foals list failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+app.post("/api/mares/:userId/:id/foals", express.json({ limit: "512kb" }), async (req, res) => {
+  const { CREATE_FOALS, foalColumns, foalOut } = await loadFoals();
+  const userId = String(req.params.userId ?? "").trim();
+  const mareId = Number(req.params.id);
+  if (!userId || !Number.isFinite(mareId)) return res.status(400).json({ error: "userId and mare id are required" });
+
+  try {
+    await runQuery(CREATE_FOALS, []);
+    const owns = await queryOne("SELECT id FROM my_mares WHERE id = ? AND user_id = ?", [mareId, userId]);
+    if (!owns) return res.status(404).json({ error: "no such mare on your list" });
+
+    const cols = foalColumns({ recordedBy: userId, ...(req.body ?? {}) });
+    if (cols.season === null || cols.season === undefined) {
+      return res.status(400).json({ error: "a season or a foaling date is required" });
+    }
+    const names = Object.keys(cols);
+    const done = await runQuery(
+      `INSERT INTO mare_foals (mare_id, user_id, ${names.map((n) => `\`${n}\``).join(", ")})
+       VALUES (?, ?, ${names.map(() => "?").join(", ")})`,
+      [mareId, userId, ...names.map((n) => cols[n])],
+    );
+    const row = await queryOne("SELECT * FROM mare_foals WHERE id = ?", [done.insertId]);
+    res.status(201).json({ ok: true, foal: foalOut(row) });
+  } catch (err) {
+    console.error("foal save failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+app.patch("/api/mares/:userId/:id/foals/:foalId", express.json({ limit: "512kb" }), async (req, res) => {
+  const { CREATE_FOALS, foalColumns, foalOut } = await loadFoals();
+  try {
+    await runQuery(CREATE_FOALS, []);
+    const cols = foalColumns(req.body ?? {});
+    const names = Object.keys(cols);
+    if (!names.length) return res.status(400).json({ error: "nothing to change" });
+    const done = await runQuery(
+      `UPDATE mare_foals SET ${names.map((n) => `\`${n}\` = ?`).join(", ")}
+        WHERE id = ? AND mare_id = ? AND user_id = ?`,
+      [...names.map((n) => cols[n]), Number(req.params.foalId), Number(req.params.id), req.params.userId],
+    );
+    if (!done.affectedRows) return res.status(404).json({ error: "no such foal on your list" });
+    const row = await queryOne("SELECT * FROM mare_foals WHERE id = ?", [Number(req.params.foalId)]);
+    res.json({ ok: true, foal: foalOut(row) });
+  } catch (err) {
+    console.error("foal update failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+app.delete("/api/mares/:userId/:id/foals/:foalId", async (req, res) => {
+  const { CREATE_FOALS } = await loadFoals();
+  try {
+    await runQuery(CREATE_FOALS, []);
+    const done = await runQuery(
+      "DELETE FROM mare_foals WHERE id = ? AND mare_id = ? AND user_id = ?",
+      [Number(req.params.foalId), Number(req.params.id), req.params.userId],
+    );
+    if (!done.affectedRows) return res.status(404).json({ error: "no such foal on your list" });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("foal delete failed:", err.message);
     res.status(500).json({ error: "database error", detail: err.message });
   }
 });
@@ -13202,6 +13930,21 @@ app.get('/api/france/racecards', (req, res) => {
         log: { log: (m) => console.log("[nicks]", m), warn: (m) => console.warn("[nicks]", m) },
       });
       console.log(`[nicks] ${why} rebuild:`, JSON.stringify(out));
+
+      // The parent map is now as complete as it is going to get tonight, so
+      // this is the moment to fill the second side of it and re-index the
+      // stakes winners. Second, and in its own try, because it is the more
+      // expensive of the two and the crosses are the figure the reports
+      // actually quote: a stakes index that fails must not cost us those.
+      try {
+        const { rebuildStakesPedigrees } = await loadLineage();
+        const lin = await rebuildStakesPedigrees(runQuery, {
+          log: { log: (m) => console.log("[lineage]", m), warn: (m) => console.warn("[lineage]", m) },
+        });
+        console.log(`[lineage] ${why} rebuild:`, JSON.stringify(lin));
+      } catch (err) {
+        console.error(`[lineage] ${why} rebuild failed:`, err.message);
+      }
     } catch (err) {
       console.error(`[nicks] ${why} rebuild failed:`, err.message);
     }
@@ -13211,13 +13954,36 @@ app.get('/api/france/racecards', (req, res) => {
 
   // And once after a cold start, so a fresh database does not wait until
   // three in the morning to answer its first cross.
+  //
+  // Both tables are checked, not just the first. The day a build carrying the
+  // stakes index is deployed, `nick_stats` is already there from the night
+  // before and `sw_ancestors` is not — so a check on the crosses alone would
+  // decide there was nothing to do, and every similar-winners request would
+  // answer "not built on this server yet" until the small hours. Where only
+  // the index is missing, only the index is built: the crosses are the more
+  // expensive half and they are already right.
   setTimeout(async () => {
-    const found = await runQuery(
-      `SELECT 1 AS present FROM INFORMATION_SCHEMA.TABLES
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nick_stats' LIMIT 1`,
-      [],
-    ).catch(() => []);
-    if (!found.length) rebuild("first");
+    const present = async (table) =>
+      (
+        await runQuery(
+          `SELECT 1 AS present FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1`,
+          [table],
+        ).catch(() => [])
+      ).length > 0;
+
+    if (!(await present("nick_stats"))) return rebuild("first");
+    if (await present("sw_ancestors")) return undefined;
+    try {
+      const { rebuildStakesPedigrees } = await loadLineage();
+      const out = await rebuildStakesPedigrees(runQuery, {
+        log: { log: (m) => console.log("[lineage]", m), warn: (m) => console.warn("[lineage]", m) },
+      });
+      console.log("[lineage] first rebuild:", JSON.stringify(out));
+    } catch (err) {
+      console.error("[lineage] first rebuild failed:", err.message);
+    }
+    return undefined;
   }, 10 * 60 * 1000).unref?.();
 }
 
@@ -13335,6 +14101,9 @@ const AI_EXTRA_TABLES = [
   "notifications", "daily_notifications_all_users",
   // Entry feeds the generic route does not carry
   "DeclarationsTracking", "EntriesTracking",
+  // The broodmare band, and the tables the mating reports are written from
+  "my_mares", "mare_seasons", "mating_plans", "mare_foals",
+  "nick_stats", "horse_parents",
 ];
 
 const aiAllowedTables = () => [...new Set([...validTables, ...AI_EXTRA_TABLES])];
