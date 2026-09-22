@@ -650,7 +650,11 @@ const TRACKER_FEEDS = [
   { table: 'DeclarationsTracking', dateColumn: 'Date', label: 'Declarations tracking' },
   { table: 'ClosingEntries', dateColumn: 'date', label: 'Early closing entries' },
   { table: 'FranceRaceRecords', dateColumn: 'Date', label: 'France' },
-  { table: 'IrelandRaceRecords', dateColumn: 'Date', label: 'Ireland' },
+  // No Ireland. `IrelandRaceRecords` is empty and the Tracker has stopped
+  // reading it: the morning pipeline folds Irish runners into the racecards
+  // before loading, so they arrive inside `RacesAndEntries`. Reporting the
+  // health of a table nobody reads would put a permanent amber dot on a strip
+  // whose whole value is that a dot means something.
 ];
 
 app.get('/api/feeds/health', async (req, res) => {
