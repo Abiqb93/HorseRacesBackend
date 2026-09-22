@@ -7122,12 +7122,18 @@ app.get("/api/breeding/report-data", async (req, res) => {
 app.get("/api/breeding/warm-targets", async (req, res) => {
   const userId = (req.query.userId ?? "").toString().trim();
   try {
+    // Every mare on the desk's list, not only the ones filed under a band.
+    // A mare with no client is still a mare whose report cannot be written,
+    // and filtering her out here meant she was never once attempted — the
+    // queue simply did not know she existed. Banded mares still come first,
+    // and those with a plan against them first of all, because that is the
+    // work somebody is waiting on.
     const mares = await runQuery(
-      `SELECT m.id, m.horse_name, m.foaling_year, m.pedigree_reference, m.client_name,
+      `SELECT m.id, m.horse_name, m.foaling_year, m.pedigree_reference, m.client_name, m.country_code,
               (SELECT COUNT(*) FROM mating_plans p WHERE p.mare_id = m.id) AS plans
          FROM my_mares m
-        WHERE ${userId ? "m.user_id = ? AND " : ""}m.client_name IS NOT NULL
-        ORDER BY plans DESC, m.horse_name`,
+        ${userId ? "WHERE m.user_id = ?" : ""}
+        ORDER BY (m.client_name IS NULL), plans DESC, m.horse_name`,
       userId ? [userId] : [],
     ).catch(() => []);
 
@@ -7158,10 +7164,16 @@ app.get("/api/breeding/warm-targets", async (req, res) => {
       targets.push({
         name: m.horse_name,
         year: m.foaling_year || null,
+        // Where she was foaled, because for a mare whose name is shared it is
+        // the fact that settles which horse she is. The source lists every
+        // Fallen Angel it holds and two of them are 2021 mares — one GB, one
+        // DEN — so a year alone leaves the warmer with two candidates and no
+        // way to choose. Without this the caller could only give up.
+        country: m.country_code || null,
         ref: m.pedigree_reference || null,
         what: "mare",
         mareId: m.id,
-        client: m.client_name,
+        client: m.client_name || null,
         plans: Number(m.plans ?? 0),
       });
     }
