@@ -650,14 +650,24 @@ const TRACKER_FEEDS = [
   { table: 'DeclarationsTracking', dateColumn: 'Date', label: 'Declarations tracking' },
   { table: 'ClosingEntries', dateColumn: 'date', label: 'Early closing entries' },
   { table: 'FranceRaceRecords', dateColumn: 'Date', label: 'France' },
-  { table: 'IrelandRaceRecords', dateColumn: 'Date', label: 'Ireland' },
+  // The one feed here with a real DATE column rather than the scraped English
+  // text the rest carry, so it is read directly. Running it through
+  // `raceDateExpr` would ask MySQL to render a date as a string and parse it
+  // back as "%W %e %M %Y", which fails, and a feed reporting `unreadable`
+  // because of how the health check asked would be worse than no check.
+  { table: 'tracker_entries', dateColumn: 'Date', label: 'Tracked horses (At The Races)', realDate: true },
+  // No Ireland. `IrelandRaceRecords` is empty and the Tracker has stopped
+  // reading it: the morning pipeline folds Irish runners into the racecards
+  // before loading, so they arrive inside `RacesAndEntries`. Reporting the
+  // health of a table nobody reads would put a permanent amber dot on a strip
+  // whose whole value is that a dot means something.
 ];
 
 app.get('/api/feeds/health', async (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
 
   const check = async (feed) => {
-    const expr = raceDateExpr(feed.dateColumn);
+    const expr = feed.realDate ? `\`${feed.dateColumn}\`` : raceDateExpr(feed.dateColumn);
     try {
       const rows = await runQuery(
         `SELECT /*+ MAX_EXECUTION_TIME(8000) */
