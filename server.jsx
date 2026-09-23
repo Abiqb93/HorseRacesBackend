@@ -249,6 +249,20 @@ db.query(
   )`,
   (err) => { if (err) console.error("hit_sale_briefs table check failed:", err.message); }
 );
+// A user's saved categories: every free-text category they have made on any
+// sale's list, kept so the next catalogue offers them again instead of
+// starting from the four defaults. Per user and not per sale, like briefs;
+// the frontend owns the shape (src/utils/hitCategories.js).
+db.query(
+  `CREATE TABLE IF NOT EXISTS hit_sale_categories (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    categories JSON,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_user (user_id)
+  )`,
+  (err) => { if (err) console.error("hit_sale_categories table check failed:", err.message); }
+);
 
 /** mysql2 hands a JSON column back parsed on some drivers and as text on others. */
 const parseJsonCol = (v) => {
@@ -340,6 +354,32 @@ app.put("/api/hitsales/briefs/:userId", express.json({ limit: "1mb" }), (req, re
     `INSERT INTO hit_sale_briefs (user_id, briefs) VALUES (?, ?)
      ON DUPLICATE KEY UPDATE briefs = VALUES(briefs)`,
     [String(req.params.userId), JSON.stringify(briefs)],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ ok: true });
+    }
+  );
+});
+
+app.get("/api/hitsales/categories/:userId", (req, res) => {
+  db.query(
+    "SELECT categories, updated_at FROM hit_sale_categories WHERE user_id = ?",
+    [String(req.params.userId)],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      const categories = rows.length ? parseJsonCol(rows[0].categories) : null;
+      res.json({ data: Array.isArray(categories) ? categories : [], updatedAt: rows.length ? rows[0].updated_at : null });
+    }
+  );
+});
+
+app.put("/api/hitsales/categories/:userId", express.json({ limit: "256kb" }), (req, res) => {
+  const categories = req.body && typeof req.body === "object" ? req.body.categories : undefined;
+  if (!Array.isArray(categories)) return res.status(400).json({ error: "An array of categories is required." });
+  db.query(
+    `INSERT INTO hit_sale_categories (user_id, categories) VALUES (?, ?)
+     ON DUPLICATE KEY UPDATE categories = VALUES(categories)`,
+    [String(req.params.userId), JSON.stringify(categories)],
     (err) => {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ ok: true });
