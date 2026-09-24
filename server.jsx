@@ -249,6 +249,24 @@ db.query(
   )`,
   (err) => { if (err) console.error("hit_sale_briefs table check failed:", err.message); }
 );
+// Every version of every note a user has saved on a sale — a lot's note, or
+// the sale's own (lot NULL) — kept for good. Nothing deletes from it: a note
+// lost by anything upstream can be read back from here, and a page too old to
+// send its notes' times is refused text a note has already had
+// (hitsales/listNotes.mjs).
+db.query(
+  `CREATE TABLE IF NOT EXISTS hit_sale_note_history (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    sale_id VARCHAR(64) NOT NULL,
+    lot VARCHAR(32) NULL,
+    note TEXT NULL,
+    noted_at VARCHAR(40) NULL,
+    saved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_hsnh_user_sale (user_id, sale_id, lot)
+  )`,
+  (err) => { if (err) console.error("hit_sale_note_history table check failed:", err.message); }
+);
 // A user's saved categories: every free-text category they have made on any
 // sale's list, kept so the next catalogue offers them again instead of
 // starting from the four defaults. Per user and not per sale, like briefs;
@@ -296,16 +314,95 @@ app.get("/api/hitsales/lists/:userId/:saleId", (req, res) => {
   );
 });
 
-app.put("/api/hitsales/lists/:userId/:saleId", express.json({ limit: "2mb" }), (req, res) => {
-  const list = req.body && typeof req.body === "object" ? req.body.list : undefined;
-  if (!list || typeof list !== "object") return res.status(400).json({ error: "A list document is required." });
+const loadListNotes = () => import("./hitsales/listNotes.mjs");
+
+/**
+ * Save a user's list for a sale. The lots and categories are the save's; the
+ * notes are MERGED into the stored ones (hitsales/listNotes.mjs): a note a
+ * user has saved is never lost unless that user deletes or edits it. Saves of
+ * one list take turns under a named lock, so two arriving together cannot
+ * each merge into the same old copy and drop the other's note. The merged
+ * list comes back, so the page can take up notes saved elsewhere.
+ */
+app.put("/api/hitsales/lists/:userId/:saleId", express.json({ limit: "2mb" }), async (req, res) => {
+  const incoming = req.body && typeof req.body === "object" ? req.body.list : undefined;
+  if (!incoming || typeof incoming !== "object") return res.status(400).json({ error: "A list document is required." });
+  const userId = String(req.params.userId);
+  const saleId = String(req.params.saleId);
+  const lockName = `hsl:${require("crypto").createHash("sha1").update(`${userId}|${saleId}`).digest("hex").slice(0, 40)}`;
+
+  let conn = null;
+  let locked = false;
+  const q = (sql, params) => new Promise((resolve, reject) =>
+    conn.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows))));
+  try {
+    const { mergeListNotes } = await loadListNotes();
+    conn = await new Promise((resolve, reject) => db.getConnection((err, c) => (err ? reject(err) : resolve(c))));
+    const [lock] = await q("SELECT GET_LOCK(?, 15) AS got", [lockName]);
+    if (!lock || lock.got !== 1) return res.status(503).json({ error: "This list is being saved by another request; try again." });
+    locked = true;
+
+    const rows = await q("SELECT list FROM hit_sale_lists WHERE user_id = ? AND sale_id = ?", [userId, saleId]);
+    const stored = rows.length ? parseJsonCol(rows[0].list) : null;
+
+    // Every text each note has had, so an old page's stale copy is not taken for an edit.
+    const pastTexts = new Map();
+    let history = [];
+    try {
+      history = await q("SELECT lot, note FROM hit_sale_note_history WHERE user_id = ? AND sale_id = ?", [userId, saleId]);
+    } catch (err) {
+      console.error("[hitsales] note history unreadable:", err.message);
+    }
+    for (const h of history) {
+      const key = h.lot === null || h.lot === undefined ? "" : String(h.lot);
+      if (!pastTexts.has(key)) pastTexts.set(key, new Set());
+      if (h.note) pastTexts.get(key).add(String(h.note));
+    }
+
+    const { list, changes } = mergeListNotes(stored, incoming, { now: new Date().toISOString(), pastTexts });
+    await q(
+      `INSERT INTO hit_sale_lists (user_id, sale_id, list) VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE list = VALUES(list)`,
+      [userId, saleId, JSON.stringify(list)],
+    );
+
+    // The history: the text a note had before its first change here, then each change.
+    try {
+      for (const c of changes) {
+        const key = c.lot === null ? "" : c.lot;
+        if (c.previous && !pastTexts.get(key)?.has(c.previous)) {
+          await q("INSERT INTO hit_sale_note_history (user_id, sale_id, lot, note, noted_at) VALUES (?, ?, ?, ?, NULL)",
+            [userId, saleId, c.lot, c.previous]);
+        }
+        await q("INSERT INTO hit_sale_note_history (user_id, sale_id, lot, note, noted_at) VALUES (?, ?, ?, ?, ?)",
+          [userId, saleId, c.lot, c.text, c.at || null]);
+      }
+    } catch (err) {
+      console.error("[hitsales] note history not written:", err.message);
+    }
+    res.json({ ok: true, list });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    if (conn) {
+      if (locked) {
+        try { await q("SELECT RELEASE_LOCK(?)", [lockName]); } catch { /* the connection's end releases it */ }
+      }
+      conn.release();
+    }
+  }
+});
+
+// Every saved version of a user's notes on a sale, newest first: what a note
+// said before it was edited, deleted or lost.
+app.get("/api/hitsales/note-history/:userId/:saleId", (req, res) => {
   db.query(
-    `INSERT INTO hit_sale_lists (user_id, sale_id, list) VALUES (?, ?, ?)
-     ON DUPLICATE KEY UPDATE list = VALUES(list)`,
-    [String(req.params.userId), String(req.params.saleId), JSON.stringify(list)],
-    (err) => {
+    `SELECT lot, note, noted_at, saved_at FROM hit_sale_note_history
+      WHERE user_id = ? AND sale_id = ? ORDER BY id DESC LIMIT 5000`,
+    [String(req.params.userId), String(req.params.saleId)],
+    (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
-      res.json({ ok: true });
+      res.json({ data: rows.map((r) => ({ lot: r.lot, note: r.note, notedAt: r.noted_at, savedAt: r.saved_at })) });
     }
   );
 });
