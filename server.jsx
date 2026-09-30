@@ -6946,6 +6946,35 @@ async function populationBaseline() {
  * route below is now a thin wrapper; everything either caller sees comes
  * from here, so they cannot drift.
  */
+/**
+ * Every runner out of a daughter of the damsire, by any sire — what the
+ * damsire brings, independent of any stallion. His daughters that raced are
+ * the only ones we can name, so this is the raced-dam subset.
+ */
+async function damsireProgeny(damsire) {
+  const none = { horses: [], timedOut: false };
+  if (!damsire) return none;
+  const daughters = await runQuery(
+    `SELECT ${BREEDING_HINT} DISTINCT horseName
+       FROM APIData_Table2
+      WHERE sireName = ? AND horseGender IN ('f', 'm')
+      LIMIT 3000`,
+    [damsire],
+  ).catch(() => []);
+  const names = daughters.map((d) => d.horseName).filter(Boolean);
+  if (!names.length) return none;
+  const got = { horses: [], timedOut: false };
+  for (let i = 0; i < names.length; i += 400) {
+    const chunk = names.slice(i, i + 400);
+    const part = await horsesWhere(`damName IN (${chunk.map(() => "?").join(", ")})`, chunk, 2000);
+    got.horses.push(...part.horses);
+    got.timedOut = got.timedOut || part.timedOut;
+  }
+  for (const h of got.horses) if (!h.damsire) h.damsire = damsire;
+  got.horses.sort((a, b) => (b.best ?? 0) - (a.best ?? 0));
+  return got;
+}
+
 async function matingOutlook({ sire, dam, damsire: askedDamsire = null, damYear = null }) {
   const { studBookName, describe, pickOwnRow } = await loadMating();
   let damsire = askedDamsire ? studBookName(askedDamsire) : null;
@@ -6970,32 +6999,7 @@ async function matingOutlook({ sire, dam, damsire: askedDamsire = null, damYear 
     ? bySire.horses.filter((h) => h.damsire && studBookName(h.damsire) === damsire)
     : [];
 
-  // Every runner out of a daughter of the damsire, by any sire — what the
-  // damsire brings, independent of this stallion. His daughters that raced
-  // are the only ones we can name, so this is the raced-dam subset.
-  let byDamsire = { horses: [], timedOut: false };
-  if (damsire) {
-    const daughters = await runQuery(
-      `SELECT ${BREEDING_HINT} DISTINCT horseName
-         FROM APIData_Table2
-        WHERE sireName = ? AND horseGender IN ('f', 'm')
-        LIMIT 3000`,
-      [damsire],
-    ).catch(() => []);
-    const names = daughters.map((d) => d.horseName).filter(Boolean);
-    if (names.length) {
-      const got = { horses: [], timedOut: false };
-      for (let i = 0; i < names.length; i += 400) {
-        const chunk = names.slice(i, i + 400);
-        const part = await horsesWhere(`damName IN (${chunk.map(() => "?").join(", ")})`, chunk, 2000);
-        got.horses.push(...part.horses);
-        got.timedOut = got.timedOut || part.timedOut;
-      }
-      for (const h of got.horses) if (!h.damsire) h.damsire = damsire;
-      got.horses.sort((a, b) => (b.best ?? 0) - (a.best ?? 0));
-      byDamsire = got;
-    }
-  }
+  const byDamsire = await damsireProgeny(damsire);
 
   const population = await populationBaseline();
   const top = (list, n) => list.slice(0, n);
@@ -7037,6 +7041,56 @@ app.get("/api/breeding/mating", async (req, res) => {
     }));
   } catch (err) {
     console.error("breeding mating failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/**
+ * The mare's half of any mating's outlook: her own record, her produce and
+ * her sire's daughters' runners — everything in `/api/breeding/mating` that
+ * does not depend on the stallion. A screen ranking every stallion for one
+ * mare reads this once and each stallion's runners in bulk
+ * (`/api/breeding/sire-ratings`), instead of one full outlook per stallion.
+ * The shape is the mating route's with `sire` and `nick` empty, so the same
+ * arithmetic reads both.
+ */
+const mareSideCache = new Map();
+app.get("/api/breeding/mare-side", async (req, res) => {
+  const { studBookName, describe, pickOwnRow } = await loadMating();
+  const dam = studBookName(req.query.dam);
+  if (!dam) return res.status(400).json({ error: "dam is required" });
+  const yearRaw = Number(req.query.year);
+  const damYear = Number.isFinite(yearRaw) && yearRaw > 1900 ? yearRaw : null;
+  let damsire = req.query.damsire ? studBookName(req.query.damsire) : null;
+  const cacheKey = [dam, damYear, damsire].join("|");
+  const hit = mareSideCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < 6 * 60 * 60 * 1000) return res.json({ ...hit.body, cached: true });
+  try {
+    const [outOfDam, damRows] = await Promise.all([
+      horsesWhere("damName = ?", [dam], 200),
+      horsesWhere("horseName = ?", [dam], 5),
+    ]);
+    const own = pickOwnRow(damRows.horses, { year: damYear, sire: damsire });
+    if (!damsire && own?.sire) damsire = studBookName(own.sire);
+    const byDamsire = await damsireProgeny(damsire);
+    const body = {
+      asked: { sire: null, dam, damsire, year: damYear },
+      population: await populationBaseline(),
+      dam: {
+        own: own ?? null,
+        produce: { ...describe(outOfDam.horses), horses: outOfDam.horses, timedOut: outOfDam.timedOut },
+      },
+      sire: null,
+      damsire: damsire
+        ? { progeny: { ...describe(byDamsire.horses), horses: byDamsire.horses.slice(0, 40), timedOut: byDamsire.timedOut } }
+        : null,
+      nick: null,
+    };
+    mareSideCache.set(cacheKey, { at: Date.now(), body });
+    if (mareSideCache.size > 500) mareSideCache.delete(mareSideCache.keys().next().value);
+    res.json(body);
+  } catch (err) {
+    console.error("breeding mare side failed:", err.message);
     res.status(500).json({ error: "database error", detail: err.message });
   }
 });
