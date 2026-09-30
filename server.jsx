@@ -14559,6 +14559,10 @@ app.get("/api/ai/status", async (req, res) => {
       // carries a workspace is not something this service can see, so this
       // says what is configured, not whether it is sufficient.
       workspace: process.env.ANTHROPIC_WORKSPACE_ID ? "set" : "not set",
+      // Which web tools the next question gets. A tool the Anthropic
+      // organisation has switched off is listed under `refused` with the
+      // reason, rather than being discovered only as an answer without it.
+      web: agent.webStatus(),
     });
   } catch (err) {
     res.status(500).json({ available: false, error: err.message });
