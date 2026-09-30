@@ -66,6 +66,8 @@ test("status reports whether the assistant can answer", async () => {
   assert.equal(body.model, "claude-opus-5");
   assert.ok(body.tables > 50, "the readable-table count should be the real list");
   assert.equal(body.limits.ROW_CAP, 500);
+  // The web is on unless AI_WEB says otherwise, and the key has no bearing on it.
+  assert.deepEqual(body.web, { search: true, fetch: true });
 });
 
 test("chat answers with a real SSE frame, not an empty 200", async () => {
