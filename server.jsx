@@ -7523,6 +7523,210 @@ app.get("/api/breeding/nicks", async (req, res) => {
   }
 });
 
+/**
+ * Every damsire a stallion has been crossed with, best first.
+ *
+ * `/api/breeding/nicks` answers one pairing; a stallion's page asks the
+ * reverse — over mares by whom has he done best? — and so does screening a
+ * list of mares for him, where each mare's sire is the damsire of her foal.
+ * `nick_stats` is keyed (sire_key, damsire_key), so every row for one sire is
+ * a read of the primary key's prefix: instant, however many crosses he has.
+ *
+ * `overall` is the sum of his rows, which is his record over the runners
+ * whose dams we can name — the right denominator for an index, since a
+ * cross's strike rate is only comparable to his own measured the same way.
+ * Crosses below `min` runners are left out of the list (they are in
+ * `overall`): three runners is the floor below which a strike rate is noise.
+ */
+app.get("/api/breeding/nicks/by-sire", async (req, res) => {
+  const { studKey, describeCross } = await loadNicks();
+  const sire = studKey(req.query.sire);
+  if (!sire) return res.status(400).json({ error: "sire is required" });
+  const min = Math.min(50, Math.max(1, Number(req.query.min) || 3));
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 60));
+
+  try {
+    const built = await queryOne(
+      `SELECT MAX(crop_to) AS cropTo, COUNT(*) AS crosses FROM nick_stats`,
+      [],
+    ).catch(() => null);
+    if (!built || !Number(built.crosses)) {
+      return res.json({
+        asked: { sire },
+        missing: true,
+        reason: "nick statistics have not been built on this server yet",
+      });
+    }
+    const rows = await runQuery(
+      `SELECT * FROM nick_stats WHERE sire_key = ? ORDER BY stakes_winners DESC, runners DESC`,
+      [sire],
+    );
+    const overall = describeCross(rows, { sire, damsire: null });
+    const crosses = rows
+      .filter((r) => Number(r.runners) >= min)
+      .slice(0, limit)
+      .map((r) => ({
+        damsire: String(r.damsire_key),
+        runners: Number(r.runners) || 0,
+        winners: Number(r.winners) || 0,
+        stakesWinners: Number(r.stakes_winners) || 0,
+        groupWinners: Number(r.group_winners) || 0,
+        g1Winners: Number(r.g1_winners) || 0,
+        blackType: Number(r.black_type) || 0,
+        cropFrom: r.crop_from ?? null,
+        cropTo: r.crop_to ?? null,
+      }));
+    res.json({ asked: { sire, min, limit }, overall, crosses, total: rows.length, builtTo: built.cropTo ?? null });
+  } catch (err) {
+    console.error("nicks by sire failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/**
+ * A mare's family on the racecourse: her own record, her produce, her dam's
+ * produce and her granddam's.
+ *
+ * A mating report's sibling table — the foal's half-brothers and sisters, the
+ * mare's own brothers and sisters, her dam's — is four grouped reads keyed on
+ * the dam's name, each cheap on its own and each capped like the rest of this
+ * family of routes. The second and third dams come from the rows of the mare
+ * and her dam where the caller does not name them: a mare who raced carries
+ * her dam on every run.
+ *
+ * Dams are counted from the foal, as a catalogue page counts them: `dam` is
+ * the mare asked about, `secondDam` her dam, `thirdDam` her granddam. So
+ * `siblings` is the second dam's produce and `thirdDamProduce` the third's.
+ */
+app.get("/api/breeding/family", async (req, res) => {
+  const { studBookName, pickOwnRow } = await loadMating();
+  const dam = studBookName(req.query.dam);
+  if (!dam) return res.status(400).json({ error: "dam is required" });
+  const yearRaw = Number(req.query.year);
+  const year = Number.isFinite(yearRaw) && yearRaw > 1900 ? yearRaw : null;
+  const sire = req.query.sire ? studBookName(req.query.sire) : null;
+  const empty = { horses: [], timedOut: false };
+
+  try {
+    const own = await horsesWhere("horseName = ?", [dam], 5).catch(() => empty);
+    const her = pickOwnRow(own.horses, { year, sire });
+    const secondDam = studBookName(req.query.secondDam) || (her?.dam ? studBookName(her.dam) : null);
+
+    const [produce, siblings, secondDamRows] = await Promise.all([
+      horsesWhere("damName = ?", [dam], 80).catch(() => empty),
+      secondDam ? horsesWhere("damName = ?", [secondDam], 80).catch(() => empty) : Promise.resolve(empty),
+      secondDam ? horsesWhere("horseName = ?", [secondDam], 5).catch(() => empty) : Promise.resolve(empty),
+    ]);
+    const secondDamRow = pickOwnRow(secondDamRows.horses, {});
+    const thirdDam = secondDamRow?.dam ? studBookName(secondDamRow.dam) : null;
+    const auntsUncles = thirdDam ? await horsesWhere("damName = ?", [thirdDam], 80).catch(() => empty) : empty;
+
+    // The mare is her own dam's produce too; she is shown above, not among her siblings.
+    const notHer = (list) => list.filter((h) => !(studBookName(h.name) === dam && (!year || h.foalingYear === year)));
+    res.json({
+      asked: { dam, year, sire },
+      mare: her,
+      secondDam,
+      thirdDam,
+      produce: { horses: produce.horses, timedOut: produce.timedOut },
+      siblings: { horses: notHer(siblings.horses), timedOut: siblings.timedOut },
+      thirdDamProduce: {
+        horses: auntsUncles.horses.filter((h) => studBookName(h.name) !== secondDam),
+        timedOut: auntsUncles.timedOut,
+      },
+    });
+  } catch (err) {
+    console.error("breeding family failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/**
+ * The family's record by trip, age and sex, and its horses' ratings.
+ *
+ * Five groups, each optional: the stallion's own runs and his runners', the
+ * mare's own and her produce's, and the damsire's runners'. Each is two
+ * grouped reads (see `breeding/aptitude.mjs` for every rule about what counts
+ * — flat only, 5 to 16 furlongs, ages 2, 3 and 4+, Timeform's 999 excluded).
+ *
+ * Groups are read three at a time, not all ten queries at once: the pool is
+ * ten connections and the rest of the site is using it. A group that runs out
+ * of time comes back flagged, never as an empty record. Answers are kept for
+ * six hours — a family's record moves with each weekend's racing, not by the
+ * minute — which also means a report opened twice costs the database once.
+ */
+const loadAptitude = () => import("./breeding/aptitude.mjs");
+const aptitudeCache = new Map();
+const APTITUDE_TTL_MS = 6 * 60 * 60 * 1000;
+
+app.get("/api/breeding/aptitude", async (req, res) => {
+  const { studBookName } = await loadMating();
+  const { groupQueries, describeGroup } = await loadAptitude();
+  const sire = studBookName(req.query.sire) || null;
+  const dam = studBookName(req.query.dam) || null;
+  const damsire = studBookName(req.query.damsire) || null;
+  const yearRaw = Number(req.query.year);
+  const year = Number.isFinite(yearRaw) && yearRaw > 1900 ? yearRaw : null;
+  if (!sire && !dam && !damsire) {
+    return res.status(400).json({ error: "give a sire, a dam or a damsire" });
+  }
+
+  const cacheKey = [sire, dam, damsire, year].join("|");
+  const hit = aptitudeCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < APTITUDE_TTL_MS) return res.json({ ...hit.body, cached: true });
+
+  const plan = [
+    sire && ["sireProgeny", "sireName = ?", [sire]],
+    sire && ["sireSelf", "horseName = ?", [sire]],
+    dam && ["damSelf", `horseName = ?${year ? " AND YEAR(foalingDate) = ?" : ""}`, year ? [dam, year] : [dam]],
+    dam && ["damProduce", "damName = ?", [dam]],
+    damsire && ["damsireProgeny", "sireName = ?", [damsire]],
+  ].filter(Boolean);
+
+  const isTimeout = (err) =>
+    err?.code === "ER_QUERY_TIMEOUT" || /max_execution_time|maximum statement execution/i.test(err?.message ?? "");
+
+  const readGroup = async ([, where, params]) => {
+    const q = groupQueries(where, BREEDING_HINT);
+    let timedOut = false;
+    const safe = (sql) =>
+      runQuery(sql, params).catch((err) => {
+        if (isTimeout(err)) {
+          timedOut = true;
+          return [];
+        }
+        throw err;
+      });
+    const [cellRows, ratingRows] = await Promise.all([safe(q.cells), safe(q.ratings)]);
+    return describeGroup({ cellRows, ratingRows, timedOut });
+  };
+
+  try {
+    const groups = {};
+    for (let i = 0; i < plan.length; i += 3) {
+      const wave = plan.slice(i, i + 3);
+      const done = await Promise.all(wave.map(readGroup));
+      wave.forEach(([name], j) => {
+        groups[name] = done[j];
+      });
+    }
+    const body = {
+      asked: { sire, dam, damsire, year },
+      basis:
+        "Flat runs in our results table. Trips in whole furlongs, 5f and under counted at 5, 16f and over at 16; " +
+        "ages 2, 3 and 4 and up; ratings are each horse's best Timeform figure on the flat.",
+      groups,
+      generatedAt: new Date().toISOString(),
+    };
+    aptitudeCache.set(cacheKey, { at: Date.now(), body });
+    if (aptitudeCache.size > 300) aptitudeCache.delete(aptitudeCache.keys().next().value);
+    res.json(body);
+  } catch (err) {
+    console.error("breeding aptitude failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
 
 /* ------------------------------------------------------- pedigrees we walk */
 
@@ -7788,6 +7992,35 @@ app.get("/api/breeding/similar-winners", async (req, res) => {
         stakesWins: Number(rec?.s_wins ?? 0),
       };
     });
+
+    // Their level, where our results table knows them: the worldwide file
+    // holds black type and prize money but no ratings, and a list of similar
+    // horses is read for how good they were. One grouped read for all of them,
+    // matched on name and foaling year — a name alone is not a horse — and
+    // skipped silently if it runs out of time, since the list stands without it.
+    if (matches.length) {
+      const { studBookName } = await loadMating();
+      const names = [...new Set(matches.map((m) => studBookName(m.name)).filter(Boolean))].slice(0, 80);
+      const rated = await horsesWhere(
+        `horseName IN (${names.map(() => "?").join(", ")})`,
+        names,
+        400,
+      ).catch(() => ({ horses: [] }));
+      const byName = new Map();
+      for (const h of rated.horses ?? []) {
+        const k = studBookName(h.name);
+        if (!byName.has(k)) byName.set(k, []);
+        byName.get(k).push(h);
+      }
+      for (const m of matches) {
+        const rows = byName.get(studBookName(m.name)) ?? [];
+        const row = rows.find((h) => m.year && h.foalingYear === Number(m.year)) ?? (rows.length === 1 && !m.year ? rows[0] : null);
+        if (!row) continue;
+        m.best = row.best ?? null;
+        m.runs = row.runs ?? null;
+        m.wins = row.wins ?? null;
+      }
+    }
 
     const indexed = Number(built.winners ?? 0);
     const perWinner = indexed ? Number(built.n ?? 0) / indexed : 0;
