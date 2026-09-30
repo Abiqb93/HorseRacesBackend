@@ -7584,6 +7584,187 @@ app.get("/api/breeding/nicks/by-sire", async (req, res) => {
 });
 
 /**
+ * Every stallion crossed with one damsire, best first: the reverse of
+ * `by-sire`.
+ *
+ * Ranking the roster's stallions for one mare asks how each has done over
+ * mares by her sire — her sire is her foal's damsire — and `/api/breeding/
+ * nicks` answers only the twenty-five best of those. `nick_stats` is indexed
+ * on damsire_key, so the whole list is one indexed read.
+ */
+app.get("/api/breeding/nicks/by-damsire", async (req, res) => {
+  const { studKey } = await loadNicks();
+  const damsire = studKey(req.query.damsire);
+  if (!damsire) return res.status(400).json({ error: "damsire is required" });
+  const min = Math.min(50, Math.max(1, Number(req.query.min) || 1));
+  const limit = Math.min(5000, Math.max(1, Number(req.query.limit) || 3000));
+
+  try {
+    const built = await queryOne(
+      `SELECT MAX(crop_to) AS cropTo, COUNT(*) AS crosses FROM nick_stats`,
+      [],
+    ).catch(() => null);
+    if (!built || !Number(built.crosses)) {
+      return res.json({
+        asked: { damsire },
+        missing: true,
+        reason: "nick statistics have not been built on this server yet",
+      });
+    }
+    const rows = await runQuery(
+      `SELECT * FROM nick_stats WHERE damsire_key = ? AND runners >= ?
+        ORDER BY stakes_winners DESC, runners DESC LIMIT ${limit}`,
+      [damsire, min],
+    );
+    const sires = rows.map((r) => ({
+      sire: String(r.sire_key),
+      runners: Number(r.runners) || 0,
+      winners: Number(r.winners) || 0,
+      stakesWinners: Number(r.stakes_winners) || 0,
+      groupWinners: Number(r.group_winners) || 0,
+      g1Winners: Number(r.g1_winners) || 0,
+      blackType: Number(r.black_type) || 0,
+      cropFrom: r.crop_from ?? null,
+      cropTo: r.crop_to ?? null,
+    }));
+    res.json({ asked: { damsire, min, limit }, sires, total: sires.length, builtTo: built.cropTo ?? null });
+  } catch (err) {
+    console.error("nicks by damsire failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/**
+ * Many sires' runners, summarised on their best figures.
+ *
+ * The mating route reads one sire's runners to place a foal against the
+ * population; a screen ranking the roster for one mare needs the same
+ * summary for every stallion on it. `sires` is a list ("Dubawi|Frankel"),
+ * read six sires to a query and three queries at a time, each under a longer
+ * cap than the site's usual nine seconds, because a big sire's runners are
+ * twenty thousand runs. A group of sires that runs out of time is named in
+ * `timedOut` rather than answered as none. Answers are kept for twelve hours:
+ * a stallion's record moves with a season, not an afternoon.
+ */
+const loadSires = () => import("./breeding/sires.mjs");
+const sireRatingsCache = new Map();
+const SIRE_RATINGS_TTL_MS = 12 * 60 * 60 * 1000;
+const SIRE_RATINGS_HINT = "/*+ MAX_EXECUTION_TIME(25000) */";
+const isQueryTimeout = (err) =>
+  err?.code === "ER_QUERY_TIMEOUT" || /max_execution_time|maximum statement execution/i.test(err?.message ?? "");
+
+app.get("/api/breeding/sire-ratings", async (req, res) => {
+  const { parseSireList, sireRunnersSql, summariseSires, SIRES_PER_QUERY } = await loadSires();
+  const sires = parseSireList(req.query.sires);
+  if (!sires.length) return res.status(400).json({ error: "give sires, separated by |" });
+
+  const out = {};
+  const wanted = [];
+  for (const s of sires) {
+    const hit = sireRatingsCache.get(s);
+    if (hit && Date.now() - hit.at < SIRE_RATINGS_TTL_MS) out[s] = hit.body;
+    else wanted.push(s);
+  }
+  const chunks = [];
+  for (let i = 0; i < wanted.length; i += SIRES_PER_QUERY) chunks.push(wanted.slice(i, i + SIRES_PER_QUERY));
+
+  try {
+    const timedOut = [];
+    for (let i = 0; i < chunks.length; i += 3) {
+      const wave = chunks.slice(i, i + 3);
+      const done = await Promise.all(
+        wave.map((chunk) =>
+          runQuery(sireRunnersSql(chunk.length, SIRE_RATINGS_HINT), chunk)
+            .then((rows) => ({ chunk, summary: summariseSires(rows, chunk) }))
+            .catch((err) => {
+              if (isQueryTimeout(err)) return { chunk, timedOut: true };
+              throw err;
+            }),
+        ),
+      );
+      for (const d of done) {
+        if (d.timedOut) {
+          timedOut.push(...d.chunk);
+          continue;
+        }
+        for (const s of d.chunk) {
+          out[s] = d.summary[s];
+          sireRatingsCache.set(s, { at: Date.now(), body: d.summary[s] });
+        }
+      }
+    }
+    if (sireRatingsCache.size > 4000) {
+      for (const k of [...sireRatingsCache.keys()].slice(0, 1000)) sireRatingsCache.delete(k);
+    }
+    res.json({
+      asked: sires,
+      sires: out,
+      timedOut,
+      population: await populationBaseline(),
+      basis: "Each runner's best Timeform figure on our results table (the better of master and performance), 1 to 140.",
+    });
+  } catch (err) {
+    console.error("sire ratings failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/**
+ * The season's two-year-olds, by sire: which stallions have the highest
+ * rated juveniles.
+ *
+ * One pass over a season's runs, grouped by horse, is too dear to sit on a
+ * request, so the first caller starts it and is told it is being measured
+ * (202, with how long to wait); the answer is kept for six hours and every
+ * caller after gets it at once. The same arrangement as the population
+ * baseline, and for the same reason.
+ */
+const juvenileCache = new Map();
+const juvenileInFlight = new Map();
+const JUVENILE_TTL_MS = 6 * 60 * 60 * 1000;
+
+function measureJuveniles(season) {
+  if (juvenileInFlight.has(season)) return juvenileInFlight.get(season);
+  const job = (async () => {
+    const { juvenileSql, juvenileArgs, juvenileSires } = await loadSires();
+    const rows = await runQuery(juvenileSql("/*+ MAX_EXECUTION_TIME(150000) */"), juvenileArgs(season));
+    const sires = juvenileSires(rows, { limit: 400 });
+    const body = {
+      season,
+      sires,
+      horses: rows.length,
+      basis:
+        `Two-year-olds of ${season} (foaled in ${season - 2}) on our results table, on their best Timeform figure ` +
+        `from ${season}'s runs. Ranked on each sire's best, then the average of his best three.`,
+      generatedAt: new Date().toISOString(),
+    };
+    juvenileCache.set(season, { at: Date.now(), body });
+    return body;
+  })()
+    .catch((err) => {
+      console.error(`juvenile sires ${season} failed:`, err.message);
+      return null;
+    })
+    .finally(() => juvenileInFlight.delete(season));
+  juvenileInFlight.set(season, job);
+  return job;
+}
+
+app.get("/api/breeding/juvenile-sires", async (req, res) => {
+  const now = new Date();
+  const asked = Number(req.query.season);
+  const season = Number.isInteger(asked) && asked > 2000 && asked <= now.getUTCFullYear() ? asked : now.getUTCFullYear();
+  const hit = juvenileCache.get(season);
+  if (hit && Date.now() - hit.at < JUVENILE_TTL_MS) return res.json({ ...hit.body, cached: true });
+
+  const job = measureJuveniles(season);
+  const first = await Promise.race([job, new Promise((r) => setTimeout(() => r("waiting"), 20000))]);
+  if (first && first !== "waiting") return res.json(first);
+  if (first === null) return res.status(500).json({ error: "the season could not be read" });
+  res.status(202).json({ season, status: "measuring", retryAfter: 20 });
+});
+
+/**
  * A mare's family on the racecourse: her own record, her produce, her dam's
  * produce and her granddam's.
  *
@@ -7621,6 +7802,18 @@ app.get("/api/breeding/family", async (req, res) => {
     const thirdDam = secondDamRow?.dam ? studBookName(secondDamRow.dam) : null;
     const auntsUncles = thirdDam ? await horsesWhere("damName = ?", [thirdDam], 80).catch(() => empty) : empty;
 
+    // The same three dams in the worldwide file: produce that raced anywhere,
+    // with its black type, from the 2014 crop on. Our results table rates
+    // what ran in Britain, Ireland and France; this is what a catalogue page
+    // also prints — the half-sister who won a Group race in Germany, the
+    // brother who won three in Japan. An indexed read each, and an empty
+    // list where the file has not been filled.
+    const [wwProduce, wwSiblings, wwThird] = await Promise.all([
+      worldwideWhere("dam_key = ?", [dam], 120),
+      secondDam ? worldwideWhere("dam_key = ?", [secondDam], 120) : Promise.resolve([]),
+      thirdDam ? worldwideWhere("dam_key = ?", [thirdDam], 120) : Promise.resolve([]),
+    ]);
+
     // The mare is her own dam's produce too; she is shown above, not among her siblings.
     const notHer = (list) => list.filter((h) => !(studBookName(h.name) === dam && (!year || h.foalingYear === year)));
     res.json({
@@ -7633,6 +7826,12 @@ app.get("/api/breeding/family", async (req, res) => {
       thirdDamProduce: {
         horses: auntsUncles.horses.filter((h) => studBookName(h.name) !== secondDam),
         timedOut: auntsUncles.timedOut,
+      },
+      worldwide: {
+        basis: "horses that raced anywhere, 2014 crops on; black type from the worldwide file",
+        produce: wwProduce,
+        siblings: notHer(wwSiblings),
+        thirdDamProduce: wwThird.filter((h) => studBookName(h.name) !== secondDam),
       },
     });
   } catch (err) {
