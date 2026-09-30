@@ -7800,7 +7800,10 @@ app.get("/api/breeding/family", async (req, res) => {
     ]);
     const secondDamRow = pickOwnRow(secondDamRows.horses, {});
     const thirdDam = secondDamRow?.dam ? studBookName(secondDamRow.dam) : null;
-    const auntsUncles = thirdDam ? await horsesWhere("damName = ?", [thirdDam], 80).catch(() => empty) : empty;
+    const [auntsUncles, thirdDamRows] = await Promise.all([
+      thirdDam ? horsesWhere("damName = ?", [thirdDam], 80).catch(() => empty) : Promise.resolve(empty),
+      thirdDam ? horsesWhere("horseName = ?", [thirdDam], 5).catch(() => empty) : Promise.resolve(empty),
+    ]);
 
     // The same three dams in the worldwide file: produce that raced anywhere,
     // with its black type, from the 2014 crop on. Our results table rates
@@ -7821,6 +7824,10 @@ app.get("/api/breeding/family", async (req, res) => {
       mare: her,
       secondDam,
       thirdDam,
+      // The two older dams' own records, for the catalogue's "2nd Dam" and
+      // "3rd Dam" headings: each one's row where she raced here, else null.
+      secondDamOwn: secondDamRow ?? null,
+      thirdDamOwn: pickOwnRow(thirdDamRows.horses, {}) ?? null,
       produce: { horses: produce.horses, timedOut: produce.timedOut },
       siblings: { horses: notHer(siblings.horses), timedOut: siblings.timedOut },
       thirdDamProduce: {
