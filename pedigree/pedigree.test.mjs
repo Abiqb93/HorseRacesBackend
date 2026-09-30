@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { findQuery, foalingYearOf, normaliseName, rowFor, upsertArgs } from "./store.mjs";
-import { AmbiguousError, BlockedError, getPedigree, throttle } from "./client.mjs";
+import { AmbiguousError, BlockedError, ambiguousMatches, getPedigree, throttle } from "./client.mjs";
 
 /* --------------------------------------------------------------- the cache */
 
@@ -122,6 +122,69 @@ test("an ambiguous name is its own error, so the caller can ask for a reference"
       assert.match(err.message, /reference_number/);
       return true;
     },
+  );
+});
+
+/** The source's own words for Antisana, as the Pedigrees page showed them. */
+const ANTISANA =
+  "2 horses matched; disambiguate with reference_number, foaling_year or dam_name: " +
+  "=Antisana (GB) (2015, Mare, Dubawi (IRE) x =Lava Flow (IRE), reference_number=9924938); " +
+  "Antisana (1933, Mare, *Snob II x *Musidora, reference_number=15240)";
+
+test("an ambiguous answer carries the horses it names, ready to pick from", async () => {
+  fast();
+  const fetchImpl = async () => jsonResponse({ status: "error", error: { message: ANTISANA } });
+  await assert.rejects(
+    () => getPedigree({ name: "ANTISANA" }, { fetchImpl }),
+    (err) => {
+      assert.ok(err instanceof AmbiguousError);
+      assert.equal(err.count, 2);
+      // The shape search_horses lists them in, so a page handles both alike.
+      assert.deepEqual(err.matches, [
+        {
+          name: "=Antisana (GB)",
+          foaling_year: 2015,
+          sex: "Mare",
+          sire: "Dubawi (IRE)",
+          dam: "=Lava Flow (IRE)",
+          reference_number: 9924938,
+        },
+        {
+          name: "Antisana",
+          foaling_year: 1933,
+          sex: "Mare",
+          sire: "*Snob II",
+          dam: "*Musidora",
+          reference_number: 15240,
+        },
+      ]);
+      return true;
+    },
+  );
+});
+
+test("a refusal that lists nobody gives no matches rather than invented ones", () => {
+  const bare = ambiguousMatches("2 horses matched; disambiguate with reference_number, foaling_year or dam_name");
+  assert.equal(bare.count, 2);
+  assert.deepEqual(bare.matches, []);
+  assert.deepEqual(ambiguousMatches(undefined), { count: null, matches: [] });
+});
+
+test("a gap in the source's record is a gap, and an entry without a reference is dropped", () => {
+  const { count, matches } = ambiguousMatches(
+    "3 horses matched; disambiguate with reference_number, foaling_year or dam_name: " +
+      "Somebody (USA) (None, Gelding, None x Her Dam (USA), reference_number=77); " +
+      "Somebody (1999, Mare, Sire x Dam); " +
+      "Somebody (FR) (2001, Filly, Le Havre (IRE) x None, reference_number=78)",
+  );
+  assert.equal(count, 3);
+  assert.deepEqual(
+    matches.map((m) => [m.name, m.foaling_year, m.sex, m.sire, m.dam, m.reference_number]),
+    [
+      ["Somebody (USA)", null, "Gelding", null, "Her Dam (USA)", 77],
+      // The 1999 mare named no reference: nothing to send, so nothing to pick.
+      ["Somebody (FR)", 2001, "Filly", "Le Havre (IRE)", null, 78],
+    ],
   );
 });
 
