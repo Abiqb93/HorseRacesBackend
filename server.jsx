@@ -5632,9 +5632,15 @@ app.get("/api/pedigree", async (req, res) => {
     // scraper against the named Equineline API can tell them apart in the
     // response rather than by reading the server's environment.
     if (err?.ambiguous) {
-      // The source names the reference numbers in its message; pass it through
-      // so the caller can pick one rather than guess.
-      return res.status(409).json({ error: err.message, ambiguous: true });
+      // The source names the horses it could have meant. They go back as data
+      // as well as in its sentence, each with the reference number the next
+      // request needs, so the page can offer the choice rather than guess.
+      return res.status(409).json({
+        error: err.message,
+        ambiguous: true,
+        count: err.count ?? null,
+        matches: err.matches ?? [],
+      });
     }
     console.error("pedigree lookup failed:", err.message);
     // Pass the source's own words through. "pedigree lookup failed" told a

@@ -88,7 +88,102 @@ export class AmbiguousError extends Error {
     super(message);
     this.name = "AmbiguousError";
     this.ambiguous = true;
+    // The horses it could have meant, where the source listed them, so a
+    // caller can offer the choice instead of repeating the sentence.
+    const { count, matches } = ambiguousMatches(message);
+    this.count = count;
+    this.matches = matches;
   }
+}
+
+/** Split on a separator, but never inside brackets: "(IRE)" is part of a name. */
+function splitOutside(s, sep) {
+  const out = [];
+  let depth = 0;
+  let from = 0;
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s[i];
+    if (c === "(") depth += 1;
+    else if (c === ")") depth = Math.max(0, depth - 1);
+    else if (c === sep && depth === 0) {
+      out.push(s.slice(from, i));
+      from = i + 1;
+    }
+  }
+  out.push(s.slice(from));
+  return out;
+}
+
+/** The "(" that the ")" at `close` shuts, or -1. */
+function openingParen(s, close) {
+  let depth = 0;
+  for (let i = close; i >= 0; i -= 1) {
+    if (s[i] === ")") depth += 1;
+    else if (s[i] === "(" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+const SEX_WORD = /^(horse|mare|gelding|colt|filly|ridgling|rig|stallion|male|female)$/i;
+const blank = (s) => {
+  const t = String(s ?? "").trim();
+  return !t || /^(none|null|unknown|n\/a|\?)$/i.test(t) ? null : t;
+};
+
+/**
+ * The horses an ambiguous answer names, in the shape `search_horses` lists
+ * them.
+ *
+ * The source does not just refuse a name that fits several horses, it says
+ * which ones:
+ *
+ *   2 horses matched; disambiguate with reference_number, foaling_year or
+ *   dam_name: =Antisana (GB) (2015, Mare, Dubawi (IRE) x =Lava Flow (IRE),
+ *   reference_number=9924938); Antisana (1933, Mare, *Snob II x *Musidora,
+ *   reference_number=15240)
+ *
+ * That list is what a person needs to pick the right horse, and it came with
+ * the refusal, so reading it costs nothing. Asking `search_horses` for the
+ * same list would be another place in the queue and most of a minute.
+ *
+ * Only an entry carrying its reference number is kept: the reference is what
+ * the second request sends, and an entry without one could not be picked.
+ * Names, sires and dams keep their sigils and country suffixes as the source
+ * writes them, as `search_horses` does. `count` is the number the source says
+ * matched, which can be more than it listed; a wording this does not
+ * recognise gives no matches, never wrong ones.
+ */
+export function ambiguousMatches(message) {
+  const text = String(message ?? "");
+  const said = text.match(/(\d+)\s+horses?\s+matched/i);
+  const count = said ? Number(said[1]) : null;
+  const matches = [];
+  for (const chunk of splitOutside(text, ";")) {
+    const ref = /reference_number\s*[=:]\s*(\d+)\s*\)/i.exec(chunk);
+    if (!ref) continue;
+    const open = openingParen(chunk, ref.index + ref[0].length - 1);
+    if (open < 0) continue;
+    // The sentence in front of the first entry ends in a colon, and a horse's
+    // name cannot contain one.
+    const name = blank(chunk.slice(0, open).split(":").pop());
+    if (!name) continue;
+    let foalingYear = null;
+    let sex = null;
+    let sire = null;
+    let dam = null;
+    for (const field of splitOutside(chunk.slice(open + 1, ref.index), ",")) {
+      const f = field.trim();
+      if (foalingYear === null && /^\d{4}$/.test(f)) foalingYear = Number(f);
+      else if (sex === null && SEX_WORD.test(f)) sex = f;
+      else if (sire === null && dam === null && f.includes(" x ")) {
+        const at = f.indexOf(" x ");
+        sire = blank(f.slice(0, at));
+        dam = blank(f.slice(at + 3));
+      }
+    }
+    matches.push({ name, foaling_year: foalingYear, sex, sire, dam, reference_number: Number(ref[1]) });
+  }
+  return { count, matches };
 }
 
 const isBlockMessage = (m) =>
