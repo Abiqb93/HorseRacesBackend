@@ -14977,18 +14977,24 @@ if (String(process.env.FRANCE_CRON || "").toLowerCase() === "on") {
   cron.schedule("20 * * * *", run("repromote", (f) =>
     f.repromote(f.store, { days: 10, log: (m) => console.log("[france:repromote]", m) })), paris);
 
-  // Declared cards for the days ahead. Evening, once tomorrow's declarations
-  // are published, and again in the morning to pick up overnight withdrawals.
+  // Declared cards for the days ahead, every two hours through the day.
+  //
+  // PMU publishes a weekend's big cards in stages and at no fixed hour: on
+  // Thursday 1 October 2026 at 08:30 Saturday's programme held Amiens and
+  // Beaumont but not Longchamp, while Racing Post already showed the Arc
+  // Saturday field. Read only at 07:00 and 19:00, a card that published at
+  // 09:00 sat out of the Tracker for ten hours. Five days covers a Thursday
+  // look at an Arc Sunday. Each pass replaces a date's French rows, so a
+  // re-read also drops a withdrawn runner.
   const cards = (f) => f.fetchCardsForDate
-    ? Promise.all([0, 1, 2, 3].map(async (offset) => {
+    ? Promise.all([0, 1, 2, 3, 4].map(async (offset) => {
         const d = new Date();
         d.setUTCDate(d.getUTCDate() + offset);
         const iso = d.toISOString().slice(0, 10);
         return f.store.writeRacecards(await f.fetchCardsForDate(iso));
       }))
     : null;
-  cron.schedule("0 19 * * *", run("racecards evening", cards), paris);
-  cron.schedule("0 7 * * *", run("racecards morning", cards), paris);
+  cron.schedule("0 7-21/2 * * *", run("racecards", cards), paris);
 
   console.log("[france] schedule active (Europe/Paris)");
 } else {
