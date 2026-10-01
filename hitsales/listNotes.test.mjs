@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeListNotes, mergeLotFlags, notesOf, carriesTimes } from "./listNotes.mjs";
+import { mergeListNotes, mergeLotFlags, mergeClientStates, mergeSends, notesOf, carriesTimes } from "./listNotes.mjs";
 
 const NOW = "2026-09-24T18:00:00.000Z";
 const T1 = "2026-09-24T10:00:00.000Z";
@@ -136,4 +136,22 @@ test("checks set by hand merge by when each was set, and an old page removes non
   assert.deepEqual(mergeLotFlags(null, { 11: { gates: { v: "maybe", at: at(9) } }, 12: { "no good": { v: "yes", at: at(9) } }, 13: { action: { v: "yes" } } }), {});
   // and a list with no checks carries no empty map
   assert.equal("lotFlags" in mergeListNotes(null, { entries: [] }, { now: at(9) }).list, false);
+});
+
+test("where each lot stands with each client merges by time; the send log is every send once", () => {
+  const at = (h) => `2026-10-01T${String(h).padStart(2, "0")}:00:00.000Z`;
+  const stored = { entries: [], clientStates: { job: { 6: { s: "shortlisted", at: at(8) } } },
+    sends: [{ id: "s1", at: at(8), stage: "initial", scope: "job", lots: ["5", "6"] }] };
+  const incoming = { entries: [], lotNotesAt: {}, clientStates: { job: { 6: { s: "dropped", at: at(9) }, 7: { s: "shortlisted", at: at(9) } } },
+    sends: [{ id: "s2", at: at(9), stage: "first", scope: "job", lots: ["6"] }] };
+  const { list } = mergeListNotes(stored, incoming, { now: at(9) });
+  assert.deepEqual(list.clientStates, { job: { 6: { s: "dropped", at: at(9) }, 7: { s: "shortlisted", at: at(9) } } });
+  assert.deepEqual(list.sends.map((x) => x.id), ["s1", "s2"]);
+  // an old page sends neither and removes neither
+  const old = mergeListNotes(list, { entries: [] }, { now: at(10) });
+  assert.deepEqual(old.list.clientStates, list.clientStates);
+  assert.deepEqual(old.list.sends.map((x) => x.id), ["s1", "s2"]);
+  // junk is not stored
+  assert.deepEqual(mergeClientStates(null, { "Bad Key": { 6: { s: "dropped", at: at(9) } }, job: { 6: { s: "sold", at: at(9) } } }), {});
+  assert.deepEqual(mergeSends(null, [{ id: 3, at: at(9) }, { id: "x", at: "yesterday" }]), []);
 });

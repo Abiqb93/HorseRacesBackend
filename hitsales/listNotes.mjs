@@ -143,6 +143,14 @@ export function mergeListNotes(stored, incoming, { now = new Date().toISOString(
   const lotFlags = mergeLotFlags(stored?.lotFlags, incoming?.lotFlags);
   if (Object.keys(lotFlags).length) list.lotFlags = lotFlags;
   else delete list.lotFlags;
+  // Where each lot stands with each client, by the same rule, and the log of
+  // client reports sent: every send either copy holds, once.
+  const clientStates = mergeClientStates(stored?.clientStates, incoming?.clientStates);
+  if (Object.keys(clientStates).length) list.clientStates = clientStates;
+  else delete list.clientStates;
+  const sends = mergeSends(stored?.sends, incoming?.sends);
+  if (sends.length) list.sends = sends;
+  else delete list.sends;
   return { list, changes };
 }
 
@@ -183,4 +191,50 @@ export function mergeLotFlags(stored, incoming) {
   const out = {};
   for (const { lot, key, v, at } of merged.values()) (out[lot] ||= {})[key] = { v, at };
   return out;
+}
+
+/**
+ * Where each lot stands with each client (the site's hitLists.clientStates):
+ * category -> lot -> { s, at }, `s` one of listed, commented, shortlisted,
+ * dropped, or "" for cleared. Merged like the checks: the later setting wins
+ * and one a copy does not mention is kept.
+ */
+const STATE_VALUES = new Set(["listed", "commented", "shortlisted", "dropped", ""]);
+const CAT_KEY = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+export function mergeClientStates(stored, incoming) {
+  const flat = (raw) => {
+    const out = new Map();
+    if (!isObject(raw)) return out;
+    for (const [cat, lots] of Object.entries(raw)) {
+      if (!CAT_KEY.test(cat) || !isObject(lots)) continue;
+      for (const [k, f] of Object.entries(lots)) {
+        const lot = lotKey(k);
+        if (lot === null || !isObject(f)) continue;
+        const s = typeof f.s === "string" ? f.s : "";
+        const at = noteTime(f.at);
+        if (!STATE_VALUES.has(s) || !at) continue;
+        out.set(`${cat}\u0000${lot}`, { cat, lot, s, at });
+      }
+    }
+    return out;
+  };
+  const merged = flat(stored);
+  for (const [k, f] of flat(incoming)) {
+    const old = merged.get(k);
+    if (!old || f.at > old.at) merged.set(k, f);
+  }
+  const out = {};
+  for (const { cat, lot, s, at } of merged.values()) (out[cat] ||= {})[lot] = { s, at };
+  return out;
+}
+
+/** The client reports sent (hitLists.sends): every one either copy holds, once, in time order, the last 200. */
+export function mergeSends(stored, incoming) {
+  const byId = new Map();
+  for (const x of [...(Array.isArray(stored) ? stored : []), ...(Array.isArray(incoming) ? incoming : [])]) {
+    if (!isObject(x) || typeof x.id !== "string" || !noteTime(x.at) || byId.has(x.id)) continue;
+    byId.set(x.id, x);
+  }
+  return [...byId.values()].sort((a, b) => a.at.localeCompare(b.at)).slice(-200);
 }
