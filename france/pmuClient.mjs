@@ -77,7 +77,10 @@ async function getJson(path, { retries = 4, timeoutMs = 30000 } = {}) {
         signal: controller.signal,
         headers: { accept: "application/json" },
       });
-      if (res.status === 404) return null; // no programme published for that date
+      // No programme published for that date. PMU says so with a 404 for a
+      // day long past and a 204 for one not yet out (Arc Sunday, read on the
+      // Thursday); reading the empty 204 as JSON threw and failed the date.
+      if (res.status === 404 || res.status === 204) return null;
       if (!res.ok) throw new HttpError(res.status, url);
       return await res.json();
     } catch (err) {

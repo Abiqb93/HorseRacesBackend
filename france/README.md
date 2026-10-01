@@ -148,7 +148,7 @@ own. Times are Europe/Paris, which is what the fixture list is published in.
 | every 30 min, 12:00–23:59 | Today, picking up results as they settle |
 | 01:15 daily | Yesterday, after everything has settled |
 | 02:00 daily | Reconcile the last seven days |
-| every 2 h, 07:00–21:00 | Declared cards for today and the next four days into `RacesAndEntries` |
+| every 2 h, 07:00–21:00 | Declared cards for today and the next four days into `RacesAndEntries` — PMU, with Sporting Life filling any meeting PMU has not published yet (`sportingLife.mjs`) |
 
 ## Layout
 

@@ -14551,7 +14551,8 @@ async function loadFrance() {
       import("./france/ingest.mjs"),
       import("./france/store.mjs"),
       import("./france/racecards.mjs"),
-    ]);
+      import("./france/sportingLife.mjs"),
+    ]).then(([i, st, rc, sl]) => [i, st, { ...rc, ...sl }]);
     _france = { ...ingest, ...store, ...racecards, store: new store.FranceStore() };
   }
   return _france;
@@ -14674,9 +14675,11 @@ app.post('/api/france/racecards/ingest', async (req, res) => {
     const france = await loadFrance();
     const results = [];
     for (const iso of dates) {
-      const rows = await france.fetchCardsForDate(iso, { log: (m) => console.log("[france:cards]", m) });
+      const { rows, fromSportingLife } = await france.fetchAllCardsForDate(iso, {
+        log: (m) => console.log("[france:cards]", m),
+      });
       const written = await france.store.writeRacecards(rows);
-      results.push({ date: iso, runners: rows.length, ...written });
+      results.push({ date: iso, runners: rows.length, fromSportingLife, ...written });
     }
     const runners = results.reduce((n, r) => n + r.inserted, 0);
     res.status(200).json({ ok: true, dates: dates.length, runners, results });
@@ -14986,12 +14989,18 @@ if (String(process.env.FRANCE_CRON || "").toLowerCase() === "on") {
   // 09:00 sat out of the Tracker for ten hours. Five days covers a Thursday
   // look at an Arc Sunday. Each pass replaces a date's French rows, so a
   // re-read also drops a withdrawn runner.
-  const cards = (f) => f.fetchCardsForDate
+  //
+  // A meeting PMU has not published yet is filled from Sporting Life, and PMU
+  // replaces it once it does (france/sportingLife.mjs).
+  const cards = (f) => f.fetchAllCardsForDate
     ? Promise.all([0, 1, 2, 3, 4].map(async (offset) => {
         const d = new Date();
         d.setUTCDate(d.getUTCDate() + offset);
         const iso = d.toISOString().slice(0, 10);
-        return f.store.writeRacecards(await f.fetchCardsForDate(iso));
+        const { rows } = await f.fetchAllCardsForDate(iso, {
+          log: (m) => console.log("[france:cards]", m),
+        });
+        return f.store.writeRacecards(rows);
       }))
     : null;
   cron.schedule("0 7-21/2 * * *", run("racecards", cards), paris);
