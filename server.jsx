@@ -8727,8 +8727,21 @@ app.delete("/api/mares/:userId/:id/foals/:foalId", async (req, res) => {
   }
 });
 
-app.get('/api/:tableName', (req, res) => {
+// The review-rules API registers its own GET routes further down this file.
+// Express tries routes in the order they are registered, so this catch-all
+// answered all three first with "Invalid table name." and they never ran: a
+// rule mode a user saved (Default only / Default + defined / Defined only)
+// could be written but never read back, so the Review List page and the daily
+// mail both fell back to "Default + defined" for everyone.
+const ROUTED_FURTHER_DOWN = new Set([
+  "review_conditions",
+  "review_rule_preferences",
+  "review_rules_health",
+]);
+
+app.get('/api/:tableName', (req, res, next) => {
   const { tableName } = req.params;
+  if (ROUTED_FURTHER_DOWN.has(tableName)) return next();
   const {
     page = 1,
     limit = 10,
