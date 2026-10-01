@@ -484,6 +484,29 @@ app.put("/api/hitsales/categories/:userId", express.json({ limit: "256kb" }), (r
   );
 });
 
+/**
+ * A lot's catalogue pedigree page, from the sale house, to be shown rather
+ * than saved: Tattersalls sends its pages as attachments and neither house
+ * sends CORS headers (hitsales/pedigreeRelay.mjs). Only the catalogue pages
+ * themselves are relayed: `?url=` must be one of them.
+ */
+const loadPedigreeRelay = () => import("./hitsales/pedigreeRelay.mjs");
+let pedigreeRelay = null;
+app.get("/api/hitsales/pedigree", async (req, res) => {
+  const mod = await loadPedigreeRelay();
+  const url = mod.pedigreeUrl(req.query.url);
+  if (!url) return res.status(400).json({ error: "Not a catalogue pedigree page: only Tattersalls' and Arqana's catalogue pages are relayed." });
+  pedigreeRelay ??= mod.createRelay();
+  try {
+    const page = await pedigreeRelay(url);
+    res.set(mod.inlineHeaders(url));
+    return res.send(page.body);
+  } catch (err) {
+    console.error("[hitsales] pedigree page not relayed:", url.href, err.message);
+    return res.status(err.status === 404 ? 404 : 502).json({ error: err.message });
+  }
+});
+
 
 // Minimal iCalendar (ICS) meeting request
 function buildICSInvite({
