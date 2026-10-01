@@ -138,5 +138,49 @@ export function mergeListNotes(stored, incoming, { now = new Date().toISOString(
   const list = { ...(isObject(incoming) ? incoming : {}), entries, lotNotes, lotNotesAt, notes: sale.text };
   if (sale.at) list.notesAt = sale.at;
   else delete list.notesAt;
+  // The desk's hand-set checks, by the notes' rule: the later setting of each
+  // wins, and one the save does not mention is kept.
+  const lotFlags = mergeLotFlags(stored?.lotFlags, incoming?.lotFlags);
+  if (Object.keys(lotFlags).length) list.lotFlags = lotFlags;
+  else delete list.lotFlags;
   return { list, changes };
+}
+
+/**
+ * The checks the desk sets by hand on a lot (the site's src/utils/hitChecks.js
+ * and hitLists.lotFlags): lot -> check -> { v, at }, where `v` is one of the
+ * five values the desk's sheets use or "" for a check cleared back to its
+ * rule. Merged like the notes: for each check the later `at` wins, and a
+ * check one copy does not mention is kept from the other. A page from before
+ * checks existed sends none, and so removes none.
+ */
+const FLAG_VALUES = new Set(["yes", "ok", "no", "q", "na", ""]);
+const FLAG_KEY = /^[A-Za-z][A-Za-z0-9]{0,39}$/;
+
+function flagsOf(raw) {
+  const out = new Map();
+  if (!isObject(raw)) return out;
+  for (const [k, checks] of Object.entries(raw)) {
+    const lot = lotKey(k);
+    if (lot === null || !isObject(checks)) continue;
+    for (const [key, f] of Object.entries(checks)) {
+      if (!FLAG_KEY.test(key) || !isObject(f)) continue;
+      const v = typeof f.v === "string" ? f.v : "";
+      const at = noteTime(f.at);
+      if (!FLAG_VALUES.has(v) || !at) continue;
+      out.set(`${lot}\u0000${key}`, { lot, key, v, at });
+    }
+  }
+  return out;
+}
+
+export function mergeLotFlags(stored, incoming) {
+  const merged = flagsOf(stored);
+  for (const [k, f] of flagsOf(incoming)) {
+    const old = merged.get(k);
+    if (!old || f.at > old.at) merged.set(k, f);
+  }
+  const out = {};
+  for (const { lot, key, v, at } of merged.values()) (out[lot] ||= {})[key] = { v, at };
+  return out;
 }

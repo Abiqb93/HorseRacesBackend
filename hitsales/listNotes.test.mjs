@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeListNotes, notesOf, carriesTimes } from "./listNotes.mjs";
+import { mergeListNotes, mergeLotFlags, notesOf, carriesTimes } from "./listNotes.mjs";
 
 const NOW = "2026-09-24T18:00:00.000Z";
 const T1 = "2026-09-24T10:00:00.000Z";
@@ -112,4 +112,28 @@ test("notes are read off entries where a list has no lotNotes, and times mark de
   assert.deepEqual([...n.entries()], [["6", { text: "apart", at: T1 }], ["4", { text: "on the entry", at: "" }], ["7", { text: "", at: T2 }]]);
   assert.equal(carriesTimes({ lotNotesAt: {} }), true);
   assert.equal(carriesTimes({ lotNotes: {} }), false);
+});
+
+test("checks set by hand merge by when each was set, and an old page removes none", () => {
+  const at = (h) => `2026-10-01T${String(h).padStart(2, "0")}:00:00.000Z`;
+  const stored = { entries: [], lotFlags: { 11: { gates: { v: "no", at: at(8) }, action: { v: "yes", at: at(8) } } } };
+  const incoming = { entries: [], lotNotesAt: {}, lotFlags: { 11: { gates: { v: "ok", at: at(9) } }, 12: { pedigree: { v: "q", at: at(9) } } } };
+  const { list } = mergeListNotes(stored, incoming, { now: at(9) });
+  assert.deepEqual(list.lotFlags, {
+    11: { gates: { v: "ok", at: at(9) }, action: { v: "yes", at: at(8) } },
+    12: { pedigree: { v: "q", at: at(9) } },
+  });
+  // an older setting does not undo a newer one
+  const stale = mergeListNotes(list, { entries: [], lotNotesAt: {}, lotFlags: { 11: { gates: { v: "no", at: at(7) } } } }, { now: at(9) });
+  assert.equal(stale.list.lotFlags[11].gates.v, "ok");
+  // a page from before checks existed sends none and removes none
+  const old = mergeListNotes(list, { entries: [] }, { now: at(9) });
+  assert.deepEqual(old.list.lotFlags, list.lotFlags);
+  // a cleared check is a setting like any other
+  const cleared = mergeListNotes(list, { entries: [], lotNotesAt: {}, lotFlags: { 11: { gates: { v: "", at: at(10) } } } }, { now: at(10) });
+  assert.deepEqual(cleared.list.lotFlags[11].gates, { v: "", at: at(10) });
+  // nonsense is not stored
+  assert.deepEqual(mergeLotFlags(null, { 11: { gates: { v: "maybe", at: at(9) } }, 12: { "no good": { v: "yes", at: at(9) } }, 13: { action: { v: "yes" } } }), {});
+  // and a list with no checks carries no empty map
+  assert.equal("lotFlags" in mergeListNotes(null, { entries: [] }, { now: at(9) }).list, false);
 });
