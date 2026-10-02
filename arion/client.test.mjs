@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   ArionError,
+  LOGIN_PAUSE_MS,
   REPORTS,
   asksForLogin,
   createClient,
@@ -17,20 +18,29 @@ import {
   pricedReports,
   printFrame,
   relayHtml,
+  showsLoggedIn,
 } from "./client.mjs";
 
 /* Pages shaped like Arion's (ASP.NET WebForms), written for the tests. */
 
 const hidden = (name, value = "") => `<input type="hidden" name="${name}" id="${name.replace(/\$/g, "_")}" value="${value}" />`;
 const STATE = [hidden("__EVENTTARGET"), hidden("__EVENTARGUMENT"), hidden("__VIEWSTATE", "vs1"), hidden("__EVENTVALIDATION", "ev1")].join("");
-const LOGIN_TOP = `<input name="ctl00$LoginTop$UserName" type="text" /><input name="ctl00$LoginTop$Password" type="password" /><input type="submit" name="ctl00$LoginTop$btnLoginDefault" value="" />`;
+// Every page's header: a login-status panel (empty when no one is logged in)
+// and a login box, which Arion may show even to someone logged in.
+const STATUS = (who = "") =>
+  `<div id="ctl00_ucArionLoginStatus_updArionLoginStatus">${who ? `<span>Welcome ${who}</span> <a id="ctl00_ucArionLoginStatus_lnkLogout" href="javascript:__doPostBack('ctl00$ucArionLoginStatus$lnkLogout','')">Logout</a>` : ""}</div>`;
+const LOGIN_TOP = `<table id="ctl00_LoginTop"><tr><td><div id="ctl00_LoginTop_pnlLogin" style="display:none;">
+  <input name="ctl00$LoginTop$UserName" type="text" /><input name="ctl00$LoginTop$Password" type="password" />
+  <div class="row error"><span id="ctl00_LoginTop_FailureText"></span></div>
+  <input type="submit" name="ctl00$LoginTop$btnLoginDefault" value="" /></div></td></tr></table>`;
+const HEADER = (who = "") => `${who ? "" : `<a id="ctl00_btnLogin" href="javascript:__doPostBack('ctl00$btnLogin','')">Login</a>`}${STATUS(who)}${LOGIN_TOP}`;
 const PRICES = `
   <table><tr><td class="name"><span class='childProduct'>WI style</span></td><td class="detail">Inglis</td><td class="cost">40</td></tr>
   <tr><td class="name"><span class='childProduct'>Standard pedigree</span></td><td class="detail">Std</td><td class="cost">36</td></tr>
   <tr><td class="name"><span class='childProduct'>4x4</span></td><td class="detail">Grid</td><td class="cost">1</td></tr></table>`;
 const reportsPage = ({ loggedIn = true, extra = "", menu = "PED01|I#3S_a" } = {}) => `<!DOCTYPE html><html><head><title>Arion</title></head><body>
 <form method="post" action="PedigreeReports.aspx" id="aspnetForm">${STATE}
-${loggedIn ? '<a href="/Logout.aspx">Logout</a>' : LOGIN_TOP}
+${HEADER(loggedIn ? "Desk" : "")}
 ${hidden("ctl00$MainContentArea$hiddenMenuItemId", menu)}
 <input name="ctl00$MainContentArea$txtNamedHorse" type="text" />
 <input type="submit" name="ctl00$MainContentArea$btnSearchNamedHorseDefault" value="" />
@@ -60,12 +70,23 @@ const FILLED_TAB = `<div id="ctl00_MainContentArea_tabbedReport_tabs_TabHorseRep
   ${hidden("ctl00$MainContentArea$tabbedReport$tabs$TabHorseReport1$ctl01$ucArionReportContainerControl1$hdnReportFileName", "r1.pdf")}
   <iframe id="ctl00_MainContentArea_tabbedReport_tabs_TabHorseReport1_ctl01_reportFrame1" src="https://evil.example/x.pdf"></iframe>
 </div>`;
-const LOGIN_PAGE = (failure = "") => `<html><body><form method="post" action="Login.aspx?ReturnUrl=%2fPedigreeReports%2fPedigreeReports.aspx" id="aspnetForm">${STATE}
-${LOGIN_TOP}
-<input name="ctl00$MainContentArea$lvLogin$Login1$UserName" type="text" />
+// Arion's login page as it is: the header (whose empty failure box comes
+// first), then the page's own form, which asks for an email address and is
+// sent by its Log In link; the error line is plain text in a div.
+const LOGIN_PAGE = (failure = "", { emailShown = false } = {}) => `<html><body><form method="post" action="Login.aspx?ReturnUrl=%2fPedigreeReports%2fPedigreeReports.aspx" id="aspnetForm">${STATE}
+${HEADER()}
+<table id="ctl00_MainContentArea_lvLogin_Login1" class="loginCtl"><tr><td><div id="ctl00_MainContentArea_lvLogin_Login1_pnlLoginPage">
+<label for="ctl00_MainContentArea_lvLogin_Login1_UserName">Email Address:</label>
+<input name="ctl00$MainContentArea$lvLogin$Login1$UserName" type="text" maxlength="256" />
+<span id="ctl00_MainContentArea_lvLogin_Login1_UserNameRequired" title="User Name is required." style="color:Red;visibility:hidden;">*</span>
+<span id="ctl00_MainContentArea_lvLogin_Login1_revEmailAddress" style="color:Red;${emailShown ? "" : "display:none;"}">Invalid Email Address</span>
 <input name="ctl00$MainContentArea$lvLogin$Login1$Password" type="password" />
-<input type="submit" name="ctl00$MainContentArea$lvLogin$Login1$btnLoginDefault" value="" />
-${failure ? `<span id="ctl00_MainContentArea_lvLogin_Login1_FailureText">${failure}</span>` : ""}
+<span id="ctl00_MainContentArea_lvLogin_Login1_PasswordRequired" title="Password is required." style="color:Red;visibility:hidden;">*</span>
+<input id="ctl00_MainContentArea_lvLogin_Login1_RememberMe" type="checkbox" name="ctl00$MainContentArea$lvLogin$Login1$RememberMe" />
+<div class="p error">${failure}</div>
+<a id="ctl00_MainContentArea_lvLogin_Login1_LoginButton" href="javascript:WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions(&quot;ctl00$MainContentArea$lvLogin$Login1$LoginButton&quot;, &quot;&quot;, true, &quot;Login1&quot;, &quot;&quot;, false, true))">Log In</a>
+<input type="submit" name="ctl00$MainContentArea$lvLogin$Login1$btnLoginDefault" value="" style="display:none" />
+</div></td></tr></table>
 </form></body></html>`;
 
 /* ------------------------------------------------------------ the parsers */
@@ -130,6 +151,16 @@ test("login, refusal and Cloudflare are told apart", () => {
   assert.equal(isChallenge(200, "<title>Just a moment...</title>"), false);
 });
 
+test("the header's login box is no prompt when someone is shown logged in; the form's reason is found behind the header's empty one", () => {
+  assert.equal(showsLoggedIn(reportsPage()), true);
+  assert.equal(showsLoggedIn(reportsPage({ loggedIn: false })), false);
+  assert.equal(showsLoggedIn(LOGIN_PAGE()), false);
+  assert.equal(asksForLogin(LOGIN_PAGE()), true);
+  assert.equal(loginFailure(LOGIN_PAGE()), null, "nothing is said before a try");
+  assert.equal(loginFailure(LOGIN_PAGE("Your login attempt was not successful. Please try again.")), "Your login attempt was not successful. Please try again.");
+  assert.equal(loginFailure(LOGIN_PAGE("", { emailShown: true })), "Invalid Email Address", "Arion's own email check");
+});
+
 test("the print page is followed to its report; relayed HTML keeps Arion's addresses and loses its scripts", () => {
   assert.equal(printFrame('<iframe id="printingFrame" onload="x()" src="/Reports/Temp/r1.pdf"></iframe>'), "/Reports/Temp/r1.pdf");
   assert.equal(printFrame('<iframe id="printingFrame" src=""></iframe>'), null);
@@ -149,7 +180,7 @@ test("a page's shape for checking, with no values and no password field", () => 
 
 /* ------------------------------------------------------------ the flow, against a stand-in Arion */
 
-function fakeArion({ password = "s3cret", menuNeedsConfirm = true } = {}) {
+function fakeArion({ password = "s3cret", menuNeedsConfirm = true, staysAnonymous = false } = {}) {
   const calls = [];
   let sessionOk = false;
   let expireOnce = false;
@@ -161,12 +192,15 @@ function fakeArion({ password = "s3cret", menuNeedsConfirm = true } = {}) {
     calls.push({ method: init.method ?? "GET", path: u.pathname + u.search, form, cookie });
     if (u.pathname === "/Login.aspx" && !form) return res(200, LOGIN_PAGE(), { "set-cookie": "ASP.NET_SessionId=abc; path=/; HttpOnly" });
     if (u.pathname === "/Login.aspx" && form) {
-      if (form["ctl00$MainContentArea$lvLogin$Login1$Password"] !== password) return res(200, LOGIN_PAGE("Your login attempt was not successful."));
+      // only the Log In link logs in, and the page's email check runs first
+      if (form.__EVENTTARGET !== "ctl00$MainContentArea$lvLogin$Login1$LoginButton") return res(200, LOGIN_PAGE());
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(form["ctl00$MainContentArea$lvLogin$Login1$UserName"] ?? "")) return res(200, LOGIN_PAGE("", { emailShown: true }));
+      if (form["ctl00$MainContentArea$lvLogin$Login1$Password"] !== password) return res(200, LOGIN_PAGE("Your login attempt was not successful. Please try again."));
       sessionOk = true;
       return res(302, "", { location: "/PedigreeReports/PedigreeReports.aspx", "set-cookie": ".ASPXAUTH=tok; path=/; HttpOnly" });
     }
     if (u.pathname === "/PedigreeReports/PedigreeReports.aspx") {
-      if (!sessionOk || !/\.ASPXAUTH=tok/.test(cookie)) return res(200, reportsPage({ loggedIn: false }));
+      if (!sessionOk || !/\.ASPXAUTH=tok/.test(cookie) || staysAnonymous) return res(200, reportsPage({ loggedIn: false }));
       if (expireOnce) {
         expireOnce = false;
         sessionOk = false;
@@ -288,4 +322,78 @@ test("a session that has timed out is logged in again, once", async () => {
   const found = await c.search({ name: "Frankel" });
   assert.equal(found.candidates.length, 2);
   assert.equal(arion.calls.filter((x) => x.path.startsWith("/Login.aspx") && x.form).length, 2);
+});
+
+const loginPosts = (arion) => arion.calls.filter((x) => x.path.startsWith("/Login.aspx") && x.form);
+
+test("the login is what a person does: the email address, the password, and Log In pressed", async () => {
+  const arion = fakeArion();
+  const c = createClient({ fetch: arion.fetch, env: { ...ENV, ARION_USERNAME: "  desk@example.com " } });
+  await c.check();
+  const [post] = loginPosts(arion);
+  assert.equal(post.path, "/Login.aspx?ReturnUrl=%2fPedigreeReports%2fPedigreeReports.aspx", "posted where the page's form posts");
+  assert.equal(post.form.__EVENTTARGET, "ctl00$MainContentArea$lvLogin$Login1$LoginButton");
+  assert.equal(post.form.__EVENTARGUMENT, "");
+  assert.equal("ctl00$MainContentArea$lvLogin$Login1$btnLoginDefault" in post.form, false, "Log In is pressed, not the hidden Enter button");
+  assert.equal(post.form["ctl00$MainContentArea$lvLogin$Login1$UserName"], "desk@example.com", "spaces around the address are dropped");
+  assert.equal(post.form["ctl00$LoginTop$Password"], "", "the header's box goes empty, as a browser sends it");
+  assert.equal(c.status().loggedIn, true, "logged in, though the header still carries its login box");
+});
+
+test("Arion's reason for a refusal is passed on, and the login then waits, so retries cannot lock the account", async () => {
+  let t = Date.parse("2026-10-02T14:00:00Z");
+  const arion = fakeArion({ password: "other" });
+  const c = createClient({ fetch: arion.fetch, env: ENV, now: () => t });
+  await assert.rejects(
+    c.search({ name: "Frankel" }),
+    (e) => e.code === "login" && e.status === 401 && /"Your login attempt was not successful\. Please try again\."/.test(e.message) && /until 14:15 UTC/.test(e.message),
+  );
+  assert.equal(loginPosts(arion).length, 1);
+  assert.equal(c.status().loginPausedUntil, "2026-10-02T14:15:00.000Z");
+  t += 5 * 60 * 1000;
+  await assert.rejects(c.search({ name: "Frankel" }), (e) => e.code === "login" && /not successful/.test(e.message) && /until 14:15 UTC/.test(e.message));
+  await assert.rejects(c.check(), (e) => e.code === "login");
+  assert.equal(loginPosts(arion).length, 1, "nothing goes to Arion while the login waits");
+  t += LOGIN_PAUSE_MS;
+  assert.equal(c.status().loginPausedUntil, null);
+  await assert.rejects(c.search({ name: "Frankel" }), (e) => e.code === "login");
+  assert.equal(loginPosts(arion).length, 2, "after the wait, one more try");
+});
+
+test("a username that is not an email address is not sent: Arion logs in by email", async () => {
+  for (const [ARION_USERNAME, said] of [["desk", /email address/], ['"desk@example.com"', /quotes/]]) {
+    const arion = fakeArion();
+    const c = createClient({ fetch: arion.fetch, env: { ...ENV, ARION_USERNAME } });
+    await assert.rejects(c.search({ name: "Frankel" }), (e) => e.code === "login" && said.test(e.message) && /Nothing was sent/.test(e.message));
+    assert.equal(arion.calls.length, 0);
+  }
+});
+
+test("a password with a stray space is pointed out, and never shown", async () => {
+  const arion = fakeArion();
+  const c = createClient({ fetch: arion.fetch, env: { ...ENV, ARION_PASSWORD: "s3cret " } });
+  await assert.rejects(c.search({ name: "Frankel" }), (e) => e.code === "login" && /begins or ends with a space/.test(e.message) && !e.message.includes("s3cret"));
+});
+
+test("a login Arion takes, on a page that still shows no one logged in, is told apart from a refusal", async () => {
+  const arion = fakeArion({ staysAnonymous: true });
+  const c = createClient({ fetch: arion.fetch, env: ENV });
+  await assert.rejects(
+    c.search({ name: "Frankel" }),
+    (e) => e.code === "login-shape" && e.status === 502 && /took the login \(it went on to \/PedigreeReports\/PedigreeReports\.aspx\)/.test(e.message),
+  );
+  assert.equal(loginPosts(arion).length, 1, "logged in once, not again on the spot");
+  assert.equal(c.status().loginPausedUntil, null, "not a refusal, so no wait");
+});
+
+test("diagnose says why a login failed and what the page held, with no values", async () => {
+  const arion = fakeArion({ password: "other" });
+  const d = await createClient({ fetch: arion.fetch, env: ENV }).diagnose({ name: "" });
+  assert.equal(d.login.ok, false);
+  assert.equal(d.login.code, "login");
+  assert.equal(d.login.page.loginForm, true);
+  assert.match(d.login.page.text, /not successful/);
+  assert.ok(!JSON.stringify(d).includes("s3cret") && !JSON.stringify(d).includes("vs1"));
+  const ok = await createClient({ fetch: fakeArion().fetch, env: ENV }).diagnose({ name: "" });
+  assert.deepEqual(ok.login, { ok: true, landed: "/PedigreeReports/PedigreeReports.aspx" });
 });
