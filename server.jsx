@@ -4176,6 +4176,61 @@ function filterHorsesStillOwnedBy(owner, names, cb) {
   }
 }
 
+// APIData_Table2 is refreshed once a day, so an owner's horses hold for half an
+// hour: one visit reads them for the Tracker, the Dashboard and My Owners, and
+// Godolphin's 2,300 take seconds to check. Callers asking while a check is
+// running wait for that one.
+const OWNED_NOW_TTL_MS = 30 * 60 * 1000;
+const ownedNowCache = new Map();
+
+/**
+ * Every horse `owner` owns now: each horse with a run under the owner's name
+ * whose most recent owner-bearing run still names them, alphabetically.
+ *
+ * This is what owner tracking means -- all three Track Owner buttons on the
+ * site save the owner's whole list -- and it is read fresh rather than off the
+ * saved snapshot, which could only ever lose horses. Earth Shot ran for Paul &
+ * Sally Flatt until May 2026 and for Wathnan Racing from June; richardbrown1's
+ * Wathnan Racing list, saved in February, never had her or 64 others Wathnan
+ * has had runners with since, and their entries never reached his Tracker.
+ */
+function horsesOwnedNow(owner, cb) {
+  const who = String(owner || "").trim();
+  if (!who) return cb(null, []);
+
+  // Owner names compare without case in the database, so they share a key.
+  const key = who.toUpperCase();
+  const hit = ownedNowCache.get(key);
+  if (hit && Date.now() - hit.at < OWNED_NOW_TTL_MS) {
+    if (hit.waiting) return hit.waiting.push(cb);
+    return cb(null, hit.kept.slice());
+  }
+
+  const entry = { at: Date.now(), waiting: [cb], kept: null };
+  ownedNowCache.set(key, entry);
+  const done = (err, kept) => {
+    const waiting = entry.waiting;
+    entry.waiting = null;
+    if (err) {
+      if (ownedNowCache.get(key) === entry) ownedNowCache.delete(key);
+    } else {
+      entry.kept = kept;
+    }
+    for (const fn of waiting) fn(err || null, err ? undefined : kept.slice());
+  };
+
+  // Every horse this owner has ever had a runner with: an indexed lookup, and
+  // a superset of what they hold now, which the latest-run check narrows.
+  db.query(`SELECT DISTINCT horseName FROM APIData_Table2 WHERE ownerFullName = ?`, [who], (err, rows) => {
+    if (err) return done(err);
+    const names = (rows || []).map((r) => r.horseName).filter(Boolean);
+    filterHorsesStillOwnedBy(who, names, (fErr, kept) => {
+      if (fErr) return done(fErr);
+      done(null, kept.slice().sort((a, b) => String(a).localeCompare(String(b))));
+    });
+  });
+}
+
 app.get("/api/owner_tracking", (req, res) => {
   const { user } = req.query;
 
@@ -4191,38 +4246,38 @@ app.get("/api/owner_tracking", (req, res) => {
       return res.status(500).json({ error: "Database error" });
     }
 
-    // Sieve each stored list against who owns those horses now. This only ever
-    // removes -- a horse the owner has bought since is not on the snapshot to
-    // find -- so re-tracking is still what picks new stock up. Removing is the
-    // half that was showing people other owners' runners.
-    const rows = await Promise.all(
-      (results || []).map(
-        (row) =>
-          new Promise((resolve) => {
-            let stored = [];
-            try {
-              stored = JSON.parse(row.correspondingHorses || "[]");
-            } catch {
-              stored = [];
-            }
-            if (!Array.isArray(stored) || !stored.length) return resolve(row);
+    // Each owner's horses as they are now (horsesOwnedNow). The saved list is
+    // kept only to count what has come and gone since it was taken.
+    const ownedNow = (owner) =>
+      new Promise((resolve) => horsesOwnedNow(owner, (oErr, kept) => resolve(oErr ? { error: oErr } : { kept })));
 
-            filterHorsesStillOwnedBy(row.ownerFullName, stored, (fErr, kept) => {
-              if (fErr) {
-                // A failed check must not empty somebody's tracker: serve the
-                // stored list and say so in the log.
-                console.error("owner_tracking: ownership check failed:", fErr.message);
-                return resolve(row);
-              }
-              resolve({
-                ...row,
-                correspondingHorses: JSON.stringify(kept),
-                storedHorseCount: stored.length,
-                droppedHorseCount: stored.length - kept.length,
-              });
-            });
-          }),
-      ),
+    const rows = await Promise.all(
+      (results || []).map(async (row) => {
+        let stored = [];
+        try {
+          stored = JSON.parse(row.correspondingHorses || "[]");
+        } catch {
+          stored = [];
+        }
+        if (!Array.isArray(stored)) stored = [];
+
+        const { kept, error } = await ownedNow(row.ownerFullName);
+        if (error) {
+          // A failed check must not empty somebody's tracker: serve the
+          // stored list and say so in the log.
+          console.error("owner_tracking: ownership check failed:", error.message);
+          return row;
+        }
+        const was = new Set(stored.map((n) => String(n || "").trim().toUpperCase()));
+        const now = new Set(kept.map((n) => String(n).toUpperCase()));
+        return {
+          ...row,
+          correspondingHorses: JSON.stringify(kept),
+          storedHorseCount: stored.length,
+          droppedHorseCount: [...was].filter((n) => n && !now.has(n)).length,
+          addedHorseCount: [...now].filter((n) => !was.has(n)).length,
+        };
+      }),
     );
 
     res.status(200).json({ data: rows });
@@ -4337,49 +4392,31 @@ app.get("/api/timeform/owner", (req, res) => {
     return res.status(400).json({ error: "ownerFullName is required" });
   }
 
-  // Two steps, because one query over the whole table would scan millions of
-  // rows. First every horse this owner has ever had a runner with -- an
-  // indexed lookup, and a superset of what they hold now. Then, of those, the
-  // ones whose most recent owner-bearing run still names them.
-  //
   // timeform_latest_by_horse used to answer this on its own and is stale:
   // it had Fortification and Underwriter under Wathnan Racing months after
   // both had moved on, which is how they ended up on a tracker. Nothing in
-  // this repository maintains it.
+  // this repository maintains it. horsesOwnedNow reads the runs instead.
   const owner = String(ownerFullName).trim();
-  const candidates = `SELECT DISTINCT horseName FROM APIData_Table2 WHERE ownerFullName = ?`;
 
-  db.query(candidates, [owner], (err, rows) => {
+  horsesOwnedNow(owner, (err, kept) => {
     if (err) {
       console.error("Error fetching horses by owner:", err);
       return res.status(500).json({ error: "Database error" });
     }
+    if (!kept.length) return res.status(200).json({ count: 0, data: [] });
 
-    const names = (rows || []).map((r) => r.horseName).filter(Boolean);
-    if (!names.length) return res.status(200).json({ count: 0, data: [] });
-
-    filterHorsesStillOwnedBy(owner, names, (fErr, kept) => {
-      if (fErr) {
-        console.error("Error narrowing horses to current owner:", fErr);
-        return res.status(500).json({ error: "Database error" });
-      }
-
-      // The silk is cosmetic and the stale table is still the only place it
-      // lives, so it is looked up separately and its absence is not an error.
-      const silks = `SELECT horseName, silkCode FROM timeform_latest_by_horse WHERE horseName IN (${kept.map(() => "?").join(", ") || "NULL"})`;
-      db.query(kept.length ? silks : "SELECT 1 WHERE 0", kept, (sErr, silkRows) => {
-        const silkByName = new Map(
-          (sErr ? [] : silkRows || []).map((r) => [String(r.horseName || "").toUpperCase(), r.silkCode]),
-        );
-        const data = kept
-          .slice()
-          .sort((a, b) => String(a).localeCompare(String(b)))
-          .map((horseName) => ({
-            horseName,
-            silkCode: silkByName.get(String(horseName).toUpperCase()) ?? null,
-          }));
-        res.status(200).json({ count: data.length, data });
-      });
+    // The silk is cosmetic and the stale table is still the only place it
+    // lives, so it is looked up separately and its absence is not an error.
+    const silks = `SELECT horseName, silkCode FROM timeform_latest_by_horse WHERE horseName IN (${kept.map(() => "?").join(", ")})`;
+    db.query(silks, kept, (sErr, silkRows) => {
+      const silkByName = new Map(
+        (sErr ? [] : silkRows || []).map((r) => [String(r.horseName || "").toUpperCase(), r.silkCode]),
+      );
+      const data = kept.map((horseName) => ({
+        horseName,
+        silkCode: silkByName.get(String(horseName).toUpperCase()) ?? null,
+      }));
+      res.status(200).json({ count: data.length, data });
     });
   });
 });
