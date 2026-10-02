@@ -16,6 +16,13 @@
  * in a new tab instead. The password goes to Arion and nowhere else: it is
  * never logged, never returned, and no error message carries it.
  *
+ * ARION_USERNAME is the account's email address: Arion's login form asks for
+ * "Email Address" and checks it is one, so anything else is not sent. The
+ * login is what a person does on Arion's login page: fill both boxes and
+ * press Log In. Arion then sends the browser on; refused, it shows the form
+ * again with its reason, and the next try waits LOGIN_PAUSE_MS (15 minutes),
+ * so a wrong password cannot be retried until Arion locks the account.
+ *
  * ## How Arion works, and so how this does
  *
  * Arion is an ASP.NET WebForms site. A page is one form, and every button
@@ -32,8 +39,9 @@
  *     first answer sets (a 302 back to the same page, to see cookies work).
  *   - One step at a time. Each step posts back the page state the last one
  *     left, so two people's searches must not interleave.
- *   - A session that has timed out shows as the login form where the report
- *     page should be: the client logs in again and repeats the step, once.
+ *   - A session that has timed out shows as the header's login box, with no
+ *     one shown logged in, where the report page should be: the client logs
+ *     in again and repeats the step, once.
  *
  * ## What costs money
  *
@@ -102,10 +110,20 @@ export const SEARCHES = {
 
 const MENU_FIELD = "ctl00$MainContentArea$hiddenMenuItemId";
 const LOGIN_FIELDS = {
+  // Arion logs in with the account's email address ("Email Address:", checked
+  // by the page's own email validator)
   user: "ctl00$MainContentArea$lvLogin$Login1$UserName",
   password: "ctl00$MainContentArea$lvLogin$Login1$Password",
+  // the "Log In" a person presses: a link that posts the form back
+  link: "ctl00$MainContentArea$lvLogin$Login1$LoginButton",
+  // the hidden submit that Enter presses, for a page without the link
   button: "ctl00$MainContentArea$lvLogin$Login1$btnLoginDefault",
 };
+/** After Arion refuses the login, this long before it is tried again: repeated
+ * refusals can lock the account. A redeploy (as changing the variables on
+ * Railway does) starts afresh at once. */
+export const LOGIN_PAUSE_MS = 15 * 60 * 1000;
+const looksLikeEmail = (s) => /^[^\s@"']+@[^\s@"']+\.[^\s@"']+$/.test(s);
 
 export class ArionError extends Error {
   constructor(message, { status = 502, code = "arion" } = {}) {
@@ -189,14 +207,73 @@ export function buttonValue(html, name) {
   return null;
 }
 
-/** Whether the page asks for a password: logged out, or the login was refused. */
-export const asksForLogin = (html) => /type\s*=\s*["']?password/i.test(String(html ?? "")) && /\$Password["']/i.test(String(html ?? ""));
+/** What an element holds, by its id: the markup between its tags, nested ones included. */
+export function innerOf(html, id) {
+  const s = String(html ?? "");
+  const safe = String(id).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const open = s.match(new RegExp(`<(div|span|table|td|p)\\b[^>]*\\bid\\s*=\\s*["']${safe}["'][^>]*>`, "i"));
+  if (!open) return null;
+  const start = open.index + open[0].length;
+  const re = new RegExp(`<(/?)${open[1]}\\b[^>]*>`, "gi");
+  re.lastIndex = start;
+  let depth = 1;
+  for (let m = re.exec(s); m; m = re.exec(s)) {
+    depth += m[1] ? -1 : 1;
+    if (depth === 0) return s.slice(start, m.index);
+  }
+  return s.slice(start);
+}
 
-/** The message Arion gives a refused login, if any. */
+/** The login page's own form (Login.aspx), as opposed to the box every page's header carries. */
+const LOGIN_PAGE_FORM = /\$Login1\$Password["']/;
+
+/**
+ * Whether a page shows someone logged in: a way to log out, or the header's
+ * login-status panel with something in it. Logged out, Arion leaves that panel
+ * empty and offers only the header's login box.
+ */
+export function showsLoggedIn(html) {
+  const s = String(html ?? "");
+  if (/<a\b[^>]*>\s*(?:<[^>]+>\s*)*(?:log\s*-?\s*out|sign\s*-?\s*out|log\s*-?\s*off)\b/i.test(s)) return true;
+  if (/href\s*=\s*["'][^"']*\blog-?(?:out|off)\b[^"']*["']/i.test(s)) return true;
+  return [...s.matchAll(/\bid\s*=\s*["']([^"']*LoginStatus[^"']*)["']/gi)].some((m) => {
+    const t = textOf(innerOf(s, m[1]) ?? "");
+    return t && !/^log\s*-?\s*in\.?$/i.test(t);
+  });
+}
+
+/**
+ * Whether the page asks for a password: the login page's form (logged out, or
+ * the login refused), or the header's login box on a page that shows no one
+ * logged in. The header box alone is not enough: it may be on every page.
+ */
+export function asksForLogin(html) {
+  const s = String(html ?? "");
+  if (!(/type\s*=\s*["']?password/i.test(s) && /\$Password["']/i.test(s))) return false;
+  if (LOGIN_PAGE_FORM.test(s)) return true;
+  return !showsLoggedIn(s);
+}
+
+/**
+ * The message Arion gives a refused login, if any: a failure text with
+ * something in it (the header's box has one too, empty, ahead of the form's),
+ * the login form's error line, or a validator it shows (the email check).
+ */
 export function loginFailure(html) {
-  const m = String(html ?? "").match(/<[^>]+id="[^"]*FailureText[^"]*"[^>]*>([\s\S]*?)<\//i);
-  const t = m ? textOf(m[1]) : "";
-  return t || null;
+  const s = String(html ?? "");
+  const scope = innerOf(s, "ctl00_MainContentArea_lvLogin_Login1") ?? s;
+  const said = [];
+  for (const m of s.matchAll(/\bid\s*=\s*["']([^"']*FailureText[^"']*)["']/gi)) said.push(textOf(innerOf(s, m[1]) ?? ""));
+  for (const m of scope.matchAll(/<div\b[^>]*class\s*=\s*["'][^"']*\berror\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi)) said.push(textOf(m[1]));
+  for (const m of scope.matchAll(/<span\b([^>]*)>([\s\S]*?)<\/span>/gi)) {
+    const a = attrs(`<span ${m[1]}>`);
+    const style = String(a.style ?? "").replace(/\s+/g, "").toLowerCase();
+    if (!/color:red/.test(style) || /visibility:hidden|display:none/.test(style)) continue;
+    const t = textOf(m[2]);
+    said.push(t && t !== "*" ? t : a.title ?? "");
+  }
+  const out = [...new Set(said.map((t) => t.trim()).filter(Boolean))];
+  return out.length ? out.join(" ").slice(0, 300) : null;
 }
 
 /** A Cloudflare challenge rather than Arion's page. */
@@ -441,6 +518,8 @@ export const RELAY_HTML_HEADERS = {
 export function createClient({ fetch: doFetch = globalThis.fetch, env = process.env, now = () => Date.now(), log = () => {} } = {}) {
   const jar = new Jar();
   let loggedInAt = 0;
+  let landed = null; // where the last login went on to
+  let refused = null; // { at, message, page }: the last refusal, which pauses the next try
   let queue = Promise.resolve();
   const picks = new Map(); // token -> { search, choice, at }
   const files = new Map(); // id -> { url, label, at }
@@ -503,37 +582,95 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
     throw new ArionError("Arion kept redirecting", { code: "redirect" });
   }
 
+  const clock = (t) => `${new Date(t).toISOString().slice(11, 16)} UTC`;
+  const pausedUntil = () => (refused && now() - refused.at < LOGIN_PAUSE_MS ? refused.at + LOGIN_PAUSE_MS : null);
+  const loginError = (message, { status = 401, code = "login", page = null } = {}) => Object.assign(new ArionError(message, { status, code }), { page });
+
+  /** What is wrong with the username as set, if it can be seen without asking Arion. */
+  const userProblem = (user) => {
+    if (/^["'].*["']$/.test(user)) return "ARION_USERNAME on the server is wrapped in quotes; enter the address without them";
+    if (!looksLikeEmail(user)) return "Arion logs in with the account's email address, and ARION_USERNAME on the server is not one";
+    return null;
+  };
+  /** What may be wrong with the password as set: never the password itself. */
+  const passwordHints = () => {
+    const p = String(env.ARION_PASSWORD ?? "");
+    const hints = [];
+    if (p !== p.trim()) hints.push("the password set on the server begins or ends with a space");
+    if (/^(["']).+\1$/.test(p.trim())) hints.push("the password set on the server is wrapped in quotes");
+    return hints;
+  };
+
+  /**
+   * Log in as a person does on Arion's login page: fill the email address and
+   * password and press Log In. Arion then sends the browser on (to the page
+   * the login was asked for); refused, it shows the login form again, with its
+   * reason. A refusal pauses the next try for LOGIN_PAUSE_MS.
+   */
   async function login() {
     if (!configured()) throw new ArionError("Arion is not set up: ARION_USERNAME and ARION_PASSWORD are not set on the server.", { status: 503, code: "unconfigured" });
+    const user = String(env.ARION_USERNAME).trim();
+    const problem = userProblem(user);
+    if (problem) throw loginError(`${problem}. Nothing was sent to Arion.`);
+    if (pausedUntil()) {
+      throw loginError(`${refused.message} Not trying again until ${clock(pausedUntil())}, so repeated tries cannot lock the account; a redeploy, as changing the variables on Railway does, allows a try at once.`, { page: refused.page });
+    }
     jar.clear();
     loggedInAt = 0;
-    const path = `${LOGIN_PATH}?ReturnUrl=${encodeURIComponent(REPORTS_PATH)}`;
-    const page = await request(path);
-    const { fields } = parseForm(page.html);
+    landed = null;
+    const page = await request(`${LOGIN_PATH}?ReturnUrl=${encodeURIComponent(REPORTS_PATH)}`);
+    const { action, fields } = parseForm(page.html);
+    const link = postbacks(page.html).some((p) => p.target === LOGIN_FIELDS.link);
+    const button = buttonValue(page.html, LOGIN_FIELDS.button);
+    if (!(LOGIN_FIELDS.user in fields) || !(LOGIN_FIELDS.password in fields) || !(link || button !== null)) {
+      throw loginError("Arion's login page is not the shape this client knows, so the login was not sent. Turn on ARION_DIAGNOSE and open /api/arion/diagnose to see it.", {
+        status: 502,
+        code: "login-shape",
+        page: describePage(page.html),
+      });
+    }
     const form = {
       ...fields,
-      [LOGIN_FIELDS.user]: env.ARION_USERNAME,
+      [LOGIN_FIELDS.user]: user,
       [LOGIN_FIELDS.password]: env.ARION_PASSWORD,
-      [LOGIN_FIELDS.button]: buttonValue(page.html, LOGIN_FIELDS.button) ?? "Login",
+      ...(link ? { __EVENTTARGET: LOGIN_FIELDS.link, __EVENTARGUMENT: "" } : { [LOGIN_FIELDS.button]: button }),
     };
-    const after = await request(path, { form });
-    if (asksForLogin(after.html)) {
+    const after = await request(action ? new URL(action, page.url).href : page.url, { form });
+    const where = new URL(after.url).pathname;
+    if (where.toLowerCase() === LOGIN_PATH.toLowerCase() && LOGIN_PAGE_FORM.test(after.html)) {
       const why = loginFailure(after.html);
-      throw new ArionError(`Arion refused the login${why ? `: ${why}` : ""}. Check ARION_USERNAME and ARION_PASSWORD on the server.`, { status: 401, code: "login" });
+      const hints = passwordHints();
+      const message = `Arion refused the login${why ? `: "${why}"` : ", without saying why"}. Check ARION_USERNAME (the account's email address) and ARION_PASSWORD on the server${hints.length ? `: ${hints.join(", and ")}` : ""}.`;
+      refused = { at: now(), message, page: describePage(after.html) };
+      log(`[arion] login refused${why ? `: ${why}` : ", no reason shown"}`);
+      throw loginError(`${message} Not trying again until ${clock(pausedUntil())}, so repeated tries cannot lock the account.`, { page: refused.page });
     }
+    refused = null;
+    landed = where;
     loggedInAt = now();
-    log("[arion] logged in");
+    log(`[arion] logged in (Arion went on to ${where})`);
     return after;
   }
 
-  /** The report page, logged in: logs in when it must, once. */
+  /** The report page, logged in: logs in when it must, at most once. */
   async function reportPage() {
-    if (!loggedInAt) await login();
-    let page = await request(REPORTS_PATH);
-    if (asksForLogin(page.html)) {
+    let fresh = false;
+    if (!loggedInAt) {
       await login();
+      fresh = true;
+    }
+    let page = await request(REPORTS_PATH);
+    if (asksForLogin(page.html) && !fresh) {
+      await login();
+      fresh = true;
       page = await request(REPORTS_PATH);
-      if (asksForLogin(page.html)) throw new ArionError("Arion keeps asking for the login", { status: 401, code: "login" });
+    }
+    if (asksForLogin(page.html)) {
+      loggedInAt = 0;
+      throw loginError(
+        `Arion took the login (it went on to ${landed ?? "another page"}), but its Pedigree Reports page still shows the login box, so this client cannot tell it is logged in. Turn on ARION_DIAGNOSE and open /api/arion/diagnose to see the page.`,
+        { status: 502, code: "login-shape", page: describePage(page.html) },
+      );
     }
     reports = pricedReports(page.html);
     return page;
@@ -576,6 +713,7 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
       return {
         configured: configured(),
         loggedIn: Boolean(loggedInAt),
+        loginPausedUntil: pausedUntil() ? new Date(pausedUntil()).toISOString() : null,
         reports,
         dailyLimit: LIMIT,
         usedToday: day.date === today() ? day.count : 0,
@@ -722,11 +860,20 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
         return { ...got, label: f.label };
       }),
 
-    /** The live pages' shape, for checking the parsers (names, never values). */
+    /**
+     * The live pages' shape, for checking the parsers (names, never values).
+     * A login that fails says why, with the shape of the page it ended on.
+     */
     diagnose: ({ name = "Frankel" } = {}) =>
       serial(async () => {
-        const page = await reportPage();
-        const out = { reportsPage: describePage(page.html) };
+        let page;
+        try {
+          page = await reportPage();
+        } catch (err) {
+          if (!/^login/.test(err.code ?? "")) throw err;
+          return { login: { ok: false, code: err.code, message: err.message, landed, page: err.page ?? null } };
+        }
+        const out = { login: { ok: true, landed }, reportsPage: describePage(page.html) };
         if (name) {
           const result = await postBack(page, { set: { [SEARCHES.named.fields.name]: name, [MENU_FIELD]: "" }, button: SEARCHES.named.button });
           out.search = describePage(result.html);
