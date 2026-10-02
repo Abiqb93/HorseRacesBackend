@@ -11386,6 +11386,46 @@ app.post('/api/race_watchlist', (req, res) => {
   );
 });
 
+/**
+ * The racecard's own facts for watch-list items (watchlist/racecardFacts.mjs).
+ *
+ * The Daily Watch List is laid out in the Dashboard's entries table, which
+ * prints a runner's distance, official rating and declaration, and a race's
+ * distance and class. The watch-list tables never stored them, so they are
+ * read off RacesAndEntries as the list is asked for. That table is a few
+ * thousand rows, so either read is a quick scan. If the read fails, the list
+ * goes out as it is stored.
+ */
+const loadRacecardFacts = () => import("./watchlist/racecardFacts.mjs");
+
+/**
+ * Send watch-list rows with the racecard's facts attached: `pick` names what
+ * to look up (the horses, or the courses), `sql` reads those racecard rows,
+ * and `attach` matches them to the items. Any failure sends the rows as stored.
+ */
+const sendWithRacecardFacts = async (res, rows, { pick, sql, attach }) => {
+  const asStored = (e) => {
+    console.error("Racecard facts for the watch list:", e.message);
+    res.json(rows);
+  };
+  let facts;
+  try {
+    facts = await loadRacecardFacts();
+  } catch (e) {
+    return asStored(e);
+  }
+  const keys = facts[pick](rows);
+  if (!keys.length) return res.json(rows);
+  db.query(sql, [keys], (err, cards) => {
+    if (err) return asStored(err);
+    try {
+      res.json(facts[attach](rows, cards));
+    } catch (e) {
+      asStored(e);
+    }
+  });
+};
+
 // GET: Fetch all races for a user
 app.get('/api/race_watchlist/:userId', (req, res) => {
   const userId = req.params.userId;
@@ -11399,7 +11439,12 @@ app.get('/api/race_watchlist/:userId', (req, res) => {
       console.error('Error fetching race_watchlist:', err);
       return res.status(500).json({ error: 'Database query failed' });
     }
-    res.json(results);
+    // each race's distance and racecard title
+    sendWithRacecardFacts(res, results, {
+      pick: "raceTracks",
+      sql: "SELECT DISTINCT `RaceTitle`, `RaceTime`, `FixtureTrack`, `FixtureDate`, `Distance` FROM RacesAndEntries WHERE UPPER(TRIM(`FixtureTrack`)) IN (?)",
+      attach: "attachRaceFacts",
+    });
   });
 });
 
@@ -12126,7 +12171,12 @@ app.get("/api/daily_notifications_all_users/:userId", (req, res) => {
       console.error("Error fetching daily_notifications_all_users:", err);
       return res.status(500).json({ error: "Database query failed" });
     }
-    res.json(results);
+    // each horse's distance, rating and declaration, off its racecard row
+    sendWithRacecardFacts(res, results, {
+      pick: "runnerNames",
+      sql: "SELECT `Horse`, `Rating`, `Distance`, `Status`, `RaceTitle`, `RaceTime`, `FixtureTrack`, `FixtureDate` FROM RacesAndEntries WHERE `Horse` IN (?)",
+      attach: "attachRunnerFacts",
+    });
   });
 });
 
