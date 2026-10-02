@@ -15230,6 +15230,129 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Arion - pedigree reports searched and bought without leaving the site.
+//
+// The desk's Arion subscription, driven from here with the company login
+// (arion/client.mjs). The login lives only in this service's environment,
+// ARION_USERNAME and ARION_PASSWORD; without them /api/arion/status says so and
+// the site offers Arion's own page in a new tab instead.
+//
+// Searching costs nothing. Buying a report costs credits, so it needs the
+// price the person was shown, `confirm: true`, a registered platform user (or
+// one of ARION_USERS, when that is set), and room under the day's ceiling,
+// ARION_DAILY_LIMIT (25). /api/arion/diagnose, which reports the live pages'
+// shape for checking the client, answers only when ARION_DIAGNOSE=on.
+// ---------------------------------------------------------------------------
+const loadArion = () => import("./arion/client.mjs");
+let arionClient = null;
+async function arion() {
+  const mod = await loadArion();
+  arionClient ??= mod.createClient({ log: (...a) => console.log(...a) });
+  return { mod, client: arionClient };
+}
+function arionFail(res, err) {
+  const status = Number(err.status) || 500;
+  if (status >= 500 && !["unconfigured", "challenge"].includes(err.code)) console.error("[arion]", err.message);
+  return res.status(status).json({ error: err.message, code: err.code ?? "arion" });
+}
+/** A buyer must be a registered user of the platform (and on ARION_USERS, if set). */
+function arionBuyer(userId) {
+  const id = String(userId ?? "").trim();
+  if (!id) return Promise.resolve(false);
+  const allow = String(process.env.ARION_USERS ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+  if (allow.length && !allow.includes(id)) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    db.query("SELECT 1 FROM UserAccounts WHERE user_id = ? LIMIT 1", [id], (err, rows) => resolve(!err && rows?.length > 0));
+  });
+}
+
+app.get("/api/arion/status", async (req, res) => {
+  const { client } = await arion();
+  if (req.query.check === "1" && client.configured()) {
+    try {
+      await client.check();
+    } catch (err) {
+      return res.json({ ...client.status(), error: err.message, code: err.code ?? "arion" });
+    }
+  }
+  return res.json(client.status());
+});
+
+app.post("/api/arion/search", async (req, res) => {
+  const { client } = await arion();
+  const { kind, name, sire, dam } = req.body ?? {};
+  try {
+    return res.json(await client.search({ kind, name, sire, dam }));
+  } catch (err) {
+    return arionFail(res, err);
+  }
+});
+
+app.post("/api/arion/report", async (req, res) => {
+  const { client } = await arion();
+  const { token, reportId, confirm, credits, userId } = req.body ?? {};
+  if (!(await arionBuyer(userId))) return res.status(403).json({ error: "Only a signed-in member of the desk can buy Arion reports.", code: "buyer" });
+  try {
+    const out = await client.report({ token, reportId, confirm, credits });
+    console.log(`[arion] ${userId} bought ${out.report.label} for ${out.horse} (${out.report.credits} credits)`);
+    return res.json(out);
+  } catch (err) {
+    return arionFail(res, err);
+  }
+});
+
+app.get("/api/arion/my-reports", async (req, res) => {
+  const { client } = await arion();
+  try {
+    return res.json({ reports: await client.myReports() });
+  } catch (err) {
+    return arionFail(res, err);
+  }
+});
+
+app.post("/api/arion/my-reports/open", async (req, res) => {
+  const { client } = await arion();
+  try {
+    return res.json(await client.openSaved(req.body?.token));
+  } catch (err) {
+    return arionFail(res, err);
+  }
+});
+
+/** A bought report, relayed: a PDF as it is, an HTML page with nothing in it allowed to run. */
+app.get("/api/arion/file/:id", async (req, res) => {
+  const { mod, client } = await arion();
+  try {
+    const f = await client.file(req.params.id);
+    if (f.html !== undefined) {
+      res.set(mod.RELAY_HTML_HEADERS);
+      return res.send(mod.relayHtml(f.html, f.url));
+    }
+    const name = String(f.label ?? "arion-report").replace(/[^A-Za-z0-9 ._()-]+/g, "").slice(0, 80) || "arion-report";
+    const ext = /pdf/i.test(f.type) ? ".pdf" : "";
+    res.set({
+      "Content-Type": f.type || "application/octet-stream",
+      "Content-Disposition": `inline; filename="${name}${ext}"`,
+      "Cache-Control": "private, max-age=3600",
+      "X-Content-Type-Options": "nosniff",
+    });
+    return res.send(f.body);
+  } catch (err) {
+    return arionFail(res, err);
+  }
+});
+
+app.get("/api/arion/diagnose", async (req, res) => {
+  if (!/^(on|1|true)$/i.test(process.env.ARION_DIAGNOSE ?? "")) return res.status(404).json({ error: "Off: set ARION_DIAGNOSE=on to use it." });
+  const { client } = await arion();
+  try {
+    return res.json(await client.diagnose({ name: String(req.query.name ?? "Frankel").slice(0, 60) }));
+  } catch (err) {
+    return arionFail(res, err);
+  }
+});
+
 // Start the server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
