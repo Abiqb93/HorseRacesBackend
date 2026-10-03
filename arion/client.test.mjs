@@ -19,6 +19,7 @@ import {
   printFrame,
   relayHtml,
   showsLoggedIn,
+  asksToGoAhead,
 } from "./client.mjs";
 
 /* Pages shaped like Arion's (ASP.NET WebForms), written for the tests. */
@@ -38,14 +39,19 @@ const PRICES = `
   <table><tr><td class="name"><span class='childProduct'>WI style</span></td><td class="detail">Inglis</td><td class="cost">40</td></tr>
   <tr><td class="name"><span class='childProduct'>Standard pedigree</span></td><td class="detail">Std</td><td class="cost">36</td></tr>
   <tr><td class="name"><span class='childProduct'>4x4</span></td><td class="detail">Grid</td><td class="cost">1</td></tr></table>`;
-const reportsPage = ({ loggedIn = true, extra = "", menu = "PED01|I#3S_a" } = {}) => `<!DOCTYPE html><html><head><title>Arion</title></head><body>
+const reportsPage = ({ loggedIn = true, extra = "", menu = "PED01|I#3S_a", dialog = DIALOG(), popup = POPUP() } = {}) => `<!DOCTYPE html><html><head><title>Arion</title></head><body>
 <form method="post" action="PedigreeReports.aspx" id="aspnetForm">${STATE}
 ${HEADER(loggedIn ? "Desk" : "")}
 ${hidden("ctl00$MainContentArea$hiddenMenuItemId", menu)}
 <input name="ctl00$MainContentArea$txtNamedHorse" type="text" />
-<input type="submit" name="ctl00$MainContentArea$btnSearchNamedHorseDefault" value="" />
+<a id="ctl00_MainContentArea_btnSearchNamedHorse" href="javascript:__doPostBack('ctl00$MainContentArea$btnSearchNamedHorse','')">Search</a>
+<input type="submit" name="ctl00$MainContentArea$btnSearchNamedHorseDefault" value="" style="display:none" />
+<input name="ctl00$MainContentArea$txtUnnamedHorse" type="text" />
+<a id="ctl00_MainContentArea_btnSearchUnnamedHorse" href="javascript:__doPostBack('ctl00$MainContentArea$btnSearchUnnamedHorse','')">Search</a>
+<input type="submit" name="ctl00$MainContentArea$btnSearchUnnamedHorseDefault" value="" style="display:none" />
 <input name="ctl00$MainContentArea$txtSireName" type="text" /><input name="ctl00$MainContentArea$txtDamName" type="text" />
-<input type="submit" name="ctl00$MainContentArea$btnSearchDamHorseDefault" value="" />
+<a id="ctl00_MainContentArea_btnSearchDamHorse" href="javascript:__doPostBack('ctl00$MainContentArea$btnSearchDamHorse','')">Search</a>
+<input type="submit" name="ctl00$MainContentArea$btnSearchDamHorseDefault" value="" style="display:none" />
 <input type="checkbox" name="ctl00$Remember" /><input type="checkbox" name="ctl00$Keep" checked="checked" value="yes" />
 <select name="ctl00$Country"><option value="NZ">NZ</option><option value="GB" selected>GB</option></select>
 ${PRICES}
@@ -55,15 +61,41 @@ ${PRICES}
   <tr><td>ENABLE (GB) 2014</td><td>4x4</td><td><a href="javascript:__doPostBack('ctl00$MainContentArea$gvMy','Open$1')">Open</a></td></tr>
 </table></div>
 ${extra}
+${popup}
+${dialog}
 </form></body></html>`;
-const SEARCH_DIALOG = `<div id="ctl00_ModalDialogArea_ArionNamedHorseSearchControl_pnl"><table>
+// Arion's own message box: in every page, empty and hidden until Arion asks or tells.
+function POPUP(message = "", title = "") {
+  return `<div id="ctl00_updPopupMessage"><div id="modalPopupBlock" style="display:none" class="modalPopup">
+  <div class="title">${title}</div><div class="modalPanel"><div class="message">${message}</div>
+  <div><div class="action"><div class="option"><a id="ctl00_btnNo" class="button_blue" href="javascript:__doPostBack('ctl00$btnNo','')">No</a></div>
+  <div class="option"><a id="ctl00_btnYes" class="button_blue" href="javascript:__doPostBack('ctl00$btnYes','')">Yes</a></div></div></div></div></div>
+  <input type="submit" name="ctl00$btnLaunchModal" value="" id="ctl00_btnLaunchModal" style="display:none" /></div>`;
+}
+// The horse-search dialog: in every page, listing horses only when Arion asks for a pick.
+function DIALOG(heading = "Please select a horse", list = "") {
+  return `<div id="modalDialogBlock"><div id="ctl00_ModalDialogArea_updSearchModalDialog"><div id="ctl00_ModalDialogArea_pnlHorseSearch" style="display:none">
+  <div id="divHorseSearch"><div class="modalDivImgClose"><h3>${heading}</h3>
+  <input type="image" name="ctl00$ModalDialogArea$ArionNamedHorseSearchControl$imgClose" src="/close.gif" /></div>
+  <div class="content"><div class="modalDivBg"><span>Please select a horse from the list below.</span>
+  <a id="ctl00_ModalDialogArea_ArionNamedHorseSearchControl_lnkClose" href="javascript:__doPostBack('ctl00$ModalDialogArea$ArionNamedHorseSearchControl$lnkClose','')">Close this window</a></div>
+  <div class="scroll"><div>${list}</div></div></div></div></div>
+  <input type="submit" name="ctl00$ModalDialogArea$btnLaunchModal" value="" id="ctl00_ModalDialogArea_btnLaunchModal" style="display:none" /></div></div>`;
+}
+const listOf = (control, horses) =>
+  `<table><tr><th>Name</th><th>Year</th></tr>${horses
+    .map((h, i) => `<tr><td>${h}</td><td><a href="javascript:__doPostBack('ctl00$ModalDialogArea$${control}$gvHorses','Select$${i}')">Select</a></td></tr>`)
+    .join("")}</table>`;
+const NAMED_DIALOG = DIALOG(
+  "Please select a horse",
+  `<table>
   <tr><th>Name</th><th>Year</th></tr>
   <tr><td>FRANKEL (GB)</td><td>2008</td><td>Galileo - Kind</td><td><a href="javascript:__doPostBack('ctl00$ModalDialogArea$ArionNamedHorseSearchControl$gvHorses','Select$0')">Select</a></td></tr>
   <tr><td>FRANKEL (AUS)</td><td>1999</td><td><a href="javascript:WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions(&quot;ctl00$ModalDialogArea$ArionNamedHorseSearchControl$gvHorses&quot;, &quot;Select$1&quot;, true, &quot;&quot;, &quot;&quot;, false, true))">Select</a></td></tr>
   <tr><td><a href="javascript:__doPostBack('ctl00$ModalDialogArea$ArionNamedHorseSearchControl$lnkClose','')">Close</a></td></tr>
-</table></div>`;
-const CONFIRM = `<div class="modal"><span>This report will cost 40 credits.</span>
-  <a href="javascript:__doPostBack('ctl00$btnYes','')">Yes</a><a href="javascript:__doPostBack('ctl00$btnNo','')">No</a></div>`;
+</table>`,
+);
+const ASK = POPUP("This report will cost 40 credits. Do you wish to continue?", "Confirm");
 const FILLED_TAB = `<div id="ctl00_MainContentArea_tabbedReport_tabs_TabHorseReport1">
   <span id="__tab_ctl00_MainContentArea_tabbedReport_tabs_TabHorseReport1">FRANKEL - WI style</span>
   <a id="ctl00_MainContentArea_tabbedReport_tabs_TabHorseReport1_ctl01_ucArionReportContainerControl1_hlSaveAsHtml" href="/Reports/Temp/r1.html" target="_blank">Save As HTML</a>
@@ -114,7 +146,7 @@ test("the price list is read from the page, and stands in for the defaults", () 
 });
 
 test("search results: each row with a postback is a choice; the dialog's own controls are not", () => {
-  const c = parseCandidates(reportsPage({ extra: SEARCH_DIALOG }));
+  const c = parseCandidates(reportsPage({ dialog: NAMED_DIALOG }));
   assert.equal(c.length, 2);
   assert.equal(c[0].label, "FRANKEL (GB) · 2008 · Galileo - Kind · Select");
   assert.equal(c[0].target, "ctl00$ModalDialogArea$ArionNamedHorseSearchControl$gvHorses");
@@ -170,7 +202,7 @@ test("the print page is followed to its report; relayed HTML keeps Arion's addre
 });
 
 test("a page's shape for checking, with no values and no password field", () => {
-  const d = describePage(reportsPage({ loggedIn: false, extra: SEARCH_DIALOG }));
+  const d = describePage(reportsPage({ loggedIn: false, dialog: NAMED_DIALOG }));
   assert.equal(d.loginForm, true);
   assert.ok(d.fields.includes("ctl00$MainContentArea$txtNamedHorse"));
   assert.ok(!d.fields.some((f) => /Password/i.test(f)));
@@ -180,8 +212,14 @@ test("a page's shape for checking, with no values and no password field", () => 
 
 /* ------------------------------------------------------------ the flow, against a stand-in Arion */
 
-function fakeArion({ password = "s3cret", menuNeedsConfirm = true, staysAnonymous = false } = {}) {
+function fakeArion({ password = "s3cret", menuNeedsConfirm = true, staysAnonymous = false, orderSays = "", listLingers = false } = {}) {
   const calls = [];
+  const sires = ["STARSPANGLEDBANNER (AUS) 2006", "STARSPANGLEDBANNER (USA) 1999"];
+  const dams = ["LADY VIVIAN (GB) 2015", "LADY VIVIAN (IRE) 2009"];
+  const made = []; // the reports Arion was asked to make
+  let state = {};
+  let asked = false;
+  let yesUnasked = 0;
   let sessionOk = false;
   let expireOnce = false;
   const res = (status, body, headers = {}) => new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8", ...headers } });
@@ -207,21 +245,49 @@ function fakeArion({ password = "s3cret", menuNeedsConfirm = true, staysAnonymou
         return res(200, reportsPage({ loggedIn: false }));
       }
       if (!form) return res(200, reportsPage());
-      if (form["ctl00$MainContentArea$btnSearchNamedHorseDefault"] !== undefined) return res(200, reportsPage({ extra: SEARCH_DIALOG, menu: form["ctl00$MainContentArea$hiddenMenuItemId"] }));
-      if (form["ctl00$MainContentArea$btnSearchDamHorseDefault"] !== undefined) {
-        // a theoretical horse: no list, the page is the choice; a report named with it is made
-        return res(200, reportsPage({ extra: form["ctl00$MainContentArea$hiddenMenuItemId"] ? FILLED_TAB : "" }));
+      const menu = form["ctl00$MainContentArea$hiddenMenuItemId"] ?? "";
+      const pressed = form.__EVENTTARGET ?? "";
+      // only the Search links search, as on Arion
+      if (pressed === "ctl00$MainContentArea$btnSearchNamedHorse") {
+        state = { kind: "named" };
+        return res(200, reportsPage({ menu, dialog: NAMED_DIALOG }));
       }
-      if (/gvHorses$/.test(form.__EVENTTARGET)) return res(200, reportsPage({ extra: menuNeedsConfirm ? CONFIRM : FILLED_TAB }));
-      if (form.__EVENTTARGET === "ctl00$btnYes") return res(200, reportsPage({ extra: FILLED_TAB }));
-      if (form.__EVENTTARGET === "ctl00$MainContentArea$gvMy") return res(200, reportsPage({ extra: FILLED_TAB }));
+      if (pressed === "ctl00$MainContentArea$btnSearchDamHorse") {
+        // a mating: Arion asks which sire, then which dam
+        state = { kind: "theoretical", stage: "sire" };
+        return res(200, reportsPage({ menu, dialog: DIALOG("Please select a sire", listOf("ArionSireSearchControl", sires)) }));
+      }
+      if (/gvHorses$/.test(pressed)) {
+        if (state.kind === "theoretical" && state.stage === "sire") {
+          state.stage = "dam";
+          return res(200, reportsPage({ menu, dialog: DIALOG("Please select a dam", listOf("ArionDamSearchControl", dams)) }));
+        }
+        // the horse is picked: with a report named, Arion makes it
+        const left = listLingers ? (state.kind === "theoretical" ? DIALOG("Please select a dam", listOf("ArionDamSearchControl", dams)) : NAMED_DIALOG) : DIALOG();
+        if (!menu) return res(200, reportsPage({ menu, dialog: left }));
+        made.push({ menu, pick: form.__EVENTARGUMENT });
+        if (orderSays) return res(200, reportsPage({ menu, popup: POPUP(orderSays) }));
+        if (menuNeedsConfirm) {
+          asked = true;
+          return res(200, reportsPage({ menu, popup: ASK, dialog: left }));
+        }
+        return res(200, reportsPage({ menu, extra: FILLED_TAB, dialog: left }));
+      }
+      if (pressed === "ctl00$btnYes") {
+        if (!asked) yesUnasked += 1;
+        const was = asked;
+        asked = false;
+        return res(200, reportsPage({ menu, extra: was ? FILLED_TAB : "" }));
+      }
+      if (pressed === "ctl00$MainContentArea$gvMy") return res(200, reportsPage({ extra: FILLED_TAB }));
+      return res(200, reportsPage({ menu }));
     }
     if (u.pathname === "/PrintReport.aspx") return res(200, '<html><body onload="printReport()"><iframe id="printingFrame" src="/Reports/Temp/r1.pdf"></iframe></body></html>');
     if (u.pathname === "/Reports/Temp/r1.pdf") return new Response(Buffer.from("%PDF-1.4 r1"), { status: 200, headers: { "content-type": "application/pdf" } });
     if (u.pathname === "/Reports/Saved/abc.pdf") return new Response(Buffer.from("%PDF-1.4 abc"), { status: 200, headers: { "content-type": "application/pdf" } });
     return res(404, "not found");
   };
-  return { fetch, calls, expire: () => (expireOnce = true) };
+  return { fetch, calls, sires, dams, made, yesUnasked: () => yesUnasked, expire: () => (expireOnce = true) };
 }
 const ENV = { ARION_USERNAME: "desk@example.com", ARION_PASSWORD: "s3cret" };
 
@@ -265,6 +331,8 @@ test("search, choose, confirm the price, and read the report — a search never 
   assert.equal(pick.form.__EVENTARGUMENT, "Select$0");
   assert.equal(pick.form["ctl00$MainContentArea$hiddenMenuItemId"], wi.id);
   assert.ok(arion.calls.some((x) => x.form?.__EVENTTARGET === "ctl00$btnYes"), "Arion's own are-you-sure is answered");
+  assert.equal(arion.yesUnasked(), 0, "and only because it asked");
+  assert.equal(arion.made.length, 1);
   assert.equal(bought.report.credits, 40);
   assert.equal(bought.horse, "FRANKEL (GB)");
   assert.deepEqual(bought.files.map((f) => f.kind), ["print", "html"]);
@@ -286,21 +354,136 @@ test("the day's ceiling holds", async () => {
   await assert.rejects(c.report({ token: found.candidates[1].token, reportId: grid.id, credits: 1, confirm: true }), (e) => e.code === "limit" && e.status === 429);
 });
 
-test("a theoretical horse has no list: the search is repeated with the report named", async () => {
+const MENU = "ctl00$MainContentArea$hiddenMenuItemId";
+const menuOf = (call) => call.form?.[MENU];
+
+test("a search presses Arion's Search link, as a person does, with no report named", async () => {
   const arion = fakeArion();
   const c = createClient({ fetch: arion.fetch, env: ENV });
-  const found = await c.search({ kind: "theoretical", sire: "Frankel", dam: "Enable" });
-  assert.equal(found.candidates.length, 0);
-  assert.ok(found.direct?.token);
+  await c.search({ kind: "named", name: "Frankel" });
+  const post = arion.calls.find((x) => x.form?.["ctl00$MainContentArea$txtNamedHorse"] === "Frankel");
+  assert.equal(post.form.__EVENTTARGET, "ctl00$MainContentArea$btnSearchNamedHorse");
+  assert.equal("ctl00$MainContentArea$btnSearchNamedHorseDefault" in post.form, false, "not the hidden Enter button");
+  assert.equal(menuOf(post), "");
+});
+
+test("a mating asks for the sire, then the dam: each pick is free, and the order sends the search and both picks again with the report named", async () => {
+  const arion = fakeArion();
+  const c = createClient({ fetch: arion.fetch, env: ENV });
+  const first = await c.search({ kind: "theoretical", sire: "Starspangledbanner", dam: "Lady Vivian" });
+  assert.deepEqual(first.step, { number: 1, prompt: "Please select a sire" });
+  assert.deepEqual(
+    first.candidates.map((x) => x.label),
+    ["STARSPANGLEDBANNER (AUS) 2006 · Select", "STARSPANGLEDBANNER (USA) 1999 · Select"],
+  );
+  assert.equal(first.direct, undefined, "nothing to order until Arion has its horses");
+
+  const second = await c.choose(first.candidates[0].token);
+  assert.deepEqual(second.step, { number: 2, prompt: "Please select a dam" });
+  assert.deepEqual(second.chosen, [{ prompt: "Please select a sire", label: "STARSPANGLEDBANNER (AUS) 2006 · Select" }]);
+  const ready = await c.choose(second.candidates[1].token);
+  assert.deepEqual(ready.candidates, []);
+  assert.ok(ready.direct?.token);
+  assert.deepEqual(
+    ready.chosen.map((x) => x.prompt),
+    ["Please select a sire", "Please select a dam"],
+  );
+  assert.ok(arion.calls.filter((x) => x.form).every((x) => !menuOf(x)), "searching and picking name no report");
+  assert.equal(arion.made.length, 0);
+
   const std = c.status().reports.find((r) => r.label === "Standard pedigree");
-  assert.equal(std.credits, 36, "priced from the page");
-  const bought = await c.report({ token: found.direct.token, reportId: std.id, credits: 36, confirm: true });
-  const posts = arion.calls.filter((x) => x.form?.["ctl00$MainContentArea$txtSireName"] === "Frankel");
-  assert.equal(posts.length, 2);
-  assert.equal(posts[0].form["ctl00$MainContentArea$hiddenMenuItemId"], "");
-  assert.equal(posts[1].form["ctl00$MainContentArea$hiddenMenuItemId"], std.id);
+  const bought = await c.report({ token: ready.direct.token, reportId: std.id, credits: 36, confirm: true });
+  const order = arion.calls.filter((x) => x.form && menuOf(x) === std.id);
+  assert.deepEqual(
+    order.map((x) => [x.form.__EVENTTARGET.split("$").slice(-2).join("$"), x.form.__EVENTARGUMENT]),
+    [
+      ["MainContentArea$btnSearchDamHorse", ""],
+      ["ArionSireSearchControl$gvHorses", "Select$0"],
+      ["ArionDamSearchControl$gvHorses", "Select$1"],
+      ["ctl00$btnYes", ""],
+    ],
+    "the search, the sire, the dam, and Arion's own question answered",
+  );
+  assert.equal(arion.made.length, 1);
+  assert.equal(arion.yesUnasked(), 0);
+  assert.equal(bought.answered, "Confirm: This report will cost 40 credits. Do you wish to continue?");
+  assert.equal(bought.horse, "STARSPANGLEDBANNER (AUS) 2006 x LADY VIVIAN (IRE) 2009");
   assert.equal(bought.files.length, 2);
+  assert.equal(bought.note, null);
   await assert.rejects(c.search({ kind: "theoretical", sire: "Frankel" }), (e) => e.code === "input" && e.status === 400);
+});
+
+test("Yes is pressed only when Arion's box asks; a message that tells is passed on", async () => {
+  const told = fakeArion({ orderSays: "Your account has insufficient credits." });
+  const c = createClient({ fetch: told.fetch, env: ENV });
+  const found = await c.search({ name: "Frankel" });
+  const grid = c.status().reports.find((r) => r.label === "4x4");
+  const out = await c.report({ token: found.candidates[0].token, reportId: grid.id, credits: 1, confirm: true });
+  assert.equal(told.calls.some((x) => x.form?.__EVENTTARGET === "ctl00$btnYes"), false);
+  assert.equal(out.files.length, 0);
+  assert.equal(out.message, "Your account has insufficient credits.");
+  assert.match(out.note, /No report came back from Arion, which said: "Your account has insufficient credits\."/);
+
+  const plain = fakeArion({ menuNeedsConfirm: false });
+  const d = createClient({ fetch: plain.fetch, env: ENV });
+  const f2 = await d.search({ name: "Frankel" });
+  const got = await d.report({ token: f2.candidates[0].token, reportId: grid.id, credits: 1, confirm: true });
+  assert.equal(got.files.length, 2);
+  assert.equal(plain.calls.some((x) => x.form?.__EVENTTARGET === "ctl00$btnYes"), false, "nothing asked, nothing answered");
+});
+
+test("a list Arion leaves in the page after a pick is not a new question", async () => {
+  const arion = fakeArion({ listLingers: true });
+  const c = createClient({ fetch: arion.fetch, env: ENV });
+  const first = await c.search({ kind: "theoretical", sire: "Starspangledbanner", dam: "Lady Vivian" });
+  const second = await c.choose(first.candidates[0].token);
+  const ready = await c.choose(second.candidates[0].token);
+  assert.ok(ready.direct?.token, "the dam's list, left in the page, is not asked again");
+  const std = c.status().reports.find((r) => r.label === "Standard pedigree");
+  const bought = await c.report({ token: ready.direct.token, reportId: std.id, credits: 36, confirm: true });
+  assert.equal(bought.files.length, 2);
+  assert.equal(arion.made.length, 1);
+});
+
+test("a message that tells, not asks, is not answered", () => {
+  assert.equal(asksToGoAhead("This report will cost 40 credits. Do you wish to continue?"), true);
+  assert.equal(asksToGoAhead("Are you sure you want to order this report"), true);
+  assert.equal(asksToGoAhead("35 credits have been charged to your account."), false);
+  assert.equal(asksToGoAhead("Your account has insufficient credits. Would you like to buy more?"), false);
+  assert.equal(asksToGoAhead("Please select a report."), false);
+  assert.equal(asksToGoAhead(null), false);
+});
+
+test("an order stops, before anything is made, when Arion's list no longer holds a pick", async () => {
+  const arion = fakeArion();
+  const c = createClient({ fetch: arion.fetch, env: ENV });
+  const first = await c.search({ kind: "theoretical", sire: "Starspangledbanner", dam: "Lady Vivian" });
+  const second = await c.choose(first.candidates[0].token);
+  const ready = await c.choose(second.candidates[0].token);
+  arion.sires.shift(); // Arion's list has changed since the pick
+  const std = c.status().reports.find((r) => r.label === "Standard pedigree");
+  await assert.rejects(
+    c.report({ token: ready.direct.token, reportId: std.id, credits: 36, confirm: true }),
+    (e) => e.code === "changed" && e.status === 409 && /STARSPANGLEDBANNER \(AUS\) 2006/.test(e.message) && /nothing was ordered/.test(e.message),
+  );
+  assert.equal(arion.made.length, 0);
+  assert.equal(c.status().usedToday, 0);
+});
+
+test("diagnose's last pages show what Arion's pages held, asking nothing of Arion, with no form state", async () => {
+  const arion = fakeArion();
+  const c = createClient({ fetch: arion.fetch, env: ENV });
+  await c.search({ kind: "theoretical", sire: "Starspangledbanner", dam: "Lady Vivian" });
+  const before = arion.calls.length;
+  const { pages } = await c.diagnose({ last: true });
+  assert.equal(arion.calls.length, before, "nothing asked of Arion");
+  const last = pages[pages.length - 1];
+  assert.equal(last.step, "search:theoretical");
+  assert.equal(last.dialog.prompt, "Please select a sire");
+  assert.equal(last.dialog.choices.length, 2);
+  assert.match(last.dialog.html, /ArionSireSearchControl\$gvHorses/);
+  assert.equal(last.popup, null);
+  assert.ok(!JSON.stringify(pages).includes("vs1") && !JSON.stringify(pages).includes("ev1"), "no form state");
 });
 
 test("My Reports: links open directly, postbacks through the page", async () => {

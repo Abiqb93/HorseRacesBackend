@@ -15329,7 +15329,8 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
 // price the person was shown, `confirm: true`, a registered platform user (or
 // one of ARION_USERS, when that is set), and room under the day's ceiling,
 // ARION_DAILY_LIMIT (25). /api/arion/diagnose, which reports the live pages'
-// shape for checking the client, answers only when ARION_DIAGNOSE=on.
+// shape for checking the client, answers only when ARION_DIAGNOSE=on; with
+// ?last=1 it asks nothing of Arion and shows what its last pages held.
 // ---------------------------------------------------------------------------
 const loadArion = () => import("./arion/client.mjs");
 let arionClient = null;
@@ -15371,6 +15372,18 @@ app.post("/api/arion/search", async (req, res) => {
   const { kind, name, sire, dam } = req.body ?? {};
   try {
     return res.json(await client.search({ kind, name, sire, dam }));
+  } catch (err) {
+    return arionFail(res, err);
+  }
+});
+
+// A pick in Arion's horse-search dialog (the sire, then the dam, for a
+// mating): free, and it answers with the next pick Arion asks for, or with
+// the horse ready for a report.
+app.post("/api/arion/choose", async (req, res) => {
+  const { client } = await arion();
+  try {
+    return res.json(await client.choose(String(req.body?.token ?? "")));
   } catch (err) {
     return arionFail(res, err);
   }
@@ -15434,7 +15447,7 @@ app.get("/api/arion/diagnose", async (req, res) => {
   if (!/^(on|1|true)$/i.test(process.env.ARION_DIAGNOSE ?? "")) return res.status(404).json({ error: "Off: set ARION_DIAGNOSE=on to use it." });
   const { client } = await arion();
   try {
-    return res.json(await client.diagnose({ name: String(req.query.name ?? "Frankel").slice(0, 60) }));
+    return res.json(await client.diagnose({ name: String(req.query.name ?? "Frankel").slice(0, 60), last: req.query.last === "1" }));
   } catch (err) {
     return arionFail(res, err);
   }
