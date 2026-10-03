@@ -95,19 +95,40 @@ export const REPORTS = [
   { id: "PED05|77#12D_a", label: "7x7", group: "Pedigree grid", credits: 3 },
 ];
 
-/** The three searches the page offers, by the box filled and the button pressed. */
+/**
+ * The three searches the page offers, by the boxes filled and the Search a
+ * person presses: a link that posts the form back (`link`). The hidden
+ * submit beside it (`button`) is what Enter presses; it is used only on a
+ * page without the link.
+ */
 export const SEARCHES = {
   // a horse by its name
-  named: { fields: { name: "ctl00$MainContentArea$txtNamedHorse" }, button: "ctl00$MainContentArea$btnSearchNamedHorseDefault" },
+  named: {
+    fields: { name: "ctl00$MainContentArea$txtNamedHorse" },
+    link: "ctl00$MainContentArea$btnSearchNamedHorse",
+    button: "ctl00$MainContentArea$btnSearchNamedHorseDefault",
+  },
   // an unnamed horse, found by its dam
-  dam: { fields: { dam: "ctl00$MainContentArea$txtUnnamedHorse" }, button: "ctl00$MainContentArea$btnSearchUnnamedHorseDefault" },
-  // a theoretical horse: a sire and a dam that have not been mated
+  dam: {
+    fields: { dam: "ctl00$MainContentArea$txtUnnamedHorse" },
+    link: "ctl00$MainContentArea$btnSearchUnnamedHorse",
+    button: "ctl00$MainContentArea$btnSearchUnnamedHorseDefault",
+  },
+  // a theoretical horse: a sire and a dam that have not been mated. Arion
+  // then asks which sire, and which dam, each in its horse-search dialog.
   theoretical: {
     fields: { sire: "ctl00$MainContentArea$txtSireName", dam: "ctl00$MainContentArea$txtDamName" },
+    link: "ctl00$MainContentArea$btnSearchDamHorse",
     button: "ctl00$MainContentArea$btnSearchDamHorseDefault",
   },
 };
 
+/**
+ * The report menu is chosen in the browser alone: a click puts the report's
+ * id in this hidden field and sends nothing. Arion makes the report when a
+ * search or a pick is sent with it filled, so every step that must not buy
+ * sends it empty.
+ */
 const MENU_FIELD = "ctl00$MainContentArea$hiddenMenuItemId";
 const LOGIN_FIELDS = {
   // Arion logs in with the account's email address ("Email Address:", checked
@@ -297,19 +318,35 @@ export function postbacks(html) {
 }
 
 /**
+ * The horse-search dialog Arion opens to have a horse picked, whatever fills
+ * it: the named-horse list, or the sire's and then the dam's for a mating.
+ * The page around it has postback rows of its own (My Reports) that are not
+ * search results.
+ */
+export function dialogScope(html) {
+  const s = String(html ?? "");
+  let start = s.search(/id\s*=\s*["']ctl00_ModalDialogArea_(?:updSearchModalDialog|pnlHorseSearch)["']/i);
+  if (start < 0) start = s.search(/ArionNamedHorseSearchControl/i);
+  if (start < 0) return "";
+  const rest = s.slice(start);
+  const end = rest.search(/ModalDialogArea[_$]btnLaunchModal|TabMyReports|tabbedReport_tabs_TabHorseReport|<\/form>/i);
+  return end > 0 ? rest.slice(0, end) : rest;
+}
+
+/** What the dialog asks for, in its own heading: "Please select a horse", a sire, a dam. */
+export function dialogPrompt(html) {
+  const h = dialogScope(html).match(/<h\d\b[^>]*>([\s\S]*?)<\/h\d>/i);
+  return h ? textOf(h[1]) || null : null;
+}
+
+/**
  * The search dialog's choices: each row of the dialog that carries a
  * postback, with the row's own text — a horse's name, year, country and
  * parents, however Arion lays them out. Radio buttons count too.
  */
 export function parseCandidates(html) {
-  const s = String(html ?? "");
-  // only inside the search dialog: the page around it has postback rows of
-  // its own (My Reports) that are not search results
-  const start = s.search(/ArionNamedHorseSearchControl/i);
-  if (start < 0) return [];
-  const rest = s.slice(start);
-  const end = rest.search(/ModalDialogArea[_$]btnLaunchModal|TabMyReports|tabbedReport_tabs_TabHorseReport|<\/form>/i);
-  const scope = end > 0 ? rest.slice(0, end) : rest;
+  const scope = dialogScope(html);
+  if (!scope) return [];
   const out = [];
   const seen = new Set();
   for (const row of scope.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
@@ -427,6 +464,60 @@ export function parseMyReports(html) {
 }
 
 /**
+ * What Arion's own message box says, when it says anything: its title and
+ * message. The box (with its Yes and No) is in every page's markup, empty
+ * and hidden; Arion fills it to ask "are you sure" or to tell something.
+ */
+export function popupMessage(html) {
+  const box = innerOf(html, "modalPopupBlock");
+  if (box === null) return null;
+  const title = textOf(box.match(/<div\b[^>]*class\s*=\s*["'][^"']*\btitle\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)?.[1] ?? "");
+  const message = textOf(box.match(/<div\b[^>]*class\s*=\s*["'][^"']*\bmessage\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)?.[1] ?? "");
+  return [title, message].filter(Boolean).join(": ") || null;
+}
+
+/**
+ * Whether a message from Arion asks to go ahead — a question, as its "are
+ * you sure" is — rather than tells (a charge made, credits short).
+ */
+export const asksToGoAhead = (said) =>
+  Boolean(said) &&
+  !/insufficient|not enough|unable|error|failed|not found|no (?:horse|match|result)/i.test(said) &&
+  /\?|are you sure|do you (?:wish|want)|would you like|(?:click|press|select) yes/i.test(said);
+
+/**
+ * A page's parts that say what Arion did, for checking the client against
+ * the live site: the message box, the horse-search dialog, the first report
+ * tab, My Reports, the search area's text and the scripts that show or load
+ * any of them. Form state (__VIEWSTATE and the like) is left out.
+ */
+export function excerptPage(html) {
+  const s = String(html ?? "");
+  const clean = (h, max) =>
+    String(h ?? "")
+      .replace(/<input\b[^>]*\bname\s*=\s*["']__[A-Z]+["'][^>]*>/gi, "")
+      .replace(/\bvalue\s*=\s*("[^"]{200,}"|'[^']{200,}')/gi, 'value="(long)"')
+      .replace(/\s+/g, " ")
+      .slice(0, max);
+  const scripts = [...s.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)]
+    .flatMap((m) => m[1].split(/\n|;(?=\s*(?:\$create|Sys\.|\$find|window\.|document\.))/))
+    .map((l) => l.trim())
+    .filter((l) => /TabHorseReport|reportFrame|loadReport|window\.open|modalPopupMessage|HorseSearchModalPopupExtender|\.show\(|PrintReport/i.test(l))
+    .map((l) => l.slice(0, 400))
+    .slice(0, 40);
+  return {
+    popup: popupMessage(s),
+    dialog: { prompt: dialogPrompt(s), choices: parseCandidates(s).map((c) => c.label).slice(0, 30), html: clean(dialogScope(s), 8000) },
+    reportTab: clean(innerOf(s, "ctl00_MainContentArea_tabbedReport_tabs_TabHorseReport1"), 5000),
+    reportTabs: parseReportTabs(s),
+    reportFiles: parseReportFiles(s).map((f) => ({ kind: f.kind, path: new URL(f.url).pathname + new URL(f.url).search, tab: f.tab })),
+    myReports: clean(innerOf(s, "ctl00_MainContentArea_tabbedReport_tabs_TabMyReports"), 8000),
+    searchArea: textOf(innerOf(s, "ctl00_MainContentArea_updSearch") ?? "").slice(0, 1500),
+    scripts,
+  };
+}
+
+/**
  * A page's shape, for checking the client against the live site: its form's
  * field names (never their values), the postback controls and the links it
  * offers, the report tabs, and a little of its visible text.
@@ -521,8 +612,17 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
   let landed = null; // where the last login went on to
   let refused = null; // { at, message, page }: the last refusal, which pauses the next try
   let queue = Promise.resolve();
-  const picks = new Map(); // token -> { search, choice, at }
+  // token -> { search, steps, choice, prompt, page, at }: a search, the picks
+  // already made in Arion's dialogs, and the choice this token stands for
+  // (none once the dialogs are done and a report can be made)
+  const picks = new Map();
   const files = new Map(); // id -> { url, label, at }
+  const pages = []; // excerpts of the last pages Arion answered, for diagnose
+  const keep = (step, res) => {
+    if (res?.html === undefined) return;
+    pages.push({ at: new Date(now()).toISOString(), step, path: new URL(res.url).pathname, ...excerptPage(res.html) });
+    while (pages.length > 8) pages.shift();
+  };
   const day = { date: today(), count: 0 };
   const LIMIT = Number(env.ARION_DAILY_LIMIT) > 0 ? Number(env.ARION_DAILY_LIMIT) : 25;
   const TOKEN_TTL = 20 * 60 * 1000;
@@ -680,11 +780,12 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
    * Post a page's form back with these fields set and this control pressed.
    * `page` is a page ({ html }) or a form already read from one ({ fields }).
    */
-  async function postBack(page, { set = {}, button = null, target = null, argument = "" } = {}) {
+  async function postBack(page, { set = {}, button = null, target = null, argument = "", step = "postback" } = {}) {
     const fields = page.fields ?? parseForm(page.html).fields;
     const form = { ...fields, ...set, __EVENTTARGET: target ?? "", __EVENTARGUMENT: target ? argument : "" };
     if (button) form[button] = (page.html !== undefined ? buttonValue(page.html, button) : null) ?? "Search";
     const next = await request(REPORTS_PATH, { form });
+    keep(step, next);
     if (asksForLogin(next.html)) {
       loggedInAt = 0;
       throw new ArionError("Arion's session ended mid-step; search again", { status: 409, code: "session" });
@@ -692,12 +793,69 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
     return next;
   }
 
-  /** Answer Arion's own "are you sure" for a paid report: the person already said yes. */
-  async function confirmed(result) {
-    if (postbacks(result.html).some((p) => p.target === "ctl00$btnYes") && !parseReportFiles(result.html).length) {
-      return postBack(result, { target: "ctl00$btnYes" });
+  /** Press a search's Search as a person does: its link, or on a page without one, the hidden submit. */
+  const pressSearch = (page, how) =>
+    page.html !== undefined && !postbacks(page.html).some((p) => p.target === how.link) && buttonValue(page.html, how.button) !== null
+      ? { button: how.button }
+      : { target: how.link };
+
+  /** Send one pick from Arion's dialog: its row's postback, or its radio button. */
+  const sendPick = (page, choice, menu, step) =>
+    choice.target
+      ? postBack(page, { set: { [MENU_FIELD]: menu }, target: choice.target, argument: choice.argument ?? "", step })
+      : postBack(page, { set: { [MENU_FIELD]: menu, [choice.radio.name]: choice.radio.value }, target: choice.radio.name, step });
+
+  /**
+   * Answer Arion's own "are you sure" for a paid report — the person already
+   * said yes — only when its message box is actually asking. The box and its
+   * Yes are in every page's markup; pressing Yes when nothing was asked is
+   * not ours to do.
+   */
+  async function confirmed(result, menu) {
+    const said = popupMessage(result.html);
+    if (parseReportFiles(result.html).length || !asksToGoAhead(said)) return { result, said };
+    const next = await postBack(result, { set: { [MENU_FIELD]: menu }, target: "ctl00$btnYes", step: "yes" });
+    return { result: next, said: popupMessage(next.html), answered: said };
+  }
+
+  /**
+   * What a search or a pick led to: Arion's dialog asking for a horse (with
+   * its own heading, and the choices it lists), or nothing more to pick.
+   * `before` is the picks already made; each choice gets a token that
+   * carries them.
+   */
+  const sameList = (found, list) => Boolean(list) && found.length === list.length && found.every((c, i) => c.label === list[i]);
+
+  function nextStep(search, before, result) {
+    const said = popupMessage(result.html);
+    const found = parseCandidates(result.html);
+    const prompt = dialogPrompt(result.html);
+    // a list just like the one last picked from is that list left in the
+    // page, not a new question
+    if (found.length && !sameList(found, before[before.length - 1]?.list)) {
+      const fields = parseForm(result.html).fields;
+      return {
+        step: { number: before.length + 1, prompt },
+        chosen: before.map((b) => ({ prompt: b.prompt, label: b.label })),
+        message: said,
+        candidates: found.map((choice) => {
+          const t = token();
+          picks.set(t, { search, steps: before, choice, prompt, list: found.map((c) => c.label), page: { fields }, at: now() });
+          return { token: t, label: choice.label, cells: choice.cells };
+        }),
+      };
     }
-    return result;
+    // nothing (more) to pick: the search and its picks are the horse, and a
+    // report is made by sending them again with the report named
+    const t = token();
+    picks.set(t, { search, steps: before, choice: null, at: now() });
+    return {
+      candidates: [],
+      chosen: before.map((b) => ({ prompt: b.prompt, label: b.label })),
+      message: said,
+      direct: { token: t },
+      text: textOf(result.html.replace(/<head\b[\s\S]*?<\/head>/i, "")).slice(0, 400),
+    };
   }
 
   const remember = (file, label) => {
@@ -747,28 +905,32 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
           set[field] = v;
         }
         const page = await reportPage();
-        const result = await postBack(page, { set: { ...set, [MENU_FIELD]: "" }, button: how.button });
-        const search = { kind, set, fields: parseForm(result.html).fields };
-        const found = parseCandidates(result.html);
-        if (found.length) {
-          return {
-            candidates: found.map((choice) => {
-              const t = token();
-              picks.set(t, { search, choice, at: now() });
-              return { token: t, label: choice.label, cells: choice.cells };
-            }),
-          };
-        }
-        // no list to choose from: the search is the choice (a single horse,
-        // or a theoretical one), repeated with the report named when bought
-        const t = token();
-        picks.set(t, { search, choice: null, at: now() });
-        return { candidates: [], direct: { token: t }, text: textOf(result.html.replace(/<head\b[\s\S]*?<\/head>/i, "")).slice(0, 400) };
+        const result = await postBack(page, { set: { ...set, [MENU_FIELD]: "" }, ...pressSearch(page, how), step: `search:${kind}` });
+        return nextStep({ kind, set }, [], result);
       }),
 
     /**
-     * Buy one report for one search result. Refused unless `confirm` is true,
-     * `credits` is the price the person was shown, and the day has room.
+     * Pick one of the horses Arion's dialog lists, and say what Arion asks
+     * next: another pick (the dam, after the sire) or nothing, when a report
+     * can be made. Free: the report menu goes empty.
+     */
+    choose: (t) =>
+      serial(async () => {
+        tidy();
+        const pick = picks.get(String(t));
+        if (!pick?.choice) throw new ArionError("That list has expired; search again", { status: 410, code: "expired" });
+        const result = await sendPick(pick.page, pick.choice, "", `pick:${pick.steps.length + 1}`);
+        const steps = [...pick.steps, { prompt: pick.prompt, label: pick.choice.label, cells: pick.choice.cells, list: pick.list }];
+        return nextStep(pick.search, steps, result);
+      }),
+
+    /**
+     * Buy one report for one horse: a search, and the picks made in Arion's
+     * dialogs. Refused unless `confirm` is true, `credits` is the price the
+     * person was shown, and the day has room. Arion makes a report when the
+     * search or a pick is sent with the report named, so the search is sent
+     * again with it, and each pick in turn, found by its label in the list
+     * Arion shows again; a list that no longer holds it stops the order.
      */
     report: ({ token: t, reportId, confirm = false, credits = null } = {}) =>
       serial(async () => {
@@ -783,30 +945,37 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
         if (day.date !== today()) Object.assign(day, { date: today(), count: 0 });
         if (day.count >= LIMIT) throw new ArionError(`Today's limit of ${LIMIT} Arion reports is reached (ARION_DAILY_LIMIT)`, { status: 429, code: "limit" });
 
-        const menu = { [MENU_FIELD]: r.id };
-        const { search, choice } = pick;
-        let result;
-        if (choice?.target) {
-          result = await postBack({ fields: search.fields }, { set: menu, target: choice.target, argument: choice.argument });
-        } else if (choice?.radio) {
-          result = await postBack({ fields: search.fields }, { set: { ...menu, [choice.radio.name]: choice.radio.value }, target: choice.radio.name });
-        } else {
-          const page = await reportPage();
-          result = await postBack(page, { set: { ...search.set, ...menu }, button: SEARCHES[search.kind].button });
+        const steps = pick.choice ? [...pick.steps, { prompt: pick.prompt, label: pick.choice.label, cells: pick.choice.cells, list: pick.list }] : pick.steps;
+        const changed = (what) => new ArionError(`${what}, so nothing was ordered; search again`, { status: 409, code: "changed" });
+        const page = await reportPage();
+        let result = await postBack(page, { set: { ...pick.search.set, [MENU_FIELD]: r.id }, ...pressSearch(page, SEARCHES[pick.search.kind]), step: "order:search" });
+        for (const [i, s] of steps.entries()) {
+          if (parseReportFiles(result.html).length || asksToGoAhead(popupMessage(result.html))) break; // Arion went ahead sooner
+          const row = parseCandidates(result.html).find((c) => c.label === s.label);
+          if (!row) throw changed(`Arion no longer lists ${s.label}${s.prompt ? ` (${s.prompt})` : ""}`);
+          result = await sendPick(result, row, r.id, `order:pick:${i + 1}`);
         }
-        result = await confirmed(result);
+        const more = parseCandidates(result.html);
+        if (!parseReportFiles(result.html).length && !asksToGoAhead(popupMessage(result.html)) && more.length && !sameList(more, steps[steps.length - 1]?.list)) {
+          throw changed(`Arion asks for another pick${dialogPrompt(result.html) ? ` (${dialogPrompt(result.html)})` : ""}`);
+        }
+        const { result: done, said, answered } = await confirmed(result, r.id);
         day.count += 1;
         picks.delete(String(t));
-        const found = parseReportFiles(result.html);
-        const horse = choice?.cells?.[0] ?? choice?.label ?? Object.values(search.set).join(" x ");
+        const found = parseReportFiles(done.html);
+        const horse = steps.length ? steps.map((s) => s.cells?.[0] ?? s.label).join(" x ") : Object.values(pick.search.set).join(" x ");
         const label = `${r.label} · ${horse}`;
-        log(`[arion] report bought: ${r.label} (${r.credits} credits), ${found.length} file(s)`);
+        log(`[arion] report ordered: ${r.label} (${r.credits} credits) for ${horse}, ${found.length} file(s)${answered ? `, answered "${answered}"` : ""}${said ? `, Arion said "${said}"` : ""}`);
         return {
           report: { id: r.id, label: r.label, credits: r.credits },
           horse,
           files: found.map((f) => remember(f, label)),
-          tabs: parseReportTabs(result.html),
-          note: found.length ? null : "Arion took the order but its page did not name the report: look under My Reports.",
+          tabs: parseReportTabs(done.html),
+          answered: answered ?? null,
+          message: said ?? null,
+          note: found.length
+            ? null
+            : `No report came back from Arion${said ? `, which said: "${said}"` : ""}. If Arion made one, it is under My Reports; look there before ordering again.`,
         };
       }),
 
@@ -815,6 +984,7 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
       serial(async () => {
         tidy();
         const page = await reportPage();
+        keep("my-reports", page);
         const fields = parseForm(page.html).fields;
         return parseMyReports(page.html).map((row) => {
           let open = null;
@@ -833,9 +1003,10 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
       serial(async () => {
         const pick = picks.get(String(t));
         if (!pick?.choice?.saved) throw new ArionError("That list has expired; open My Reports again", { status: 410, code: "expired" });
-        const result = await postBack({ fields: pick.search.fields }, { target: pick.choice.target, argument: pick.choice.argument });
+        // a report already bought: the menu goes empty, so opening it cannot order another
+        const result = await postBack({ fields: pick.search.fields }, { set: { [MENU_FIELD]: "" }, target: pick.choice.target, argument: pick.choice.argument, step: "open-saved" });
         picks.delete(String(t));
-        return { files: parseReportFiles(result.html).map((f) => remember(f, pick.choice.label)) };
+        return { files: parseReportFiles(result.html).map((f) => remember(f, pick.choice.label)), message: popupMessage(result.html) };
       }),
 
     /**
@@ -863,9 +1034,12 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
     /**
      * The live pages' shape, for checking the parsers (names, never values).
      * A login that fails says why, with the shape of the page it ended on.
+     * `last` asks nothing of Arion: it gives the parts of the last pages
+     * Arion answered (searches, picks, orders) that say what Arion did.
      */
-    diagnose: ({ name = "Frankel" } = {}) =>
+    diagnose: ({ name = "Frankel", last = false } = {}) =>
       serial(async () => {
+        if (last) return { pages: [...pages] };
         let page;
         try {
           page = await reportPage();
@@ -875,8 +1049,8 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
         }
         const out = { login: { ok: true, landed }, reportsPage: describePage(page.html) };
         if (name) {
-          const result = await postBack(page, { set: { [SEARCHES.named.fields.name]: name, [MENU_FIELD]: "" }, button: SEARCHES.named.button });
-          out.search = describePage(result.html);
+          const result = await postBack(page, { set: { [SEARCHES.named.fields.name]: name, [MENU_FIELD]: "" }, ...pressSearch(page, SEARCHES.named), step: "diagnose:search" });
+          out.search = { ...describePage(result.html), ...excerptPage(result.html) };
         }
         return out;
       }),
