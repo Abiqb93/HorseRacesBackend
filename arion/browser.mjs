@@ -132,6 +132,49 @@ export async function shapeOf(page) {
 }
 
 /**
+ * The report Arion has on screen: where its content is and how it is taken
+ * away.
+ *
+ * The page carries hdnReportFileName per tab, and the report area offers
+ * Email, Save As RTF and Add to Stallion. Which of those names the file this
+ * client should serve is the last thing about this flow nobody has seen, so
+ * it reports all of them rather than choosing in advance.
+ */
+export async function reportOn(page) {
+  return page.evaluate(() => {
+    const abs = (h) => {
+      try {
+        return new URL(h, location.href).href;
+      } catch {
+        return h;
+      }
+    };
+    return {
+      // the hidden field each report tab fills in once its report is built
+      files: [...document.querySelectorAll('input[id*="hdnReportFileName"]')]
+        .map((el) => ({ id: el.id, value: el.value || null }))
+        .filter((f) => f.value),
+      // the tab strip, so the horse's own tab can be told from General
+      tabs: [...document.querySelectorAll('[id*="tabbedReport_tabs"] span, [id*="__tab_"]')]
+        .map((el) => (el.textContent ?? "").trim())
+        .filter(Boolean)
+        .slice(0, 8),
+      // Email | Save As RTF | Add to Stallion, and anything else offered
+      actions: [...document.querySelectorAll("a")]
+        .filter((a) => /save as|email|add to stallion|print|pdf|download/i.test(a.textContent ?? ""))
+        .map((a) => ({ text: (a.textContent ?? "").trim(), id: a.id || null, href: (a.getAttribute("href") ?? "").slice(0, 120) }))
+        .slice(0, 12),
+      // a report rendered in a frame is fetched by its address, not scraped
+      frames: [...document.querySelectorAll("iframe, embed, object")]
+        .map((f) => abs(f.getAttribute("src") ?? f.getAttribute("data") ?? ""))
+        .filter(Boolean)
+        .slice(0, 6),
+      loading: /Loading Report/i.test(document.body.textContent ?? ""),
+    };
+  });
+}
+
+/**
  * Is there a session, as Arion itself shows it?
  *
  * Not "is a password box on screen". Arion keeps its login form in the page
@@ -309,8 +352,15 @@ export async function probe({ env = process.env, name = "Frankel", kind = "named
       if (picked.one?.link) {
         try {
           await page.click(`#${picked.one.link}`, { timeout: 15000 });
-          await page.waitForTimeout(3000);
+          // Selecting a horse opens a tab named after it and starts the
+          // report at once — the last run caught it saying "Loading
+          // Report...". Wait for that to go, rather than guessing at a delay.
+          await page
+            .waitForFunction(() => !/Loading Report/i.test(document.body.textContent ?? ""), null, { timeout: 60000, polling: 500 })
+            .catch(() => {});
+          await page.waitForTimeout(2000);
           out.afterSelect = await shapeOf(page);
+          out.report = await reportOn(page);
           if (shot) out.selectShot = (await page.screenshot({ type: "jpeg", quality: 40 })).toString("base64");
         } catch (err) {
           out.selectWhy = err.message;
