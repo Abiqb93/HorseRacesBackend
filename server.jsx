@@ -15499,6 +15499,9 @@ app.get("/api/arion/browser-check", async (req, res) => {
     return res.json(await mod.probe({
       name: String(req.query.name ?? "Frankel").slice(0, 60),
       kind: ["named", "dam"].includes(req.query.kind) ? req.query.kind : "named",
+      // ?shot=1 returns a JPEG of the page after the search, base64, so the
+      // dialog can be looked at rather than guessed at through selectors
+      shot: /^(1|true|on)$/i.test(String(req.query.shot ?? "")),
     }));
   } catch (err) {
     // playwright-core missing, or no browser in the image: that is an answer
