@@ -15476,6 +15476,33 @@ app.get("/api/arion/diagnose", async (req, res) => {
   }
 });
 
+// Does a real browser work on this service, and what does Arion's search
+// actually answer with?
+//
+// The connection reads Arion by emulating its form posts, which cannot open
+// the modal dialog Arion puts its search results in — so every search came
+// back looking empty, including ones Arion certainly answers. This route
+// launches Chromium instead, logs in, runs one search and reports the shape of
+// what came back, along with the memory the browser cost. It never touches the
+// report menu, so it cannot order anything: searching on Arion is free.
+//
+// It answers 200 with `ok: false` and a `stage` when it fails, because saying
+// which step broke is the whole point of it.
+app.get("/api/arion/browser-check", async (req, res) => {
+  if (!/^(on|1|true)$/i.test(process.env.ARION_DIAGNOSE ?? "")) return res.status(404).json({ error: "Off: set ARION_DIAGNOSE=on to use it." });
+  try {
+    const mod = await import("./arion/browser.mjs");
+    return res.json(await mod.probe({
+      name: String(req.query.name ?? "Frankel").slice(0, 60),
+      kind: ["named", "dam"].includes(req.query.kind) ? req.query.kind : "named",
+    }));
+  } catch (err) {
+    // playwright-core missing, or no browser in the image: that is an answer
+    console.error("[arion] browser-check:", err.message);
+    return res.json({ ok: false, stage: "launch", why: err.message });
+  }
+});
+
 // Start the server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);

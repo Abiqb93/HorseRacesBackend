@@ -1,0 +1,12 @@
+# Chromium for the Arion connection (arion/browser.mjs).
+#
+# Arion is an ASP.NET WebForms site whose search results arrive in a modal
+# dialog its own script opens, so the connection needs a real browser rather
+# than scripted form posts. The repo depends on playwright-core, which ships no
+# browser of its own, so one comes from the image instead: a browser Playwright
+# downloads at install time would put a large, network-dependent step in front
+# of every deploy of the rest of the API.
+#
+# "..." keeps nixpacks' own detected packages and adds to them.
+[phases.setup]
+nixPkgs = ["...", "chromium"]
