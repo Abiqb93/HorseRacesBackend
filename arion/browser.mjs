@@ -158,22 +158,60 @@ export async function signedIn(page) {
       offersLogin: says(/^log\s*in$/i),
       greeting: (text.match(/Hi\s+[A-Za-z]+/) ?? [null])[0],
       failure: (document.getElementById("ctl00_LoginTop_FailureText")?.textContent ?? "").trim() || null,
+      // what the header actually offers, so the control to press is a fact
+      header: bits
+        .filter((el) => el.matches("a, input, button") && /^(log\s*in|register|log\s*out|my account)$/i.test((el.textContent ?? el.value ?? "").trim()))
+        .map((el) => ({ tag: el.tagName.toLowerCase(), id: el.id || null, href: (el.getAttribute("href") ?? "").slice(0, 90) || null, text: (el.textContent ?? el.value ?? "").trim() }))
+        .slice(0, 10),
     };
   });
 }
 
 /** Sign in through the header box, which is the one Arion's session follows. */
 export async function signIn(page, user, password) {
-  const button = page.locator("a, input[type=button], input[type=submit], span").filter({ hasText: /^\s*log\s*in\s*$/i }).first();
-  if (await button.count()) await button.click({ timeout: 10000 }).catch(() => {});
-  await page.waitForSelector(idOf("ctl00$LoginTop$Password"), { state: "visible", timeout: 15000 });
-  await page.fill(idOf("ctl00$LoginTop$UserName"), user);
-  await page.fill(idOf("ctl00$LoginTop$Password"), password);
-  await Promise.all([
-    page.waitForLoadState("load", { timeout: 45000 }).catch(() => {}),
-    page.click(idOf("ctl00$LoginTop$LoginButton")),
-  ]);
-  await page.waitForTimeout(2000);
+  // Press what the header offers, if it can be found.
+  await page
+    .locator("a, input[type=button], input[type=submit]")
+    .filter({ hasText: /^\s*log\s*in\s*$/i })
+    .first()
+    .click({ timeout: 5000 })
+    .catch(() => {});
+
+  // Then make sure. Arion's own hideLogin() hides ctl00_LoginTop_pnlLogin and
+  // coverScreen, so showing them is how the panel comes back — and not
+  // depending on finding the right button is the difference between a login
+  // and a fifteen-second wait on a field that was never going to appear.
+  await page.evaluate(() => {
+    for (const id of ["ctl00_LoginTop_pnlLogin", "coverScreen"]) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = "block";
+    }
+  });
+
+  try {
+    await page.waitForSelector(idOf("ctl00$LoginTop$Password"), { state: "visible", timeout: 10000 });
+    await page.fill(idOf("ctl00$LoginTop$UserName"), user);
+    await page.fill(idOf("ctl00$LoginTop$Password"), password);
+    await Promise.all([
+      page.waitForLoadState("load", { timeout: 45000 }).catch(() => {}),
+      page.click(idOf("ctl00$LoginTop$LoginButton")),
+    ]);
+  } catch {
+    // The panel would not come forward. The form is still in the page and
+    // Arion's own __doPostBack will send it, so the login does not depend on
+    // the panel being on screen.
+    await page.evaluate(
+      ({ u, p }) => {
+        document.getElementById("ctl00_LoginTop_UserName").value = u;
+        document.getElementById("ctl00_LoginTop_Password").value = p;
+        // eslint-disable-next-line no-undef
+        __doPostBack("ctl00$LoginTop$LoginButton", "");
+      },
+      { u: user, p: password },
+    );
+    await page.waitForLoadState("load", { timeout: 45000 }).catch(() => {});
+  }
+  await page.waitForTimeout(2500);
 }
 
 /**
