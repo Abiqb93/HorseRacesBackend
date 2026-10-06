@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { BROWSER_NAMES, CHROMIUM_PATHS, SEARCH_GRID, asCandidate, idOf, isHorseRow, pickCandidate, pickChromium } from "./browser.mjs";
+import { BROWSER_NAMES, CHROMIUM_PATHS, SEARCH_GRID, asCandidate, filesFrom, horseIdFrom, idOf, isHorseRow, pickCandidate, pickChromium, withSession } from "./browser.mjs";
 
 test("a control's id is its name with the dollars swapped for underscores", () => {
   assert.equal(idOf("ctl00$MainContentArea$txtNamedHorse"), "#ctl00_MainContentArea_txtNamedHorse");
@@ -115,4 +115,49 @@ test("asCandidate refuses a row with no name, and a year that is not one", () =>
   assert.equal(asCandidate(["", "AUS", "2006"], "x"), null);
   assert.equal(asCandidate(["Dam Of", "AUS", "n/a"], "x").year, null);
   assert.equal(asCandidate(["Dam Of", "AUS", "12"], "x").year, null, "a page number is not a foaling year");
+});
+
+/* ------------------------------------------------------------------------ */
+/* The finished report, as a live run reported it.                          */
+/* ------------------------------------------------------------------------ */
+const LIVE_HIDDEN =
+  "<PdfFileName>Starspangledbanner_Pedigreesreport-3_134357747794695177.pdf</PdfFileName>" +
+  "<RtfFileName>Starspangledbanner_Pedigreesreport-3_134357747794695177.rtf</RtfFileName>";
+
+test("the report's two files are read out of the hidden field Arion fills in", () => {
+  const files = filesFrom(LIVE_HIDDEN);
+  assert.deepEqual(files.map((f) => f.kind), ["pdf", "rtf"]);
+  assert.equal(files[0].url, "https://arion.co.nz/files/reports/Starspangledbanner_Pedigreesreport-3_134357747794695177.pdf");
+  // which is where the page's own "Save As RTF" points
+  assert.equal(files[1].url.endsWith(".rtf"), true);
+});
+
+test("a field with no report in it yields no files, and a path is not a file name", () => {
+  assert.deepEqual(filesFrom(""), []);
+  assert.deepEqual(filesFrom(null), []);
+  assert.deepEqual(filesFrom("<PdfFileName></PdfFileName>"), []);
+  // Arion names a file, never a place; anything that walks is refused rather
+  // than fetched
+  assert.deepEqual(filesFrom("<PdfFileName>../../web.config</PdfFileName>"), []);
+  assert.deepEqual(filesFrom("<PdfFileName>/etc/passwd</PdfFileName>"), []);
+});
+
+test("Arion's own id for the horse is kept from the report frame", () => {
+  assert.equal(
+    horseIdFrom([
+      "https://arion.co.nz/ReportLoader.aspx?HorseName=Starspangledbanner&HorseId=103364639&Class=pedigreeReportFrame1&ReportType=PED01&Style=I",
+      "https://arion.co.nz/HabrokRefresh.aspx",
+    ]),
+    "103364639",
+    "a name is not a horse; this number is",
+  );
+  assert.equal(horseIdFrom(["https://arion.co.nz/PedigreeReports/PedigreeReports.aspx"]), null);
+  assert.equal(horseIdFrom([]), null);
+});
+
+test("a session refuses to start without the desk's login, before any browser is launched", async () => {
+  await assert.rejects(
+    withSession(() => {}, { env: {} }),
+    (e) => e.code === "unconfigured" && e.status === 503,
+  );
 });

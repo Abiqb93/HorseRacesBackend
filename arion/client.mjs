@@ -519,7 +519,7 @@ export const RELAY_HTML_HEADERS = {
  * `fetch` and the environment are passed in so the tests can stand in for
  * Arion; in the server they are the real ones.
  */
-export function createClient({ fetch: doFetch = globalThis.fetch, env = process.env, now = () => Date.now(), log = () => {}, store = null } = {}) {
+export function createClient({ fetch: doFetch = globalThis.fetch, env = process.env, now = () => Date.now(), log = () => {}, store = null, loadBrowser = () => import("./browser.mjs") } = {}) {
   const jar = new Jar();
   let loggedInAt = 0;
   let landed = null; // where the last login went on to
@@ -774,47 +774,42 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
       }),
 
     /**
-     * Search as the page does: `kind` is named (a horse's name), dam (an
-     * unnamed horse by its dam) or theoretical (a sire and a dam). The report
-     * menu is posted empty, so a search can never buy a report, even one that
-     * lands straight on a single horse.
+     * Search Arion, in a browser, and say which horses it offered.
+     *
+     * `kind` is named (a horse's name), dam (an unnamed horse by its dam) or
+     * theoretical (a sire and a dam). Searching costs nothing and orders
+     * nothing: no report menu is touched.
+     *
+     * A token is handed back only for a horse Arion itself listed. What the
+     * token remembers is the horse — its name, year and country — and the
+     * search that found it, not a control on a page that will be gone by the
+     * time a report is asked for.
      */
-    search: ({ kind = "named", name = "", sire = "", dam = "" } = {}) =>
+    search: ({ kind = "named", name = "", sire = "", dam = "", year = null, country = "" } = {}) =>
       serial(async () => {
         tidy();
-        const how = SEARCHES[kind];
-        if (!how) throw new ArionError(`Unknown search: ${kind}`, { status: 400, code: "input" });
-        const values = { name, sire, dam };
-        const set = {};
-        for (const [k, field] of Object.entries(how.fields)) {
-          const v = String(values[k] ?? "").trim();
-          if (!v || v.length > 60) throw new ArionError(`Give the ${k === "name" ? "horse's name" : k}`, { status: 400, code: "input" });
-          set[field] = v;
-        }
-        const page = await reportPage();
-        const result = await postBack(page, { set: { ...set, [MENU_FIELD]: "" }, button: how.button });
-        const search = { kind, set, fields: parseForm(result.html).fields };
-        const found = parseCandidates(result.html);
-        if (found.length) {
+        const browser = await loadBrowser();
+        const values = { kind, name, sire, dam };
+        const horses = await browser.searchHorses({ env, ...values });
+        if (!horses || !horses.length) {
           return {
-            found: true,
-            candidates: found.map((choice) => {
-              const t = token();
-              picks.set(t, { search, choice, kind: "candidate", at: now() });
-              return { token: t, label: choice.label, cells: choice.cells };
-            }),
+            candidates: [],
+            found: false,
+            reason: horses === null ? "no-dialog" : "none",
+            text: horses === null ? "Arion answered the search without its usual list of horses." : "Arion holds no horse by that name.",
           };
         }
-        // No list came back, and this client cannot tell Arion's three silences
-        // apart: a horse so unambiguous it needs no choosing, no such horse at
-        // all, and a postback that did nothing. It used to call that first one
-        // and hand back a token worth 35 to 45 credits. It claims none of them
-        // now — nothing here is buyable — and says so rather than guessing.
+        // If the page knew a year or a country, say which one it means; the
+        // desk still gets the whole list to choose from.
+        const narrowed = browser.pickCandidate(horses, { name: name || dam, year, country });
         return {
-          candidates: [],
-          found: false,
-          reason: "unconfirmed",
-          text: textOf(result.html.replace(/<head\b[\s\S]*?<\/head>/i, "")).slice(0, 400),
+          found: true,
+          best: narrowed.one ? narrowed.one.label : null,
+          candidates: horses.map((horse) => {
+            const t = token();
+            picks.set(t, { kind: "candidate", values, horse, at: now() });
+            return { token: t, label: horse.label, cells: horse.cells, best: narrowed.one === horse };
+          }),
         };
       }),
 
@@ -825,17 +820,20 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
      * and nothing to spend. What is still refused: a token Arion never
      * confirmed a horse for, a token from My Reports (already made), and a
      * day that has run past LIMIT, which stops a loop rather than a bill.
+     *
+     * The search is run again in a fresh browser, because a control id from
+     * the last visit means nothing in this one. The horse is found in the new
+     * dialog by name, year and country — the same tie-break that chose it —
+     * and if Arion no longer offers it, that is said rather than guessed
+     * around.
      */
     report: ({ token: t, reportId } = {}) =>
       serial(async () => {
         tidy();
         const pick = picks.get(String(t));
         if (!pick) throw new ArionError("That search has expired; search again", { status: 410, code: "expired" });
-        // Only a horse Arion itself listed is buyable. A token from My Reports
-        // names something already paid for, and buying against it would pay
-        // twice.
         if (pick.kind !== "candidate") {
-          throw new ArionError("Arion has not confirmed which horse that is, so there is nothing to buy; search again and pick one from its list", { status: 400, code: "input" });
+          throw new ArionError("Arion has not confirmed which horse that is, so there is nothing to make; search again and pick one from its list", { status: 400, code: "input" });
         }
         const r = reports.find((x) => x.id === reportId);
         if (!r) throw new ArionError("Unknown report", { status: 400, code: "input" });
@@ -847,30 +845,23 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
           );
         }
 
-        const menu = { [MENU_FIELD]: r.id };
-        const { search, choice } = pick;
-        let result;
-        if (choice?.target) {
-          result = await postBack({ fields: search.fields }, { set: menu, target: choice.target, argument: choice.argument });
-        } else if (choice?.radio) {
-          result = await postBack({ fields: search.fields }, { set: { ...menu, [choice.radio.name]: choice.radio.value }, target: choice.radio.name });
-        } else {
-          const page = await reportPage();
-          result = await postBack(page, { set: { ...search.set, ...menu }, button: SEARCHES[search.kind].button });
-        }
-        result = await confirmed(result);
+        const browser = await loadBrowser();
+        const { horse, values } = pick;
+        const out = await browser.makeReport({ env, values, horse, label: r.label });
+
         await spend();
         picks.delete(String(t));
-        const found = parseReportFiles(result.html);
-        const horse = choice?.cells?.[0] ?? choice?.label ?? Object.values(search.set).join(" x ");
-        const label = `${r.label} · ${horse}`;
-        log(`[arion] report bought: ${r.label} (${r.credits} credits), ${found.length} file(s)`);
+        const label = `${r.label} · ${horse.label}`;
+        log(`[arion] report made: ${r.label} for ${horse.label}${out.horseId ? ` (Arion horse ${out.horseId})` : ""}, ${out.files.length} file(s)`);
         return {
           report: { id: r.id, label: r.label, credits: r.credits },
-          horse,
-          files: found.map((f) => remember(f, label)),
-          tabs: parseReportTabs(result.html),
-          note: found.length ? null : "Arion took the order but its page did not name the report: look under My Reports.",
+          horse: horse.label,
+          horseId: out.horseId,
+          files: out.files.map((f) => remember(f, label)),
+          tabs: out.tabs,
+          note: out.files.length
+            ? null
+            : `Arion built no file${out.chose?.chosen ? "" : ` — its menu offers no "${r.label}"`}. Look under My Reports.`,
         };
       }),
 

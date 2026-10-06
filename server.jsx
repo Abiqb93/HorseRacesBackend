@@ -15406,9 +15406,12 @@ app.get("/api/arion/status", async (req, res) => {
 
 app.post("/api/arion/search", async (req, res) => {
   const { client } = await arion();
-  const { kind, name, sire, dam } = req.body ?? {};
+  // year and country come from whichever page linked here. A name is not a
+  // horse — Arion holds two Starspangledbanners — so they say which one is
+  // meant; the whole list still comes back for the desk to choose from.
+  const { kind, name, sire, dam, year, country } = req.body ?? {};
   try {
-    return res.json(await client.search({ kind, name, sire, dam }));
+    return res.json(await client.search({ kind, name, sire, dam, year: Number(year) || null, country: String(country ?? "").slice(0, 8) }));
   } catch (err) {
     return arionFail(res, err);
   }

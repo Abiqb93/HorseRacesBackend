@@ -91,6 +91,45 @@ ${HEADER()}
 
 /* ------------------------------------------------------------ the parsers */
 
+
+/* ------------------------------------------------------------------------ */
+/* Arion in a browser, stood in for.                                         */
+/*                                                                           */
+/* The seam is the two calls the client makes — searchHorses and makeReport  */
+/* — and the horses are the ones a live run of /api/arion/browser-check      */
+/* actually returned for "Starspangledbanner". Two of that name, which is    */
+/* the whole reason the client carries a year and a country.                 */
+/* ------------------------------------------------------------------------ */
+const { pickCandidate } = await import("./browser.mjs");
+
+const LIVE_HORSES = [
+  { name: "Starspangledbanner", country: "SAF", year: 2008, sire: "Indigo Magic", dam: "Enchanting Queen", sex: null,
+    link: "grid_ctl02_lnkHorseName", label: "Starspangledbanner (SAF) 2008", cells: ["Starspangledbanner", "SAF", "2008"] },
+  { name: "Starspangledbanner", country: "AUS", year: 2006, sire: "Choisir", dam: "Gold Anthem", sex: "S",
+    link: "grid_ctl03_lnkHorseName", label: "Starspangledbanner (AUS) 2006", cells: ["Starspangledbanner", "AUS", "2006"] },
+];
+const LIVE_FILES = [
+  { kind: "pdf", name: "Starspangledbanner_Pedigreesreport-3_1343.pdf", url: "https://arion.co.nz/files/reports/Starspangledbanner_Pedigreesreport-3_1343.pdf" },
+  { kind: "rtf", name: "Starspangledbanner_Pedigreesreport-3_1343.rtf", url: "https://arion.co.nz/files/reports/Starspangledbanner_Pedigreesreport-3_1343.rtf" },
+];
+
+function fakeBrowser({ horses = LIVE_HORSES, files = LIVE_FILES, menu = true } = {}) {
+  const calls = [];
+  const mod = {
+    pickCandidate,
+    searchHorses: async (args) => {
+      calls.push({ searchHorses: args });
+      return horses;
+    },
+    makeReport: async (args) => {
+      calls.push({ makeReport: args });
+      return { chose: { chosen: menu }, tabs: ["General", args.horse.name], horseId: "103364639", files: menu ? files : [] };
+    },
+  };
+  return { mod, calls, load: async () => mod };
+}
+
+
 test("the form as a browser posts it: hidden and text fields, checked boxes, chosen options, no buttons", () => {
   const { action, fields } = parseForm(reportsPage());
   assert.equal(action, "PedigreeReports.aspx");
@@ -229,62 +268,101 @@ test("without the login set, nothing is asked of Arion", async () => {
   const arion = fakeArion();
   const c = createClient({ fetch: arion.fetch, env: {} });
   assert.equal(c.status().configured, false);
-  await assert.rejects(c.search({ name: "Frankel" }), (e) => e instanceof ArionError && e.code === "unconfigured" && e.status === 503);
+  await assert.rejects(c.check(), (e) => e instanceof ArionError && e.code === "unconfigured" && e.status === 503);
   assert.equal(arion.calls.length, 0);
 });
 
 test("a refused login says so, and the password goes nowhere but the login form", async () => {
   const arion = fakeArion({ password: "other" });
   const c = createClient({ fetch: arion.fetch, env: ENV });
-  await assert.rejects(c.search({ name: "Frankel" }), (e) => e.code === "login" && e.status === 401 && /not successful/.test(e.message) && !e.message.includes("s3cret"));
+  await assert.rejects(c.check(), (e) => e.code === "login" && e.status === 401 && /not successful/.test(e.message) && !e.message.includes("s3cret"));
   const carrying = arion.calls.filter((x) => JSON.stringify(x).includes("s3cret"));
   assert.equal(carrying.length, 1);
   assert.equal(carrying[0].path.split("?")[0], "/Login.aspx");
 });
 
-test("search, choose, and read the report — a search never names a report", async () => {
-  const arion = fakeArion();
-  const c = createClient({ fetch: arion.fetch, env: ENV });
-  const found = await c.search({ kind: "named", name: "Frankel" });
-  assert.equal(found.candidates.length, 2);
-  assert.match(found.candidates[0].label, /^FRANKEL \(GB\)/);
-  const searchPost = arion.calls.find((x) => x.form?.["ctl00$MainContentArea$txtNamedHorse"] === "Frankel");
-  assert.equal(searchPost.form["ctl00$MainContentArea$hiddenMenuItemId"], "", "the search posts no report, so it cannot buy one");
-  assert.match(searchPost.cookie, /ASP\.NET_SessionId=abc/);
-  assert.match(searchPost.cookie, /\.ASPXAUTH=tok/);
-  assert.equal(c.status().loggedIn, true);
+test("search hands back a token per horse, and says which one was meant", async () => {
+  const browser = fakeBrowser();
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load });
+  const found = await c.search({ kind: "named", name: "Starspangledbanner", year: 2006, country: "AUS" });
 
+  assert.equal(found.found, true);
+  assert.equal(found.candidates.length, 2, "both are offered; the desk still chooses");
+  assert.equal(found.best, "Starspangledbanner (AUS) 2006", "and the one asked for is named");
+  assert.deepEqual(found.candidates.map((x) => x.best), [false, true]);
+  assert.deepEqual(browser.calls[0].searchHorses.kind, "named");
+});
+
+test("a report is made for the horse the token remembers, not for a control id", async () => {
+  const browser = fakeBrowser();
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load });
+  const found = await c.search({ kind: "named", name: "Starspangledbanner", year: 2006, country: "AUS" });
   const wi = c.status().reports.find((r) => r.label === "WI style");
-  // No price to confirm: the desk's subscription is not metered, so a report
-  // is made on asking. An unknown report is still refused, and still without
-  // troubling Arion.
-  const before = arion.calls.length;
-  await assert.rejects(c.report({ token: found.candidates[0].token, reportId: "no-such-report" }), (e) => e.code === "input" && e.status === 400);
-  assert.equal(arion.calls.length, before, "a refused order asks nothing of Arion");
 
-  const bought = await c.report({ token: found.candidates[0].token, reportId: wi.id });
-  const pick = arion.calls.find((x) => /gvHorses$/.test(x.form?.__EVENTTARGET ?? ""));
-  assert.equal(pick.form.__EVENTARGUMENT, "Select$0");
-  assert.equal(pick.form["ctl00$MainContentArea$hiddenMenuItemId"], wi.id);
-  assert.ok(arion.calls.some((x) => x.form?.__EVENTTARGET === "ctl00$btnYes"), "Arion's own are-you-sure is answered");
-  assert.equal(bought.report.credits, 40);
-  assert.equal(bought.horse, "FRANKEL (GB)");
-  assert.deepEqual(bought.files.map((f) => f.kind), ["print", "html"]);
+  await assert.rejects(c.report({ token: found.candidates[1].token, reportId: "no-such-report" }), (e) => e.code === "input" && e.status === 400);
+
+  const made = await c.report({ token: found.candidates[1].token, reportId: wi.id });
+  const asked = browser.calls.find((x) => x.makeReport).makeReport;
+  assert.deepEqual(
+    { name: asked.horse.name, year: asked.horse.year, country: asked.horse.country },
+    { name: "Starspangledbanner", year: 2006, country: "AUS" },
+    "the horse travels by name, year and country — a link id from the last visit means nothing in the next",
+  );
+  assert.equal(asked.label, "WI style", "and the report is named as Arion's menu prints it");
+  assert.equal(made.horse, "Starspangledbanner (AUS) 2006");
+  assert.equal(made.horseId, "103364639", "Arion's own id for the horse is kept: a number is a horse, a name is not");
+  assert.deepEqual(made.files.map((f) => f.kind), ["pdf", "rtf"]);
+  assert.equal(made.note, null);
   assert.equal(c.status().usedToday, 1);
 
-  const pdf = await c.file(bought.files[0].id);
-  assert.equal(pdf.type, "application/pdf");
-  assert.equal(pdf.body.toString(), "%PDF-1.4 r1", "the print page is followed to the report it frames");
-  await assert.rejects(c.file("nope"), (e) => e.status === 404);
-  await assert.rejects(c.report({ token: found.candidates[0].token, reportId: wi.id }), (e) => e.code === "expired", "a choice buys once");
+  await assert.rejects(c.report({ token: found.candidates[1].token, reportId: wi.id }), (e) => e.code === "expired", "a choice is spent once");
+});
+
+test("a report Arion built no file for says so, and says whether its menu knew the style", async () => {
+  const browser = fakeBrowser({ menu: false });
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load });
+  const found = await c.search({ kind: "named", name: "Starspangledbanner" });
+  const wi = c.status().reports.find((r) => r.label === "WI style");
+  const made = await c.report({ token: found.candidates[0].token, reportId: wi.id });
+  assert.deepEqual(made.files, []);
+  assert.match(made.note, /menu offers no "WI style"/);
+  assert.match(made.note, /My Reports/);
+});
+
+test("a search Arion answered without a list sells nobody", async () => {
+  // null is "Arion gave no dialog at all", which is not the same as an empty
+  // one, and neither is a horse
+  for (const [horses, reason] of [[null, "no-dialog"], [[], "none"]]) {
+    const browser = fakeBrowser({ horses });
+    const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load });
+    const found = await c.search({ kind: "theoretical", sire: "Frankel", dam: "Enable" });
+    assert.equal(found.found, false);
+    assert.equal(found.reason, reason);
+    assert.equal(found.candidates.length, 0);
+    assert.equal(found.direct, undefined, "no token: there is nothing here to make");
+    assert.ok(found.text, "but it still says what happened, so the page can show it");
+  }
+});
+
+test("a token from My Reports cannot be spent on a new report", async () => {
+  const arion = fakeArion();
+  const c = createClient({ fetch: arion.fetch, env: ENV, loadBrowser: fakeBrowser().load });
+  const mine = await c.myReports();
+  const saved = mine.find((row) => row.open?.token);
+  assert.ok(saved, "one of the fixture's rows opens by postback");
+  const std = c.status().reports.find((r) => r.label === "Standard pedigree");
+  await assert.rejects(
+    c.report({ token: saved.open.token, reportId: std.id }),
+    (e) => e.code === "input" && e.status === 400,
+  );
+  assert.ok(await c.openSaved(saved.open.token), "and it still opens, which is all it was ever for");
 });
 
 // Not a credit cap — nothing is metered. It stops something retrying in a
 // loop against someone else's site, so the message says so.
 test("the day's ceiling stops a loop, and says that is what it is", async () => {
-  const arion = fakeArion({ menuNeedsConfirm: false });
-  const c = createClient({ fetch: arion.fetch, env: { ...ENV, ARION_DAILY_LIMIT: "1" } });
-  const found = await c.search({ name: "Frankel" });
+  const c = createClient({ fetch: fakeArion().fetch, env: { ...ENV, ARION_DAILY_LIMIT: "1" }, loadBrowser: fakeBrowser().load });
+  const found = await c.search({ kind: "named", name: "Starspangledbanner" });
   const grid = c.status().reports.find((r) => r.label === "4x4");
   await c.report({ token: found.candidates[0].token, reportId: grid.id });
   await assert.rejects(
@@ -294,54 +372,14 @@ test("the day's ceiling stops a loop, and says that is what it is", async () => 
 });
 
 test("the ceiling sits far above a day's work unless it is set", () => {
-  const c = createClient({ fetch: fakeArion().fetch, env: ENV });
-  assert.equal(c.status().dailyLimit, 200);
-});
-
-// This test used to assert the opposite: that a search returning no list was a
-// horse so unambiguous Arion needed no choice, and that the token it handed
-// back could be spent. On the live site no search returns a list at all — the
-// results arrive in a dialog this transport never opens — so every search took
-// that branch and every mating the page offered to build was a guess worth 35
-// to 45 credits. A search that comes back without a list now sells nobody.
-test("a search Arion did not answer with a list sells nobody", async () => {
-  const arion = fakeArion();
-  const c = createClient({ fetch: arion.fetch, env: ENV });
-  const found = await c.search({ kind: "theoretical", sire: "Frankel", dam: "Enable" });
-  assert.equal(found.candidates.length, 0);
-  assert.equal(found.found, false);
-  assert.equal(found.reason, "unconfirmed");
-  assert.equal(found.direct, undefined, "no token: there is nothing here to buy");
-  assert.ok(found.text, "but it still says what came back, so the page can show it");
-  // the search itself still happened, and still posted an empty report menu,
-  // so nothing was ordered on Arion's side either
-  const posts = arion.calls.filter((x) => x.form?.["ctl00$MainContentArea$txtSireName"] === "Frankel");
-  assert.equal(posts.length, 1);
-  assert.equal(posts[0].form["ctl00$MainContentArea$hiddenMenuItemId"], "");
-  await assert.rejects(c.search({ kind: "theoretical", sire: "Frankel" }), (e) => e.code === "input" && e.status === 400);
-});
-
-test("a token from My Reports cannot be spent again", async () => {
-  const arion = fakeArion();
-  const c = createClient({ fetch: arion.fetch, env: ENV });
-  const mine = await c.myReports();
-  const saved = mine.find((row) => row.open?.token);
-  assert.ok(saved, "one of the fixture's rows opens by postback");
-  const std = c.status().reports.find((r) => r.label === "Standard pedigree");
-  await assert.rejects(
-    c.report({ token: saved.open.token, reportId: std.id }),
-    (e) => e.code === "input" && e.status === 400,
-  );
-  // and it still opens, which is all it was ever for
-  assert.ok(await c.openSaved(saved.open.token));
+  assert.equal(createClient({ fetch: fakeArion().fetch, env: ENV }).status().dailyLimit, 200);
 });
 
 test("the day's count survives a restart when a store keeps it", async () => {
   const kept = { date: new Date().toISOString().slice(0, 10), count: 2 };
   const store = { read: async () => kept, write: async (v) => Object.assign(kept, v) };
-  const arion = fakeArion();
-  const c = createClient({ fetch: arion.fetch, env: { ...ENV, ARION_DAILY_LIMIT: "3" }, store });
-  const found = await c.search({ kind: "named", name: "Frankel" });
+  const c = createClient({ fetch: fakeArion().fetch, env: { ...ENV, ARION_DAILY_LIMIT: "3" }, store, loadBrowser: fakeBrowser().load });
+  const found = await c.search({ kind: "named", name: "Starspangledbanner" });
   const grid = c.status().reports.find((r) => r.label === "Standard pedigree");
   await c.report({ token: found.candidates[0].token, reportId: grid.id });
   assert.equal(kept.count, 3, "the third of three went through and was written down");
@@ -355,9 +393,8 @@ test("the day's count survives a restart when a store keeps it", async () => {
 test("a store that cannot be read falls back to this process's own count", async () => {
   const store = { read: async () => { throw new Error("table is gone"); }, write: async () => {} };
   const said = [];
-  const arion = fakeArion();
-  const c = createClient({ fetch: arion.fetch, env: { ...ENV, ARION_DAILY_LIMIT: "1" }, store, log: (m) => said.push(m) });
-  const found = await c.search({ kind: "named", name: "Frankel" });
+  const c = createClient({ fetch: fakeArion().fetch, env: { ...ENV, ARION_DAILY_LIMIT: "1" }, store, loadBrowser: fakeBrowser().load, log: (m) => said.push(m) });
+  const found = await c.search({ kind: "named", name: "Starspangledbanner" });
   const grid = c.status().reports.find((r) => r.label === "Standard pedigree");
   await c.report({ token: found.candidates[0].token, reportId: grid.id });
   await assert.rejects(
@@ -384,8 +421,7 @@ test("a session that has timed out is logged in again, once", async () => {
   const c = createClient({ fetch: arion.fetch, env: ENV });
   await c.check();
   arion.expire();
-  const found = await c.search({ name: "Frankel" });
-  assert.equal(found.candidates.length, 2);
+  await c.check();
   assert.equal(arion.calls.filter((x) => x.path.startsWith("/Login.aspx") && x.form).length, 2);
 });
 
@@ -410,18 +446,18 @@ test("Arion's reason for a refusal is passed on, and the login then waits, so re
   const arion = fakeArion({ password: "other" });
   const c = createClient({ fetch: arion.fetch, env: ENV, now: () => t });
   await assert.rejects(
-    c.search({ name: "Frankel" }),
+    c.check(),
     (e) => e.code === "login" && e.status === 401 && /"Your login attempt was not successful\. Please try again\."/.test(e.message) && /until 14:15 UTC/.test(e.message),
   );
   assert.equal(loginPosts(arion).length, 1);
   assert.equal(c.status().loginPausedUntil, "2026-10-02T14:15:00.000Z");
   t += 5 * 60 * 1000;
-  await assert.rejects(c.search({ name: "Frankel" }), (e) => e.code === "login" && /not successful/.test(e.message) && /until 14:15 UTC/.test(e.message));
+  await assert.rejects(c.check(), (e) => e.code === "login" && /not successful/.test(e.message) && /until 14:15 UTC/.test(e.message));
   await assert.rejects(c.check(), (e) => e.code === "login");
   assert.equal(loginPosts(arion).length, 1, "nothing goes to Arion while the login waits");
   t += LOGIN_PAUSE_MS;
   assert.equal(c.status().loginPausedUntil, null);
-  await assert.rejects(c.search({ name: "Frankel" }), (e) => e.code === "login");
+  await assert.rejects(c.check(), (e) => e.code === "login");
   assert.equal(loginPosts(arion).length, 2, "after the wait, one more try");
 });
 
@@ -429,7 +465,7 @@ test("a username that is not an email address is not sent: Arion logs in by emai
   for (const [ARION_USERNAME, said] of [["desk", /email address/], ['"desk@example.com"', /quotes/]]) {
     const arion = fakeArion();
     const c = createClient({ fetch: arion.fetch, env: { ...ENV, ARION_USERNAME } });
-    await assert.rejects(c.search({ name: "Frankel" }), (e) => e.code === "login" && said.test(e.message) && /Nothing was sent/.test(e.message));
+    await assert.rejects(c.check(), (e) => e.code === "login" && said.test(e.message) && /Nothing was sent/.test(e.message));
     assert.equal(arion.calls.length, 0);
   }
 });
@@ -437,14 +473,14 @@ test("a username that is not an email address is not sent: Arion logs in by emai
 test("a password with a stray space is pointed out, and never shown", async () => {
   const arion = fakeArion();
   const c = createClient({ fetch: arion.fetch, env: { ...ENV, ARION_PASSWORD: "s3cret " } });
-  await assert.rejects(c.search({ name: "Frankel" }), (e) => e.code === "login" && /begins or ends with a space/.test(e.message) && !e.message.includes("s3cret"));
+  await assert.rejects(c.check(), (e) => e.code === "login" && /begins or ends with a space/.test(e.message) && !e.message.includes("s3cret"));
 });
 
 test("a login Arion takes, on a page that still shows no one logged in, is told apart from a refusal", async () => {
   const arion = fakeArion({ staysAnonymous: true });
   const c = createClient({ fetch: arion.fetch, env: ENV });
   await assert.rejects(
-    c.search({ name: "Frankel" }),
+    c.check(),
     (e) => e.code === "login-shape" && e.status === 502 && /took the login \(it went on to \/PedigreeReports\/PedigreeReports\.aspx\)/.test(e.message),
   );
   assert.equal(loginPosts(arion).length, 1, "logged in once, not again on the spot");
