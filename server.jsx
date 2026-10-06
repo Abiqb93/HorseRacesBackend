@@ -15333,9 +15333,45 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
 // ---------------------------------------------------------------------------
 const loadArion = () => import("./arion/client.mjs");
 let arionClient = null;
+
+// The day's spend, kept out of process memory. The client used to count the
+// day's reports in a variable, so a Railway restart handed the desk a fresh
+// 25 however much it had already spent. One row per day, written after each
+// report goes through.
+db.query(
+  `CREATE TABLE IF NOT EXISTS arion_report_days (
+    day DATE NOT NULL PRIMARY KEY,
+    bought INT NOT NULL DEFAULT 0,
+    updatedAt DATETIME NOT NULL
+  )`,
+  (err) => { if (err) console.error("arion_report_days table check failed:", err.message); }
+);
+const arionDayStore = {
+  read: () => new Promise((resolve, reject) => {
+    db.query("SELECT day, bought FROM arion_report_days ORDER BY day DESC LIMIT 1", (err, rows) => {
+      if (err) return reject(err);
+      const row = rows?.[0];
+      if (!row) return resolve(null);
+      // DATE comes back as a Date; read it with local getters, as the rest of
+      // this file does, so a row written today is not read as yesterday's.
+      const d = row.day instanceof Date
+        ? `${row.day.getFullYear()}-${String(row.day.getMonth() + 1).padStart(2, "0")}-${String(row.day.getDate()).padStart(2, "0")}`
+        : String(row.day).slice(0, 10);
+      return resolve({ date: d, count: Number(row.bought) || 0 });
+    });
+  }),
+  write: ({ date, count }) => new Promise((resolve, reject) => {
+    db.query(
+      "INSERT INTO arion_report_days (day, bought, updatedAt) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE bought = VALUES(bought), updatedAt = NOW()",
+      [date, count],
+      (err) => (err ? reject(err) : resolve()),
+    );
+  }),
+};
+
 async function arion() {
   const mod = await loadArion();
-  arionClient ??= mod.createClient({ log: (...a) => console.log(...a) });
+  arionClient ??= mod.createClient({ log: (...a) => console.log(...a), store: arionDayStore });
   return { mod, client: arionClient };
 }
 function arionFail(res, err) {

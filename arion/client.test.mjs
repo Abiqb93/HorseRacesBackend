@@ -286,21 +286,74 @@ test("the day's ceiling holds", async () => {
   await assert.rejects(c.report({ token: found.candidates[1].token, reportId: grid.id, credits: 1, confirm: true }), (e) => e.code === "limit" && e.status === 429);
 });
 
-test("a theoretical horse has no list: the search is repeated with the report named", async () => {
+// This test used to assert the opposite: that a search returning no list was a
+// horse so unambiguous Arion needed no choice, and that the token it handed
+// back could be spent. On the live site no search returns a list at all — the
+// results arrive in a dialog this transport never opens — so every search took
+// that branch and every mating the page offered to build was a guess worth 35
+// to 45 credits. A search that comes back without a list now sells nobody.
+test("a search Arion did not answer with a list sells nobody", async () => {
   const arion = fakeArion();
   const c = createClient({ fetch: arion.fetch, env: ENV });
   const found = await c.search({ kind: "theoretical", sire: "Frankel", dam: "Enable" });
   assert.equal(found.candidates.length, 0);
-  assert.ok(found.direct?.token);
-  const std = c.status().reports.find((r) => r.label === "Standard pedigree");
-  assert.equal(std.credits, 36, "priced from the page");
-  const bought = await c.report({ token: found.direct.token, reportId: std.id, credits: 36, confirm: true });
+  assert.equal(found.found, false);
+  assert.equal(found.reason, "unconfirmed");
+  assert.equal(found.direct, undefined, "no token: there is nothing here to buy");
+  assert.ok(found.text, "but it still says what came back, so the page can show it");
+  // the search itself still happened, and still posted an empty report menu,
+  // so nothing was ordered on Arion's side either
   const posts = arion.calls.filter((x) => x.form?.["ctl00$MainContentArea$txtSireName"] === "Frankel");
-  assert.equal(posts.length, 2);
+  assert.equal(posts.length, 1);
   assert.equal(posts[0].form["ctl00$MainContentArea$hiddenMenuItemId"], "");
-  assert.equal(posts[1].form["ctl00$MainContentArea$hiddenMenuItemId"], std.id);
-  assert.equal(bought.files.length, 2);
   await assert.rejects(c.search({ kind: "theoretical", sire: "Frankel" }), (e) => e.code === "input" && e.status === 400);
+});
+
+test("a token from My Reports cannot be spent again", async () => {
+  const arion = fakeArion();
+  const c = createClient({ fetch: arion.fetch, env: ENV });
+  const mine = await c.myReports();
+  const saved = mine.find((row) => row.open?.token);
+  assert.ok(saved, "one of the fixture's rows opens by postback");
+  const std = c.status().reports.find((r) => r.label === "Standard pedigree");
+  await assert.rejects(
+    c.report({ token: saved.open.token, reportId: std.id, credits: std.credits, confirm: true }),
+    (e) => e.code === "input" && e.status === 400,
+  );
+  // and it still opens, which is all it was ever for
+  assert.ok(await c.openSaved(saved.open.token));
+});
+
+test("the day's count survives a restart when a store keeps it", async () => {
+  const kept = { date: new Date().toISOString().slice(0, 10), count: 2 };
+  const store = { read: async () => kept, write: async (v) => Object.assign(kept, v) };
+  const arion = fakeArion();
+  const c = createClient({ fetch: arion.fetch, env: { ...ENV, ARION_DAILY_LIMIT: "3" }, store });
+  const found = await c.search({ kind: "named", name: "Frankel" });
+  const grid = c.status().reports.find((r) => r.label === "Standard pedigree");
+  await c.report({ token: found.candidates[0].token, reportId: grid.id, credits: grid.credits, confirm: true });
+  assert.equal(kept.count, 3, "the third of three went through and was written down");
+  await assert.rejects(
+    c.report({ token: found.candidates[1].token, reportId: grid.id, credits: grid.credits, confirm: true }),
+    (e) => e.code === "limit" && e.status === 429,
+    "a fresh process does not get a fresh allowance",
+  );
+});
+
+test("a store that cannot be read falls back to this process's own count", async () => {
+  const store = { read: async () => { throw new Error("table is gone"); }, write: async () => {} };
+  const said = [];
+  const arion = fakeArion();
+  const c = createClient({ fetch: arion.fetch, env: { ...ENV, ARION_DAILY_LIMIT: "1" }, store, log: (m) => said.push(m) });
+  const found = await c.search({ kind: "named", name: "Frankel" });
+  const grid = c.status().reports.find((r) => r.label === "Standard pedigree");
+  await c.report({ token: found.candidates[0].token, reportId: grid.id, credits: grid.credits, confirm: true });
+  await assert.rejects(
+    c.report({ token: found.candidates[1].token, reportId: grid.id, credits: grid.credits, confirm: true }),
+    (e) => e.code === "limit" && e.status === 429,
+    "the limit is loosened to this process's tally, never removed",
+  );
+  assert.ok(said.some((m) => /count could not be read/.test(m)), "and it says so");
 });
 
 test("My Reports: links open directly, postbacks through the page", async () => {
