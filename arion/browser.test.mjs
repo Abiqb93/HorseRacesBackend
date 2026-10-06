@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { BROWSER_NAMES, CHROMIUM_PATHS, SEARCH_GRID, asCandidate, filesFrom, horseIdFrom, idOf, isHorseRow, pickCandidate, pickChromium, withSession } from "./browser.mjs";
+import { BROWSER_NAMES, CHROMIUM_PATHS, SEARCH_GRID, asCandidate, asSavedReport, filesFrom, horseIdFrom, idOf, isHorseRow, pickCandidate, pickChromium, sameReport, withSession } from "./browser.mjs";
 
 test("a control's id is its name with the dollars swapped for underscores", () => {
   assert.equal(idOf("ctl00$MainContentArea$txtNamedHorse"), "#ctl00_MainContentArea_txtNamedHorse");
@@ -205,4 +205,58 @@ test("the Wathnan mare is told from the other Lady Vivians", () => {
   // the bare name leaves three of them, and does not guess
   assert.equal(pickCandidate(rows, { name: "Lady Vivian" }).one, null);
   assert.equal(pickCandidate(rows, { name: "Lady Vivian" }).among.length, 3);
+});
+
+/* ------------------------------------------------------------------------ */
+/* My Reports, as a live run read gvMyReport. The old parser reported this   */
+/* same grid as an empty list while the account held seventeen pages of it.  */
+/* ------------------------------------------------------------------------ */
+const OPEN = (n) => [{ id: `gvMyReport_ctl0${n}_lnkOpen`, text: "Open" }];
+
+test("a row of My Reports becomes a report", () => {
+  const r = asSavedReport(["Starspangledbanner", "Catalogue Style Unedited", "WI style", "06/11/2026"], OPEN(2));
+  assert.deepEqual(r, {
+    horse: "Starspangledbanner",
+    type: "Catalogue Style Unedited",
+    style: "WI style",
+    expires: "06/11/2026",
+    link: "gvMyReport_ctl02_lnkOpen",
+    label: "Starspangledbanner · Catalogue Style Unedited · WI style",
+  });
+});
+
+test("a style of '-' is no style, and is left out of the label", () => {
+  const r = asSavedReport(["Con Te Partiro", "Research Document", "-", "06/11/2026"], OPEN(3));
+  assert.equal(r.style, null);
+  assert.equal(r.label, "Con Te Partiro · Research Document");
+});
+
+test("the header and the pager are not reports", () => {
+  assert.equal(asSavedReport(["Horse Name", "Report Type", "Report Style", "Expiry Date"], []), null);
+  assert.equal(asSavedReport(["Page 1 of 17", "12345678910", "1", "2"], []), null);
+  assert.equal(asSavedReport([], OPEN(2)), null);
+});
+
+test("a pager number is not a way to open a report", () => {
+  // the pager's links live in the same grid, and open nothing
+  const r = asSavedReport(["Starspangledbanner", "Catalogue Style Unedited", "WI style", "06/11/2026"], [
+    { id: "gvMyReport_ctl28_btnNum_2", text: "2" },
+    { id: "gvMyReport_ctl28_ibtnNext", text: ">" },
+  ]);
+  assert.equal(r.link, null, "no link rather than the wrong one");
+});
+
+test("a report is the same report by its four columns, not by a row id", () => {
+  const a = asSavedReport(["Starspangledbanner", "Catalogue Style Unedited", "WI style", "06/11/2026"], OPEN(2));
+  // the same report, read again in a later visit where it sits on another row
+  const later = asSavedReport(["Starspangledbanner", "Catalogue Style Unedited", "WI style", "06/11/2026"], OPEN(7));
+  assert.equal(sameReport(a, later), true, "the row moved; the report did not");
+
+  // a different style of the same horse's report is a different report
+  const other = asSavedReport(["Starspangledbanner", "Catalogue Style Unedited", "MM style", "06/11/2026"], OPEN(3));
+  assert.equal(sameReport(a, other), false);
+  // and so is the same one after it was made again, with a later expiry
+  const renewed = asSavedReport(["Starspangledbanner", "Catalogue Style Unedited", "WI style", "06/12/2026"], OPEN(2));
+  assert.equal(sameReport(a, renewed), false);
+  assert.equal(sameReport(a, null), false);
 });
