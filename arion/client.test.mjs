@@ -113,13 +113,20 @@ const LIVE_FILES = [
   { kind: "rtf", name: "Starspangledbanner_Pedigreesreport-3_1343.rtf", url: "https://arion.co.nz/files/reports/Starspangledbanner_Pedigreesreport-3_1343.rtf" },
 ];
 
-function fakeBrowser({ horses = LIVE_HORSES, files = LIVE_FILES, menu = true } = {}) {
+const LIVE_DAMS = [
+  { name: "Lady Vivian", country: "IRE", year: 2022, sire: "Camelot", dam: "Ceol an Ghra", sex: "R",
+    link: "grid_ctl02_lnkHorseName", label: "Lady Vivian (IRE) 2022", cells: ["Lady Vivian", "IRE", "2022"] },
+  { name: "Lady Vivian", country: "FR", year: 2014, sire: "Born to Sea", dam: "Lilac Moon", sex: "M",
+    link: "grid_ctl03_lnkHorseName", label: "Lady Vivian (FR) 2014", cells: ["Lady Vivian", "FR", "2014"] },
+];
+
+function fakeBrowser({ horses = LIVE_HORSES, files = LIVE_FILES, menu = true, stage = "horse", sire = null } = {}) {
   const calls = [];
   const mod = {
     pickCandidate,
     searchHorses: async (args) => {
       calls.push({ searchHorses: args });
-      return horses;
+      return { stage, sire, candidates: horses };
     },
     makeReport: async (args) => {
       calls.push({ makeReport: args });
@@ -497,4 +504,32 @@ test("diagnose says why a login failed and what the page held, with no values", 
   assert.ok(!JSON.stringify(d).includes("s3cret") && !JSON.stringify(d).includes("vs1"));
   const ok = await createClient({ fetch: fakeArion().fetch, env: ENV }).diagnose({ name: "" });
   assert.deepEqual(ok.login, { ok: true, landed: "/PedigreeReports/PedigreeReports.aspx" });
+});
+
+test("a mating is a dialog in two steps: the sire first, then the mares", async () => {
+  // Arion answers a sire x dam search with SIRES, and only once one is chosen
+  // does it offer the dams. A list of sires is not a mating, and the mare's
+  // year and country mean nothing against it.
+  const atSire = fakeBrowser({ stage: "sire", horses: LIVE_HORSES });
+  const c1 = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: atSire.load });
+  const sires = await c1.search({ kind: "theoretical", sire: "Starspangledbanner", dam: "Lady Vivian", year: 2022, country: "IRE" });
+  assert.equal(sires.stage, "sire");
+  assert.equal(sires.best, null, "the mare's 2022 must not pick a stallion");
+  assert.equal(sires.candidates.length, 2, "the desk is asked which sire is meant");
+
+  // the sire settled, the same grid now holds the mares
+  const settled = { ...LIVE_HORSES[1] };
+  const atDam = fakeBrowser({ stage: "dam", sire: settled, horses: LIVE_DAMS });
+  const c2 = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: atDam.load });
+  const dams = await c2.search({ kind: "theoretical", sire: "Starspangledbanner", dam: "Lady Vivian", year: 2022, country: "IRE" });
+  assert.equal(dams.stage, "dam");
+  assert.equal(dams.sire, "Starspangledbanner (AUS) 2006");
+  assert.equal(dams.best, "Lady Vivian (IRE) 2022", "here the mare's year and country are exactly what narrows it");
+
+  const std = c2.status().reports.find((r) => r.label === "Standard pedigree");
+  const made = await c2.report({ token: dams.candidates[0].token, reportId: std.id });
+  const asked = atDam.calls.find((x) => x.makeReport).makeReport;
+  assert.equal(asked.sire.name, "Starspangledbanner", "the settled sire is replayed, not searched for again");
+  assert.equal(asked.horse.country, "IRE");
+  assert.equal(made.horse, "Starspangledbanner (AUS) 2006 × Lady Vivian (IRE) 2022", "a mating is named as a mating");
 });

@@ -643,13 +643,45 @@ export async function chooseReport(page, label) {
  * "make this report", not which control opens a dialog. Everything above is
  * how, and how has changed six times in one afternoon.
  */
-export const searchHorses = ({ env = process.env, ...values } = {}) =>
-  withSession((page) => runSearch(page, values), { env });
+/** The same horse, found again in a list that was fetched afresh. */
+export const sameHorse = (a, b) => Boolean(a) && Boolean(b) && a.name === b.name && a.year === b.year && a.country === b.country;
 
-export async function makeReport({ env = process.env, values = {}, horse = {}, label = "" } = {}) {
+/**
+ * A sire x dam mating, which Arion asks for in two steps.
+ *
+ * It answers the search with a list of SIRES — "Please select a horse" — and
+ * only once one is chosen does it refill the same grid with DAMS, saying
+ * "Please select a dam from the list below". The foal's report is built after
+ * both. Reading that first list as the mating is how a search for
+ * Starspangledbanner x Lady Vivian came back claiming Star Sparsh.
+ */
+export async function matingDialog(page, { sire = "", dam = "", sireIs = null } = {}) {
+  const sires = (await runSearch(page, { kind: "theoretical", sire, dam })) ?? [];
+  if (!sires.length) return { stage: "sire", candidates: [] };
+  const chosen = sireIs ? { one: sires.find((h) => sameHorse(h, sireIs)) ?? null, among: sires } : pickCandidate(sires, { name: sire });
+  // Arion's own list could not be narrowed to one sire, so the desk picks.
+  if (!chosen.one) return { stage: "sire", candidates: chosen.among };
+  await page.click(`#${chosen.one.link}`, { timeout: 20000 });
+  await page.waitForSelector(`#${SEARCH_GRID} tr`, { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(900);
+  return { stage: "dam", sire: chosen.one, candidates: (await candidatesOn(page)) ?? [] };
+}
+
+export const searchHorses = ({ env = process.env, ...values } = {}) =>
+  withSession(async (page) => {
+    if (values.kind === "theoretical") return matingDialog(page, values);
+    return { stage: "horse", candidates: (await runSearch(page, values)) ?? null };
+  }, { env });
+
+export async function makeReport({ env = process.env, values = {}, horse = {}, sire = null, label = "" } = {}) {
   return withSession(async (page) => {
-    const again = (await runSearch(page, values)) ?? [];
-    const found = again.find((h) => h.name === horse.name && h.year === horse.year && h.country === horse.country);
+    // A control id from the last visit means nothing in this one, so the
+    // search is run again and the same horse found by name, year and country.
+    const again =
+      values.kind === "theoretical"
+        ? (await matingDialog(page, { ...values, sireIs: sire })).candidates
+        : (await runSearch(page, values)) ?? [];
+    const found = again.find((h) => sameHorse(h, horse));
     if (!found) {
       throw new ArionError(`Arion no longer offers ${horse.label ?? horse.name} for that search; search again`, { status: 409, code: "session" });
     }

@@ -790,34 +790,45 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
         tidy();
         const browser = await loadBrowser();
         const values = { kind, name, sire, dam };
-        const horses = await browser.searchHorses({ env, ...values });
+        const answer = await browser.searchHorses({ env, ...values });
+        const horses = answer.candidates;
         if (!horses || !horses.length) {
           return {
             candidates: [],
             found: false,
+            stage: answer.stage,
             reason: horses === null ? "no-dialog" : "none",
-            text: horses === null ? "Arion answered the search without its usual list of horses." : "Arion holds no horse by that name.",
+            text:
+              horses === null
+                ? "Arion answered the search without its usual list of horses."
+                : answer.stage === "sire"
+                  ? `Arion holds no sire called ${sire}.`
+                  : "Arion holds no horse by that name.",
           };
         }
         // If the page knew a year or a country, say which one it means; the
         // desk still gets the whole list to choose from.
         //
-        // Not on a theoretical mating. Arion answers that one with a list of
-        // SIRES to choose between first, and the year and country the page
-        // sends are the MARE's — so narrowing with them here matches a
-        // stranger. It did: Starspangledbanner x Lady Vivian came back
-        // claiming Star Sparsh (IND) 2022, on the mare's foaling year.
-        const narrowed = kind === "theoretical" ? { one: null, among: horses } : browser.pickCandidate(horses, { name, year, country });
+        // On a mating Arion has already been through the sire, so this list
+        // is the dams and the year and country — the mare's — are exactly
+        // what narrows it. At the sire stage they would match a stranger, and
+        // once did: Starspangledbanner x Lady Vivian came back claiming Star
+        // Sparsh (IND) 2022, on the mare's foaling year.
+        const narrowed =
+          answer.stage === "sire"
+            ? { one: null, among: horses }
+            : browser.pickCandidate(horses, { name: kind === "theoretical" ? dam : name, year, country });
         return {
           found: true,
-          // which horse this list is for: a theoretical mating starts by
-          // choosing the sire, so the page should say so rather than offering
-          // the list as if it were the mating
-          stage: kind === "theoretical" ? "sire" : "horse",
+          // Which list this is. "sire" means Arion is still asking which
+          // stallion is meant and nothing here is a mating yet; "dam" means
+          // the sire is settled and these are the mares.
+          stage: answer.stage,
+          sire: answer.sire ? answer.sire.label : null,
           best: narrowed.one ? narrowed.one.label : null,
           candidates: horses.map((horse) => {
             const t = token();
-            picks.set(t, { kind: "candidate", values, horse, at: now() });
+            picks.set(t, { kind: "candidate", values, horse, sire: answer.sire ?? null, at: now() });
             return { token: t, label: horse.label, cells: horse.cells, best: narrowed.one === horse };
           }),
         };
@@ -857,7 +868,7 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
 
         const browser = await loadBrowser();
         const { horse, values } = pick;
-        const out = await browser.makeReport({ env, values, horse, label: r.label });
+        const out = await browser.makeReport({ env, values, horse, sire: pick.sire ?? null, label: r.label });
 
         await spend();
         picks.delete(String(t));
@@ -865,7 +876,7 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
         log(`[arion] report made: ${r.label} for ${horse.label}${out.horseId ? ` (Arion horse ${out.horseId})` : ""}, ${out.files.length} file(s)`);
         return {
           report: { id: r.id, label: r.label, credits: r.credits },
-          horse: horse.label,
+          horse: pick.sire ? `${pick.sire.label} × ${horse.label}` : horse.label,
           horseId: out.horseId,
           files: out.files.map((f) => remember(f, label)),
           tabs: out.tabs,
