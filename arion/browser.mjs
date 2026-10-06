@@ -717,7 +717,10 @@ export function asSavedReport(cells = [], links = []) {
   const [horse, type, style, expires] = cells.map((c) => String(c ?? "").trim());
   if (!horse) return null;
   if (/^horse\s*name$/i.test(horse)) return null; // the header
-  if (/^page\s+\d+\s+of\s+\d+/i.test(horse)) return null; // the pager
+  if (/^page\s+\d+\s+of\s+\d+/i.test(horse)) return null; // the pager's caption
+  // and the pager's own row of page numbers, which lives in this same grid
+  // and looks like any other row: ["1","2","3","4"]. No horse is called 7.
+  if (/^\d{1,3}$/.test(horse)) return null;
   // the pager's own numbers live in this grid too, and open nothing
   const open = links.find((l) => l.id && !/btnNum_|ibtn(Next|Last|Prev|First)/i.test(l.id)) ?? null;
   const kept = style && style !== "-" ? style : null;
