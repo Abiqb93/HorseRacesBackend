@@ -132,6 +132,51 @@ export async function shapeOf(page) {
 }
 
 /**
+ * Is there a session, as Arion itself shows it?
+ *
+ * Not "is a password box on screen". Arion keeps its login form in the page
+ * at all times and reveals it from a Login button in the header, so a page
+ * with no visible password box is a logged-OUT page just as often as a
+ * logged-in one. That mistake had the probe searching as a guest and calling
+ * it a session: the search worked, because Arion lets anyone search, and
+ * choosing a horse then answered "Options for Not logged in users".
+ *
+ * The header is the honest signal: Register | Login when there is no session,
+ * My Account | Logout | Hi <name> when there is.
+ */
+export async function signedIn(page) {
+  return page.evaluate(() => {
+    const onScreen = (el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden";
+    };
+    const bits = [...document.querySelectorAll("a, input, span, div")];
+    const says = (re) => bits.some((el) => onScreen(el) && re.test((el.textContent ?? el.value ?? "").trim()));
+    const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+    return {
+      yes: says(/^log\s*out$/i),
+      offersLogin: says(/^log\s*in$/i),
+      greeting: (text.match(/Hi\s+[A-Za-z]+/) ?? [null])[0],
+      failure: (document.getElementById("ctl00_LoginTop_FailureText")?.textContent ?? "").trim() || null,
+    };
+  });
+}
+
+/** Sign in through the header box, which is the one Arion's session follows. */
+export async function signIn(page, user, password) {
+  const button = page.locator("a, input[type=button], input[type=submit], span").filter({ hasText: /^\s*log\s*in\s*$/i }).first();
+  if (await button.count()) await button.click({ timeout: 10000 }).catch(() => {});
+  await page.waitForSelector(idOf("ctl00$LoginTop$Password"), { state: "visible", timeout: 15000 });
+  await page.fill(idOf("ctl00$LoginTop$UserName"), user);
+  await page.fill(idOf("ctl00$LoginTop$Password"), password);
+  await Promise.all([
+    page.waitForLoadState("load", { timeout: 45000 }).catch(() => {}),
+    page.click(idOf("ctl00$LoginTop$LoginButton")),
+  ]);
+  await page.waitForTimeout(2000);
+}
+
+/**
  * Log in and run one search, reading Arion's answer from the live DOM.
  *
  * It fills a search box and presses the button a person presses, then waits
@@ -150,18 +195,15 @@ export async function probe({ env = process.env, name = "Frankel", kind = "named
     try {
       await page.goto(`${ORIGIN}${REPORTS_PATH}`, { waitUntil: "domcontentloaded", timeout: 45000 });
 
-      if (await page.locator('input[type="password"]:visible').count()) {
-        await page.fill(idOf("ctl00$MainContentArea$lvLogin$Login1$UserName"), user);
-        await page.fill(idOf("ctl00$MainContentArea$lvLogin$Login1$Password"), password);
-        await Promise.all([
-          page.waitForLoadState("load", { timeout: 45000 }).catch(() => {}),
-          page.click(idOf("ctl00$MainContentArea$lvLogin$Login1$LoginButton")),
-        ]);
-        await page.waitForTimeout(1500);
-      }
-      out.loggedIn = !(await page.locator('input[type="password"]:visible').count());
+      out.signedInBefore = await signedIn(page);
+      if (!out.signedInBefore.yes) await signIn(page, user, password);
+      const after = await signedIn(page);
+      out.loggedIn = after.yes;
+      out.greeting = after.greeting;
       out.landed = new URL(page.url()).pathname;
-      if (!out.loggedIn) return { ...out, stage: "login", why: "Arion still shows its login box after the login was sent" };
+      if (!out.loggedIn) {
+        return { ...out, stage: "login", why: `Arion's header still offers Login after the login was sent${after.failure ? `: ${after.failure}` : ""}` };
+      }
 
       // Arion sends a fresh login to /Home.aspx whatever page asked for it, so
       // the reports page has to be asked for a second time now there is a
