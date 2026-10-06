@@ -160,6 +160,23 @@ export async function probe({ env = process.env, name = "Frankel", kind = "named
       await page.waitForTimeout(1200);
 
       out.afterSearch = await shapeOf(page);
+
+      // My Reports in the same visit. The fetch client reads that grid as
+      // empty although the page's own pager advertises nine pages of it, so
+      // its real shape is needed too — and gathering it here saves a second
+      // deploy to come back for it. Opening a tab touches no report menu.
+      try {
+        const tab = page.getByText(/^\s*my reports\s*$/i).first();
+        if (await tab.count()) {
+          await tab.click({ timeout: 8000 });
+          await page.waitForTimeout(1800);
+        }
+        out.myReportsTab = { opened: Boolean(await tab.count()), ...(await shapeOf(page)) };
+      } catch (err) {
+        // a tab that will not open is worth knowing about, not worth failing for
+        out.myReportsTab = { opened: false, why: err.message };
+      }
+
       out.rss.after = process.memoryUsage().rss;
       return { ...out, ok: true, stage: "search", searched: { kind, name } };
     } catch (err) {
