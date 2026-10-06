@@ -161,3 +161,48 @@ test("a session refuses to start without the desk's login, before any browser is
     (e) => e.code === "unconfigured" && e.status === 503,
   );
 });
+
+test("a name that matches nothing narrows nothing: the year must not pick a stranger", () => {
+  // Live: a sire x dam search for Starspangledbanner x Lady Vivian answers
+  // with a list of SIRES, and the year and country the page sends are the
+  // MARE's. Running them over that list once resolved to Star Sparsh (IND)
+  // 2022 — a horse nobody asked about — on the strength of a foaling year.
+  const sires = [
+    asCandidate(["Starspangledbanner", "AUS", "2006", "Choisir", "Gold Anthem", "S"], "a"),
+    asCandidate(["Star Sparsh", "IND", "2022", "Air Support", "Shining Star", "S"], "b"),
+    asCandidate(["Star Spangled Day", "USA", "1993", "Decoration Day", "Miss Canela", "S"], "c"),
+  ];
+  const wrong = pickCandidate(sires, { name: "Lady Vivian", year: 2022, country: "IRE" });
+  assert.equal(wrong.one, null, "no Lady Vivian here, so no horse here");
+  assert.equal(wrong.matched, false);
+  assert.equal(wrong.among.length, 3, "the whole list is still offered to choose from");
+
+  // and a name that does match still narrows as before
+  const right = pickCandidate(sires, { name: "Starspangledbanner", year: 2006 });
+  assert.equal(right.one?.sire, "Choisir");
+});
+
+test("with no name asked for, the year and country still narrow", () => {
+  const rows = [
+    asCandidate(["Lady Vivian", "IRE", "2022", "Camelot", "Ceol an Ghra", "R"], "a"),
+    asCandidate(["Lady Vivian", "FR", "2014", "Born to Sea", "Lilac Moon", "M"], "b"),
+  ];
+  assert.equal(pickCandidate(rows, { year: 2022 }).one?.country, "IRE");
+  assert.equal(pickCandidate(rows, { country: "FR" }).one?.year, 2014);
+});
+
+test("the Wathnan mare is told from the other Lady Vivians", () => {
+  // all four, as Arion listed them
+  const rows = [
+    asCandidate(["Lady Vivian", "IRE", "2022", "Camelot", "Ceol an Ghra", "R"], "a"),
+    asCandidate(["Lady Vivian", "FR", "2014", "Born to Sea", "Lilac Moon", "M"], "b"),
+    asCandidate(["Lady Vivian", "USA", "2000", "Dumaani", "Lover's Hour", "M"], "c"),
+    asCandidate(["Lady Vivien", "GB", "2006", "Kyllachy", "Elsie Plunkett", "M"], "d"),
+  ];
+  const got = pickCandidate(rows, { name: "Lady Vivian", year: 2022, country: "IRE" });
+  assert.equal(got.one?.sire, "Camelot");
+  assert.equal(got.one?.dam, "Ceol an Ghra");
+  // the bare name leaves three of them, and does not guess
+  assert.equal(pickCandidate(rows, { name: "Lady Vivian" }).one, null);
+  assert.equal(pickCandidate(rows, { name: "Lady Vivian" }).among.length, 3);
+});
