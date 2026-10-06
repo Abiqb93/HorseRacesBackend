@@ -7,6 +7,12 @@
 # downloads at install time would put a large, network-dependent step in front
 # of every deploy of the rest of the API.
 #
+# Fonts are not optional. Without them Chromium renders every glyph to
+# nothing: innerText comes back empty, an element holding only text measures
+# zero wide, and a visibility check on it therefore says it is not there. The
+# first live run read Arion's open dialog as an empty one for exactly that
+# reason, and a screenshot of the page showed images and no words.
+#
 # "..." keeps nixpacks' own detected packages and adds to them.
 [phases.setup]
-nixPkgs = ["...", "chromium"]
+nixPkgs = ["...", "chromium", "fontconfig", "dejavu_fonts", "liberation_ttf"]

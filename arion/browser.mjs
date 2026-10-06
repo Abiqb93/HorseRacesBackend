@@ -90,9 +90,10 @@ export async function shapeOf(page) {
       const c = getComputedStyle(el);
       return c.visibility !== "hidden" && c.display !== "none";
     };
+    const words = (el) => (el.textContent ?? "").replace(/\s+/g, " ").trim();
     const rowsOf = (el) =>
       [...el.querySelectorAll("tr")].slice(0, 15).map((tr) => ({
-        cells: [...tr.querySelectorAll("td, th")].map((td) => td.innerText.trim()).filter(Boolean).slice(0, 8),
+        cells: [...tr.querySelectorAll("td, th")].map(words).filter(Boolean).slice(0, 8),
         posts: [...tr.querySelectorAll("a[href*='PostBack'], input[type=radio], input[type=submit]")].map((a) => a.id || a.name || a.getAttribute("href")?.slice(0, 90)).slice(0, 4),
       }));
 
@@ -100,11 +101,12 @@ export async function shapeOf(page) {
     // on screen that has rows. Guessing a control's name is what made the
     // old parsers blind, so nothing is assumed about the id here.
     const tables = [...document.querySelectorAll("table")]
-      .filter((t) => shown(t) && t.querySelectorAll("tr").length > 0)
-      .slice(0, 10)
+      .filter((t) => t.querySelectorAll("tr").length > 0)
+      .slice(0, 14)
       .map((t) => ({
         id: t.id || null,
         within: t.closest("[id]")?.id ?? null,
+        shown: shown(t),
         rows: t.querySelectorAll("tr").length,
         sample: rowsOf(t),
       }));
@@ -113,7 +115,7 @@ export async function shapeOf(page) {
     // what is in it.
     const modals = [...document.querySelectorAll('[class*="modal"], [class*="Modal"]')]
       .slice(0, 12)
-      .map((el) => ({ id: el.id || null, cls: el.className, shown: shown(el), text: (el.innerText || "").trim().slice(0, 300) }));
+      .map((el) => ({ id: el.id || null, cls: el.className, shown: shown(el), text: words(el).slice(0, 300) }));
 
     return {
       url: location.pathname,
@@ -122,7 +124,7 @@ export async function shapeOf(page) {
       loginShown: [...document.querySelectorAll('input[type="password"]')].some(shown),
       // the page as a person reads it: the one thing that says whether a
       // search resolved a horse
-      text: (document.body.innerText || "").replace(/\s*\n\s*/g, " | ").slice(0, 2500),
+      text: words(document.body).slice(0, 2500),
       tables,
       modals,
     };
