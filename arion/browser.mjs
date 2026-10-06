@@ -16,7 +16,7 @@
 
 import { statSync } from "node:fs";
 
-import { LOGIN_PATH, ORIGIN, REPORTS_PATH } from "./client.mjs";
+import { ArionError, LOGIN_PATH, ORIGIN, REPORTS_PATH } from "./client.mjs";
 
 /** ASP.NET writes a control's name with $ and its id with _. */
 export const idOf = (name) => `#${String(name).replace(/\$/g, "_")}`;
@@ -490,4 +490,176 @@ export async function candidatesOn(page) {
   }, SEARCH_GRID);
   if (rows === null) return null; // no dialog at all, which is not an empty one
   return rows.filter(isHorseRow).map((r) => asCandidate(r.cells, r.posts[0])).filter(Boolean);
+}
+
+/* ------------------------------------------------------ the finished report */
+
+/**
+ * The files Arion built, from the hidden field its report tab fills in.
+ *
+ * That field holds a scrap of XML rather than a name:
+ *
+ *   <PdfFileName>Horse_Pedigreesreport-3_1343….pdf</PdfFileName>
+ *   <RtfFileName>Horse_Pedigreesreport-3_1343….rtf</RtfFileName>
+ *
+ * and the files themselves sit under /files/reports/, which is where the
+ * page's own "Save As RTF" points. Both are read: the PDF is what the desk
+ * wants to look at, the RTF is what it wants to edit.
+ */
+export const REPORT_FILES = "/files/reports/";
+
+export function filesFrom(value, { origin = ORIGIN } = {}) {
+  const s = String(value ?? "");
+  const out = [];
+  const take = (tag, kind) => {
+    const name = s.match(new RegExp(`<${tag}>([^<]+)</${tag}>`, "i"))?.[1]?.trim();
+    // a name with a slash in it is a path, not a file Arion built here
+    if (!name || /[\\/\\\\]/.test(name)) return;
+    out.push({ kind, name, url: `${origin}${REPORT_FILES}${encodeURIComponent(name)}` });
+  };
+  take("PdfFileName", "pdf");
+  take("RtfFileName", "rtf");
+  return out;
+}
+
+/**
+ * Arion's own id for the horse a report was built for, from the address of
+ * the frame the report is rendered in:
+ *
+ *   /ReportLoader.aspx?HorseName=…&HorseId=103364639&ReportType=PED01&Style=I…
+ *
+ * Worth keeping. A name is not a horse — Arion holds two Starspangledbanners
+ * — but this number is one, and it is Arion's own.
+ */
+export function horseIdFrom(frames = []) {
+  for (const f of frames) {
+    const id = String(f ?? "").match(/[?&]HorseId=(\d+)/i)?.[1];
+    if (id) return id;
+  }
+  return null;
+}
+
+/* ---------------------------------------------------------------- a session */
+
+/**
+ * A logged-in Arion on the reports page, for the length of one job.
+ *
+ * One browser, one page, closed when the job ends. Arion is driven as a
+ * person drives it — fill the box, press the button the page offers, click
+ * the horse in the dialog — because that is the only version of this site
+ * that works. Six attempts at reproducing its form posts by hand are the
+ * evidence.
+ */
+export async function withSession(fn, { env = process.env } = {}) {
+  if (!env.ARION_USERNAME || !env.ARION_PASSWORD) {
+    throw new ArionError("Arion is not connected: ARION_USERNAME and ARION_PASSWORD are not set on this service", { status: 503, code: "unconfigured" });
+  }
+  return withBrowser(async (page, info) => {
+    await page.goto(`${ORIGIN}${REPORTS_PATH}`, { waitUntil: "domcontentloaded", timeout: 45000 });
+    if (!(await signedIn(page)).yes) {
+      await signIn(page, env.ARION_USERNAME, env.ARION_PASSWORD);
+      const now = await signedIn(page);
+      if (!now.yes) {
+        throw new ArionError(`Arion refused the desk's login${now.failure ? `: ${now.failure}` : ""}`, { status: 401, code: "login" });
+      }
+    }
+    // Arion sends a fresh login to /Home.aspx whatever asked for it
+    if (new URL(page.url()).pathname !== REPORTS_PATH) {
+      await page.goto(`${ORIGIN}${REPORTS_PATH}`, { waitUntil: "domcontentloaded", timeout: 45000 });
+    }
+    return fn(page, info);
+  }, { env });
+}
+
+/** The three searches the page offers, by the boxes each one fills. */
+export const SEARCH_FIELDS = {
+  named: { boxes: { txtNamedHorse: "name" }, button: "btnSearchNamedHorse" },
+  dam: { boxes: { txtUnnamedHorse: "dam" }, button: "btnSearchUnnamedHorse" },
+  theoretical: { boxes: { txtSireName: "sire", txtDamName: "dam" }, button: "btnSearchDamHorse" },
+};
+
+/** Run one search and read Arion's answer. Searching costs nothing. */
+export async function runSearch(page, { kind = "named", ...values } = {}) {
+  const how = SEARCH_FIELDS[kind];
+  if (!how) throw new ArionError(`Unknown search: ${kind}`, { status: 400, code: "input" });
+  for (const [box, key] of Object.entries(how.boxes)) {
+    const v = String(values[key] ?? "").trim();
+    if (!v || v.length > 60) throw new ArionError(`Give the ${key === "name" ? "horse's name" : key}`, { status: 400, code: "input" });
+    await page.fill(idOf(`ctl00$MainContentArea$${box}`), v, { timeout: 15000 });
+  }
+  await page.click(idOf(`ctl00$MainContentArea$${how.button}`), { timeout: 20000 });
+  // the dialog arrives by async postback, so wait for a row rather than a clock
+  await page.waitForSelector(`#${SEARCH_GRID} tr`, { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(600);
+  return candidatesOn(page);
+}
+
+/** Wait for Arion to stop saying it is building something. */
+export const settled = (page, ms = 90000) =>
+  page
+    .waitForFunction(() => !/Loading Report/i.test(document.body.textContent ?? ""), null, { timeout: ms, polling: 500 })
+    .catch(() => {});
+
+/**
+ * Open one horse from the dialog. Arion opens a tab named after it and starts
+ * building the report in the style the sidebar already has chosen, so this is
+ * also where a report begins.
+ */
+export async function openHorse(page, link) {
+  await page.click(`#${link}`, { timeout: 20000 });
+  await settled(page);
+  await page.waitForTimeout(1200);
+  return reportOn(page);
+}
+
+/**
+ * Choose a report from the sidebar by the name Arion prints there, which is
+ * the same name REPORTS carries. Clicking the menu is what sets
+ * hiddenMenuItemId; nothing here writes that field by hand.
+ */
+export async function chooseReport(page, label) {
+  const wanted = String(label ?? "").trim();
+  if (!wanted) return { chosen: false, why: "no report named" };
+  const item = page
+    .locator("a, span, li, td")
+    .filter({ hasText: new RegExp(`^\\s*${wanted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "i") })
+    .first();
+  if (!(await item.count())) return { chosen: false, why: `Arion's menu offers no "${wanted}"` };
+  await item.click({ timeout: 20000 }).catch(() => {});
+  await settled(page);
+  await page.waitForTimeout(1200);
+  return { chosen: true };
+}
+
+/* ------------------------------------------- what the client actually calls */
+
+/**
+ * The two jobs the client needs, each a whole visit to Arion.
+ *
+ * Keeping the seam this narrow matters: the client knows "search Arion" and
+ * "make this report", not which control opens a dialog. Everything above is
+ * how, and how has changed six times in one afternoon.
+ */
+export const searchHorses = ({ env = process.env, ...values } = {}) =>
+  withSession((page) => runSearch(page, values), { env });
+
+export async function makeReport({ env = process.env, values = {}, horse = {}, label = "" } = {}) {
+  return withSession(async (page) => {
+    const again = (await runSearch(page, values)) ?? [];
+    const found = again.find((h) => h.name === horse.name && h.year === horse.year && h.country === horse.country);
+    if (!found) {
+      throw new ArionError(`Arion no longer offers ${horse.label ?? horse.name} for that search; search again`, { status: 409, code: "session" });
+    }
+    await openHorse(page, found.link);
+    // Arion starts a report in whatever style the sidebar already holds, so
+    // the one that was asked for is chosen after the horse, not before.
+    const chose = await chooseReport(page, label);
+    const built = await reportOn(page);
+    return {
+      chose,
+      tabs: built.tabs,
+      horseId: horseIdFrom(built.frames),
+      files: built.files.flatMap((f) => filesFrom(f.value)),
+    };
+  }, { env });
 }
