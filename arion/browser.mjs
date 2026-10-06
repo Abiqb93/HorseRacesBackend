@@ -168,42 +168,48 @@ export async function signedIn(page) {
 }
 
 /**
- * Sign in on Arion's own login page.
+ * Sign in the way the fetch client already does, which is the only way known
+ * to work on this site.
  *
- * The header's Login (`ctl00$btnLogin`) is a full postback that reloads the
- * page to bring a panel forward, so filling a box straight after pressing it
- * races the navigation — which is what the last run did, twice, and landed
- * logged out on /Home.aspx. A dedicated page has no panel to reveal and no
- * modal to lose, so that is where the login goes.
+ * Three attempts have now been lost to visibility. The header's Login is a
+ * postback that reloads the page; the header panel is styled shut;
+ * /Login.aspx has no visible password box either. Meanwhile
+ * arion/client.mjs has been logging in successfully all along by posting the
+ * reports page's own inline form — `ctl00$MainContentArea$lvLogin$Login1`,
+ * which ASP.NET renders whether or not anyone can see it.
  *
- * Nothing here names a field. Arion's login form is the visible password box
- * and the visible text box in front of it, and Enter in the password box
- * presses whatever the page has set as its default button — which is what
- * `btnLoginDefault` is for. Naming controls is what this integration keeps
- * getting wrong.
+ * So this fills those fields and fires Arion's own __doPostBack. It asks
+ * nothing to be on screen, which is the point: a login that depends on a
+ * stylesheet is a login that a stylesheet can break.
+ *
+ * It returns what it did, and when the fields are not there it returns the
+ * ids that are, so the next failure names itself.
  */
 export async function signIn(page, user, password) {
-  // ReturnUrl lands the session straight back on the reports page, which is\n  // the same trick the fetch client uses, rather than on /Home.aspx.\n  await page.goto(`${ORIGIN}${LOGIN_PATH}?ReturnUrl=${encodeURIComponent(REPORTS_PATH)}`, { waitUntil: "domcontentloaded", timeout: 45000 });
-  const pw = page.locator('input[type="password"]:visible').first();
-  await pw.waitFor({ state: "visible", timeout: 20000 });
-  await page.locator('input[type="text"]:visible, input[type="email"]:visible').first().fill(user);
-  await pw.fill(password);
-  await Promise.all([
-    page.waitForLoadState("load", { timeout: 45000 }).catch(() => {}),
-    pw.press("Enter"),
-  ]);
+  await page.goto(`${ORIGIN}${REPORTS_PATH}`, { waitUntil: "domcontentloaded", timeout: 45000 });
+  const sent = await page.evaluate(
+    ({ u, p }) => {
+      const set = (id, v) => {
+        const el = document.getElementById(id);
+        if (!el) return false;
+        el.value = v;
+        return true;
+      };
+      const filled =
+        set("ctl00_MainContentArea_lvLogin_Login1_UserName", u) && set("ctl00_MainContentArea_lvLogin_Login1_Password", p);
+      if (!filled) {
+        return { posted: false, inputs: [...document.querySelectorAll("input")].map((e) => e.id).filter(Boolean).slice(0, 40) };
+      }
+      if (typeof __doPostBack !== "function") return { posted: false, why: "the page defines no __doPostBack" };
+      // eslint-disable-next-line no-undef
+      __doPostBack("ctl00$MainContentArea$lvLogin$Login1$LoginButton", "");
+      return { posted: true };
+    },
+    { u: user, p: password },
+  );
+  await page.waitForLoadState("load", { timeout: 45000 }).catch(() => {});
   await page.waitForTimeout(2500);
-  // If Enter did not carry it, press whatever submit the page shows.
-  if (!(await signedIn(page)).yes) {
-    const go = page.locator('input[type="submit"]:visible, a:visible').filter({ hasText: /^\s*log\s*in\s*$/i }).first();
-    if (await go.count()) {
-      await Promise.all([
-        page.waitForLoadState("load", { timeout: 45000 }).catch(() => {}),
-        go.click({ timeout: 10000 }).catch(() => {}),
-      ]);
-      await page.waitForTimeout(2000);
-    }
-  }
+  return sent;
 }
 
 /**
@@ -226,7 +232,7 @@ export async function probe({ env = process.env, name = "Frankel", kind = "named
       await page.goto(`${ORIGIN}${REPORTS_PATH}`, { waitUntil: "domcontentloaded", timeout: 45000 });
 
       out.signedInBefore = await signedIn(page);
-      if (!out.signedInBefore.yes) await signIn(page, user, password);
+      if (!out.signedInBefore.yes) out.sent = await signIn(page, user, password);
       const after = await signedIn(page);
       out.loggedIn = after.yes;
       out.greeting = after.greeting;
