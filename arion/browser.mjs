@@ -168,44 +168,53 @@ export async function signedIn(page) {
 }
 
 /**
- * Sign in the way the fetch client already does, which is the only way known
- * to work on this site.
+ * The login forms Arion renders, best first.
  *
- * Three attempts have now been lost to visibility. The header's Login is a
- * postback that reloads the page; the header panel is styled shut;
- * /Login.aspx has no visible password box either. Meanwhile
- * arion/client.mjs has been logging in successfully all along by posting the
- * reports page's own inline form — `ctl00$MainContentArea$lvLogin$Login1`,
- * which ASP.NET renders whether or not anyone can see it.
+ * It renders one or the other, not both: logged out, the reports page carries
+ * the header's `ctl00$LoginTop` box and no inline one, which is what defeated
+ * the previous attempt — it filled `lvLogin`, found nothing, and posted
+ * nothing.
+ */
+export const LOGIN_FORMS = [
+  { user: "ctl00_LoginTop_UserName", password: "ctl00_LoginTop_Password", button: "ctl00$LoginTop$LoginButton" },
+  {
+    user: "ctl00_MainContentArea_lvLogin_Login1_UserName",
+    password: "ctl00_MainContentArea_lvLogin_Login1_Password",
+    button: "ctl00$MainContentArea$lvLogin$Login1$LoginButton",
+  },
+];
+
+/**
+ * Sign in by filling whichever of Arion's login forms is on the page and
+ * firing its own __doPostBack.
  *
- * So this fills those fields and fires Arion's own __doPostBack. It asks
- * nothing to be on screen, which is the point: a login that depends on a
- * stylesheet is a login that a stylesheet can break.
+ * Four attempts were lost to visibility before this: the header Login is a
+ * postback that reloads the page out from under the fill, the header panel is
+ * styled shut, /Login.aspx shows no box either, and the inline form is not
+ * rendered at all when logged out. Nothing here asks anything to be on
+ * screen, and nothing assumes which form Arion chose to render.
  *
- * It returns what it did, and when the fields are not there it returns the
- * ids that are, so the next failure names itself.
+ * It returns which form it used, or the input ids it found instead, so a
+ * failure names itself rather than arriving as a timeout.
  */
 export async function signIn(page, user, password) {
   await page.goto(`${ORIGIN}${REPORTS_PATH}`, { waitUntil: "domcontentloaded", timeout: 45000 });
   const sent = await page.evaluate(
-    ({ u, p }) => {
-      const set = (id, v) => {
-        const el = document.getElementById(id);
-        if (!el) return false;
-        el.value = v;
-        return true;
-      };
-      const filled =
-        set("ctl00_MainContentArea_lvLogin_Login1_UserName", u) && set("ctl00_MainContentArea_lvLogin_Login1_Password", p);
-      if (!filled) {
-        return { posted: false, inputs: [...document.querySelectorAll("input")].map((e) => e.id).filter(Boolean).slice(0, 40) };
+    ({ u, p, forms }) => {
+      for (const form of forms) {
+        const name = document.getElementById(form.user);
+        const word = document.getElementById(form.password);
+        if (!name || !word) continue;
+        name.value = u;
+        word.value = p;
+        if (typeof __doPostBack !== "function") return { posted: false, why: "the page defines no __doPostBack" };
+        // eslint-disable-next-line no-undef
+        __doPostBack(form.button, "");
+        return { posted: true, used: form.button };
       }
-      if (typeof __doPostBack !== "function") return { posted: false, why: "the page defines no __doPostBack" };
-      // eslint-disable-next-line no-undef
-      __doPostBack("ctl00$MainContentArea$lvLogin$Login1$LoginButton", "");
-      return { posted: true };
+      return { posted: false, inputs: [...document.querySelectorAll("input")].map((e) => e.id).filter(Boolean).slice(0, 40) };
     },
-    { u: user, p: password },
+    { u: user, p: password, forms: LOGIN_FORMS },
   );
   await page.waitForLoadState("load", { timeout: 45000 }).catch(() => {});
   await page.waitForTimeout(2500);
