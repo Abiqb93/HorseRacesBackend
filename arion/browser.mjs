@@ -698,3 +698,118 @@ export async function makeReport({ env = process.env, values = {}, horse = {}, s
     };
   }, { env });
 }
+
+/* ------------------------------------------------------------- My Reports */
+
+/**
+ * The account's own reports, which the old client read as empty.
+ *
+ * Its grid is gvMyReport, under the My Reports tab, with Horse Name, Report
+ * Type, Report Style and Expiry Date, and a pager reading "Page 1 of 17".
+ * The rows are in the page whether or not the tab is open, but the tab is
+ * opened anyway: a grid rendered on demand would otherwise be missed.
+ */
+export const MY_REPORTS_GRID =
+  "ctl00_MainContentArea_tabbedReport_tabs_TabMyReports_ctl01_ucArionMyReportsControl_lvMyReports_gvMyReport";
+
+/** A row of that grid, as a report rather than as cells. */
+export function asSavedReport(cells = [], links = []) {
+  const [horse, type, style, expires] = cells.map((c) => String(c ?? "").trim());
+  if (!horse) return null;
+  if (/^horse\s*name$/i.test(horse)) return null; // the header
+  if (/^page\s+\d+\s+of\s+\d+/i.test(horse)) return null; // the pager
+  // the pager's own numbers live in this grid too, and open nothing
+  const open = links.find((l) => l.id && !/btnNum_|ibtn(Next|Last|Prev|First)/i.test(l.id)) ?? null;
+  const kept = style && style !== "-" ? style : null;
+  return {
+    horse,
+    type: type || null,
+    style: kept,
+    expires: expires || null,
+    link: open?.id ?? null,
+    label: [horse, type, kept].filter(Boolean).join(" · "),
+  };
+}
+
+/**
+ * The same report, found again in a list fetched afresh. Four columns rather
+ * than a row id, for the same reason a horse travels by name, year and
+ * country: the id belongs to the visit, the report does not.
+ */
+export const sameReport = (a, b) =>
+  Boolean(a) && Boolean(b) && a.horse === b.horse && a.type === b.type && a.style === b.style && a.expires === b.expires;
+
+async function myReportsPage(page) {
+  return page.evaluate((gridId) => {
+    const grid = document.getElementById(gridId);
+    if (!grid) return null;
+    const words = (el) => (el.textContent ?? "").replace(/\s+/g, " ").trim();
+    const where = words(grid).match(/Page\s+(\d+)\s+of\s+(\d+)/i);
+    return {
+      page: where ? Number(where[1]) : 1,
+      pages: where ? Number(where[2]) : 1,
+      rows: [...grid.querySelectorAll("tr")].map((tr) => ({
+        cells: [...tr.querySelectorAll("td, th")].map(words).filter(Boolean),
+        links: [...tr.querySelectorAll("a[id]")].map((a) => ({ id: a.id, text: words(a) })),
+      })),
+    };
+  }, MY_REPORTS_GRID);
+}
+
+/** Open the My Reports tab, if the page offers one. */
+export async function openMyReportsTab(page) {
+  const tab = page.getByText(/^\s*my reports\s*$/i).first();
+  if (!(await tab.count())) return false;
+  await tab.click({ timeout: 15000 }).catch(() => {});
+  await page.waitForTimeout(1800);
+  return true;
+}
+
+/** Every page of My Reports. null means the grid is not there at all. */
+export async function myReportsOn(page, { maxPages = 30 } = {}) {
+  await openMyReportsTab(page);
+  const out = [];
+  let last = 0;
+  for (let i = 0; i < maxPages; i += 1) {
+    const got = await myReportsPage(page);
+    if (!got) return out.length ? out : null;
+    // A pager that will not advance ends the walk. Seventeen pages is a long
+    // way to go round twice.
+    if (got.page <= last) break;
+    last = got.page;
+    for (const row of got.rows) {
+      const saved = asSavedReport(row.cells, row.links);
+      if (saved) out.push(saved);
+    }
+    if (got.page >= got.pages) break;
+    const next = page.locator('[id*="gvMyReport"][id*="ibtnNext"]').first();
+    if (!(await next.count())) break;
+    await next.click({ timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(1500);
+  }
+  return out;
+}
+
+export const listMyReports = ({ env = process.env } = {}) => withSession((page) => myReportsOn(page), { env });
+
+/**
+ * Open a report the account already has. The report menu is never touched,
+ * so this cannot make a second copy of something already made.
+ */
+export async function openSavedReport({ env = process.env, report = {} } = {}) {
+  return withSession(async (page) => {
+    const rows = (await myReportsOn(page)) ?? [];
+    const found = rows.find((r) => sameReport(r, report));
+    if (!found) {
+      throw new ArionError(`${report.label ?? report.horse} is no longer under My Reports; open the list again`, { status: 409, code: "session" });
+    }
+    if (!found.link) {
+      throw new ArionError(`Arion offers no way to open ${found.label} from its list; open it on Arion`, { status: 409, code: "session" });
+    }
+    await page.click(`#${found.link}`, { timeout: 20000 });
+    await settled(page);
+    await page.waitForTimeout(1200);
+    const built = await reportOn(page);
+    return { files: built.files.flatMap((f) => filesFrom(f.value)), tabs: built.tabs };
+  }, { env });
+}

@@ -398,37 +398,6 @@ export function parseReportTabs(html) {
   return out;
 }
 
-/**
- * The My Reports tab: each row with its text and whatever opens it — a link
- * on Arion's host, or a postback.
- */
-export function parseMyReports(html) {
-  const s = String(html ?? "");
-  const start = s.search(/id="[^"]*TabMyReports"/i);
-  if (start < 0) return [];
-  const rest = s.slice(start);
-  const end = rest.slice(1).search(/id="[^"]*tabbedReport_tabs_Tab(?!MyReports)[A-Za-z0-9]+"|<\/form>/i);
-  const scope = end > 0 ? rest.slice(0, end + 1) : rest;
-  const out = [];
-  for (const row of scope.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
-    if (/<th\b/i.test(row[1])) continue;
-    const cells = [...row[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((c) => textOf(c[1])).filter(Boolean);
-    if (!cells.length) continue;
-    const link = [...row[1].matchAll(/<a\b[^>]*>/gi)].map((a) => attrs(a[0])).find((a) => a.href && !/^javascript:/i.test(a.href));
-    const pb = postbacks(row[1])[0];
-    let url = null;
-    if (link) {
-      try {
-        const u = new URL(link.href, `${ORIGIN}${REPORTS_PATH}`);
-        if (u.hostname === new URL(ORIGIN).hostname) url = u.href;
-      } catch {
-        /* not an address */
-      }
-    }
-    out.push({ cells, label: cells.join(" · "), url, ...(pb ? { target: pb.target, argument: pb.argument } : {}) });
-  }
-  return out;
-}
 
 /**
  * A page's shape, for checking the client against the live site: its form's
@@ -451,7 +420,6 @@ export function describePage(html) {
     candidates: parseCandidates(s).map((c) => c.label).slice(0, 20),
     reportTabs: parseReportTabs(s),
     reportFiles: parseReportFiles(s).map((f) => ({ kind: f.kind, path: new URL(f.url).pathname, tab: f.tab })),
-    myReports: parseMyReports(s).length,
     text: body.slice(0, 600),
   };
 }
@@ -770,7 +738,7 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
     check: () =>
       serial(async () => {
         const page = await reportPage();
-        return { ok: true, reports, myReports: parseMyReports(page.html).length };
+        return { ok: true, reports };
       }),
 
     /**
@@ -893,31 +861,38 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
       }),
 
     /** The My Reports tab: what the account has bought, each with a way to open it. */
+    /**
+     * The account's own reports. Read from Arion's own grid in the browser,
+     * every page of it — the old parser read the same grid as empty while the
+     * account held seventeen pages.
+     */
     myReports: () =>
       serial(async () => {
         tidy();
-        const page = await reportPage();
-        const fields = parseForm(page.html).fields;
-        return parseMyReports(page.html).map((row) => {
-          let open = null;
-          if (row.url) open = { file: remember({ url: row.url, kind: "file" }, row.label) };
-          else if (row.target) {
-            const t = token();
-            picks.set(t, { search: { fields }, choice: { target: row.target, argument: row.argument, label: row.label, saved: true }, kind: "saved", at: now() });
-            open = { token: t };
-          }
-          return { label: row.label, cells: row.cells, open };
+        const browser = await loadBrowser();
+        const rows = (await browser.listMyReports({ env })) ?? [];
+        return rows.map((report) => {
+          const t = token();
+          // The token remembers the report by its four columns, not by a row
+          // id: the id belongs to this visit, the report does not.
+          picks.set(t, { kind: "saved", report, at: now() });
+          return {
+            label: report.label,
+            cells: [report.horse, report.type, report.style, report.expires].filter(Boolean),
+            open: { token: t },
+          };
         });
       }),
 
-    /** Open a report from My Reports that opens by postback: one already bought. */
+    /** Open one of them. Nothing is made: the report menu is never touched. */
     openSaved: (t) =>
       serial(async () => {
         const pick = picks.get(String(t));
-        if (pick?.kind !== "saved" || !pick.choice?.saved) throw new ArionError("That list has expired; open My Reports again", { status: 410, code: "expired" });
-        const result = await postBack({ fields: pick.search.fields }, { target: pick.choice.target, argument: pick.choice.argument });
+        if (pick?.kind !== "saved") throw new ArionError("That list has expired; open My Reports again", { status: 410, code: "expired" });
+        const browser = await loadBrowser();
+        const out = await browser.openSavedReport({ env, report: pick.report });
         picks.delete(String(t));
-        return { files: parseReportFiles(result.html).map((f) => remember(f, pick.choice.label)) };
+        return { files: out.files.map((f) => remember(f, pick.report.label)), tabs: out.tabs };
       }),
 
     /**

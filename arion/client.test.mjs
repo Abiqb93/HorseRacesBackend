@@ -12,7 +12,6 @@ import {
   loginFailure,
   parseCandidates,
   parseForm,
-  parseMyReports,
   parsePrices,
   parseReportFiles,
   pricedReports,
@@ -120,7 +119,16 @@ const LIVE_DAMS = [
     link: "grid_ctl03_lnkHorseName", label: "Lady Vivian (FR) 2014", cells: ["Lady Vivian", "FR", "2014"] },
 ];
 
-function fakeBrowser({ horses = LIVE_HORSES, files = LIVE_FILES, menu = true, stage = "horse", sire = null } = {}) {
+// Two rows as a live run read them off gvMyReport, which the old parser
+// reported as an empty list while the account held seventeen pages.
+const LIVE_MINE = [
+  { horse: "Starspangledbanner", type: "Catalogue Style Unedited", style: "WI style", expires: "06/11/2026",
+    link: "gvMyReport_ctl02_lnkOpen", label: "Starspangledbanner · Catalogue Style Unedited · WI style" },
+  { horse: "Con Te Partiro", type: "Research Document", style: null, expires: "06/11/2026",
+    link: "gvMyReport_ctl03_lnkOpen", label: "Con Te Partiro · Research Document" },
+];
+
+function fakeBrowser({ horses = LIVE_HORSES, files = LIVE_FILES, menu = true, stage = "horse", sire = null, mine = LIVE_MINE } = {}) {
   const calls = [];
   const mod = {
     pickCandidate,
@@ -131,6 +139,20 @@ function fakeBrowser({ horses = LIVE_HORSES, files = LIVE_FILES, menu = true, st
     makeReport: async (args) => {
       calls.push({ makeReport: args });
       return { chose: { chosen: menu }, tabs: ["General", args.horse.name], horseId: "103364639", files: menu ? files : [] };
+    },
+    listMyReports: async (args) => {
+      calls.push({ listMyReports: args });
+      return mine;
+    },
+    openSavedReport: async (args) => {
+      calls.push({ openSavedReport: args });
+      if (!mine.some((r) => r.horse === args.report.horse && r.expires === args.report.expires)) {
+        const e = new Error("gone from My Reports");
+        e.code = "session";
+        e.status = 409;
+        throw e;
+      }
+      return { files, tabs: ["General", "My Reports"] };
     },
   };
   return { mod, calls, load: async () => mod };
@@ -178,15 +200,6 @@ test("a filled report tab names its files on Arion's host only", () => {
       ["html", "https://arion.co.nz/Reports/Temp/r1.html", 1],
     ],
   );
-});
-
-test("My Reports: each row, opened by a link or a postback", () => {
-  const rows = parseMyReports(reportsPage());
-  assert.equal(rows.length, 2);
-  assert.equal(rows[0].label, "FRANKEL (GB) 2008 · WI style · Open");
-  assert.equal(rows[0].url, "https://arion.co.nz/Reports/Saved/abc.pdf");
-  assert.equal(rows[1].target, "ctl00$MainContentArea$gvMy");
-  assert.equal(rows[1].argument, "Open$1");
 });
 
 test("login, refusal and Cloudflare are told apart", () => {
@@ -356,7 +369,7 @@ test("a token from My Reports cannot be spent on a new report", async () => {
   const c = createClient({ fetch: arion.fetch, env: ENV, loadBrowser: fakeBrowser().load });
   const mine = await c.myReports();
   const saved = mine.find((row) => row.open?.token);
-  assert.ok(saved, "one of the fixture's rows opens by postback");
+  assert.ok(saved, "every row of My Reports opens");
   const std = c.status().reports.find((r) => r.label === "Standard pedigree");
   await assert.rejects(
     c.report({ token: saved.open.token, reportId: std.id }),
@@ -412,15 +425,38 @@ test("a store that cannot be read falls back to this process's own count", async
   assert.ok(said.some((m) => /count could not be read/.test(m)), "and it says so");
 });
 
-test("My Reports: links open directly, postbacks through the page", async () => {
-  const arion = fakeArion();
-  const c = createClient({ fetch: arion.fetch, env: ENV });
+test("My Reports lists what the account has, and opens one by its columns", async () => {
+  const browser = fakeBrowser();
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load });
   const rows = await c.myReports();
   assert.equal(rows.length, 2);
-  const direct = await c.file(rows[0].open.file.id);
-  assert.equal(direct.body.toString(), "%PDF-1.4 abc");
-  const opened = await c.openSaved(rows[1].open.token);
-  assert.equal(opened.files.length, 2);
+  assert.equal(rows[0].label, "Starspangledbanner · Catalogue Style Unedited · WI style");
+  assert.deepEqual(rows[1].cells, ["Con Te Partiro", "Research Document", "06/11/2026"], "a style of '-' is no style");
+
+  const opened = await c.openSaved(rows[0].open.token);
+  assert.deepEqual(opened.files.map((f) => f.kind), ["pdf", "rtf"]);
+  const asked = browser.calls.find((x) => x.openSavedReport).openSavedReport.report;
+  assert.deepEqual(
+    { horse: asked.horse, type: asked.type, style: asked.style, expires: asked.expires },
+    { horse: "Starspangledbanner", type: "Catalogue Style Unedited", style: "WI style", expires: "06/11/2026" },
+    "a report is found again by its four columns, not by a row id from the last visit",
+  );
+  await assert.rejects(c.openSaved(rows[0].open.token), (e) => e.code === "expired", "a token opens once");
+});
+
+test("a report that has left My Reports says so rather than opening something else", async () => {
+  const browser = fakeBrowser();
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load });
+  const rows = await c.myReports();
+  // it expired between the list and the open, which is what an expiry date is for
+  browser.mod.listMyReports = async () => [];
+  browser.mod.openSavedReport = async () => {
+    const e = new Error("Starspangledbanner · Catalogue Style Unedited · WI style is no longer under My Reports; open the list again");
+    e.code = "session";
+    e.status = 409;
+    throw e;
+  };
+  await assert.rejects(c.openSaved(rows[0].open.token), (e) => e.code === "session" && e.status === 409);
 });
 
 test("a session that has timed out is logged in again, once", async () => {
