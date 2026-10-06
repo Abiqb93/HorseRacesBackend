@@ -92,6 +92,9 @@ export async function shapeOf(page) {
     return {
       url: location.pathname,
       title: document.title,
+      // which inputs the page has, so "the box is not here" is a readable
+      // answer rather than a locator timeout
+      fields: [...document.querySelectorAll("input, select, textarea")].map((el) => el.id).filter(Boolean).slice(0, 60),
       // the login box is markup on every page; it only means something when shown
       loginShown: [...document.querySelectorAll('input[type="password"]')].some(visible),
       found: interesting.map((el) => {
@@ -145,12 +148,26 @@ export async function probe({ env = process.env, name = "Frankel", kind = "named
       out.landed = new URL(page.url()).pathname;
       if (!out.loggedIn) return { ...out, stage: "login", why: "Arion still shows its login box after the login was sent" };
 
+      // Arion sends a fresh login to /Home.aspx whatever page asked for it, so
+      // the reports page has to be asked for a second time now there is a
+      // session. Without this the search box simply is not on the page.
+      if (new URL(page.url()).pathname !== REPORTS_PATH) {
+        await page.goto(`${ORIGIN}${REPORTS_PATH}`, { waitUntil: "domcontentloaded", timeout: 45000 });
+        await page.waitForTimeout(800);
+      }
+      out.reached = new URL(page.url()).pathname;
       out.beforeSearch = await shapeOf(page);
+      if (out.reached !== REPORTS_PATH) {
+        return { ...out, stage: "reports", why: `Arion would not stay on ${REPORTS_PATH}; it is on ${out.reached}` };
+      }
 
       // the box, then the button a person presses — not the hidden Enter-key
       // submit the fetch client was pressing
-      const box = { named: "txtNamedHorse", dam: "txtUnnamedHorse" }[kind] ?? "txtNamedHorse";
-      await page.fill(idOf(`ctl00$MainContentArea$${box}`), name);
+      const box = idOf(`ctl00$MainContentArea$${{ named: "txtNamedHorse", dam: "txtUnnamedHorse" }[kind] ?? "txtNamedHorse"}`);
+      if (!(await page.locator(box).count())) {
+        return { ...out, stage: "search", why: `the reports page has no ${box}; the fields it does have are listed under beforeSearch` };
+      }
+      await page.fill(box, name, { timeout: 15000 });
       await page.click(idOf(`ctl00$MainContentArea$btnSearch${kind === "dam" ? "UnnamedHorse" : "NamedHorse"}`));
 
       // a dialog, or the page settling without one
