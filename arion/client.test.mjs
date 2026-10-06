@@ -128,7 +128,7 @@ const LIVE_MINE = [
     link: "gvMyReport_ctl03_lnkOpen", label: "Con Te Partiro · Research Document" },
 ];
 
-function fakeBrowser({ horses = LIVE_HORSES, files = LIVE_FILES, menu = true, stage = "horse", sire = null, mine = LIVE_MINE } = {}) {
+function fakeBrowser({ horses = LIVE_HORSES, files = LIVE_FILES, menu = true, stage = "horse", sire = null, mine = LIVE_MINE, pages = 1, read = 1 } = {}) {
   const calls = [];
   const mod = {
     pickCandidate,
@@ -142,7 +142,7 @@ function fakeBrowser({ horses = LIVE_HORSES, files = LIVE_FILES, menu = true, st
     },
     listMyReports: async (args) => {
       calls.push({ listMyReports: args });
-      return mine;
+      return { rows: mine, pages, read };
     },
     openSavedReport: async (args) => {
       calls.push({ openSavedReport: args });
@@ -367,7 +367,7 @@ test("a search Arion answered without a list sells nobody", async () => {
 test("a token from My Reports cannot be spent on a new report", async () => {
   const arion = fakeArion();
   const c = createClient({ fetch: arion.fetch, env: ENV, loadBrowser: fakeBrowser().load });
-  const mine = await c.myReports();
+  const { reports: mine } = await c.myReports();
   const saved = mine.find((row) => row.open?.token);
   assert.ok(saved, "every row of My Reports opens");
   const std = c.status().reports.find((r) => r.label === "Standard pedigree");
@@ -428,8 +428,10 @@ test("a store that cannot be read falls back to this process's own count", async
 test("My Reports lists what the account has, and opens one by its columns", async () => {
   const browser = fakeBrowser();
   const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load });
-  const rows = await c.myReports();
+  const got = await c.myReports();
+  const rows = got.reports;
   assert.equal(rows.length, 2);
+  assert.equal(got.complete, true, "one page of one, so the list is whole");
   assert.equal(rows[0].label, "Starspangledbanner · Catalogue Style Unedited · WI style");
   assert.deepEqual(rows[1].cells, ["Con Te Partiro", "Research Document", "06/11/2026"], "a style of '-' is no style");
 
@@ -447,7 +449,7 @@ test("My Reports lists what the account has, and opens one by its columns", asyn
 test("a report that has left My Reports says so rather than opening something else", async () => {
   const browser = fakeBrowser();
   const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load });
-  const rows = await c.myReports();
+  const { reports: rows } = await c.myReports();
   // it expired between the list and the open, which is what an expiry date is for
   browser.mod.listMyReports = async () => [];
   browser.mod.openSavedReport = async () => {
@@ -571,4 +573,28 @@ test("a mating is a dialog in two steps: the sire first, then the mares", async 
   assert.equal(made.theoretical, true, "and is marked as a foal that does not exist");
   assert.match(made.files[0].label, /Starspangledbanner \(AUS\) 2006 × Lady Vivian \(IRE\) 2022/,
     "the file the desk keeps and sends on names both parents, not just the mare");
+});
+
+test("a list that did not reach the end of Arion's pager says so", async () => {
+  // Two runs minutes apart once came back with 426 rows and 50, the second a
+  // strict subset of the first, and nothing in either said which was whole.
+  const said = [];
+  const browser = fakeBrowser({ pages: 17, read: 2 });
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load, log: (m) => said.push(m) });
+  const got = await c.myReports();
+  assert.equal(got.complete, false);
+  assert.equal(got.pages, 17);
+  assert.equal(got.read, 2);
+  assert.ok(got.reports.length, "what was read is still handed over");
+  assert.ok(said.some((m) => /read 2 of 17 pages/.test(m)), "and it is written down");
+});
+
+test("a grid that is not there at all is not an account with nothing in it", async () => {
+  const browser = fakeBrowser();
+  browser.mod.listMyReports = async () => null;
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load });
+  const got = await c.myReports();
+  assert.deepEqual(got.reports, []);
+  assert.equal(got.pages, 0);
+  assert.equal(got.complete, false, "nothing was read, so nothing is claimed");
 });

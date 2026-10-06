@@ -768,29 +768,56 @@ export async function openMyReportsTab(page) {
   return true;
 }
 
-/** Every page of My Reports. null means the grid is not there at all. */
-export async function myReportsOn(page, { maxPages = 30 } = {}) {
+/**
+ * Every page of My Reports.
+ *
+ * The pager posts back, and waiting a fixed moment for it was not enough: two
+ * runs minutes apart returned 426 rows and 50, the second a strict subset of
+ * the first, with nothing to say it was short. So each turn of the page waits
+ * for the caption to actually change, presses again if it has not, and the
+ * walk reports how far it got.
+ *
+ * Returns { rows, pages, read }, or null when the grid is not there at all —
+ * which is not the same as an account with nothing in it.
+ */
+export async function myReportsOn(page, { maxPages = 40, tries = 3 } = {}) {
   await openMyReportsTab(page);
-  const out = [];
-  let last = 0;
+  const rows = [];
+  let pages = 1;
+  let read = 0;
   for (let i = 0; i < maxPages; i += 1) {
     const got = await myReportsPage(page);
-    if (!got) return out.length ? out : null;
-    // A pager that will not advance ends the walk. Seventeen pages is a long
-    // way to go round twice.
-    if (got.page <= last) break;
-    last = got.page;
+    if (!got) return rows.length ? { rows, pages, read } : null;
+    pages = got.pages;
+    read += 1;
     for (const row of got.rows) {
       const saved = asSavedReport(row.cells, row.links);
-      if (saved) out.push(saved);
+      if (saved) rows.push(saved);
     }
     if (got.page >= got.pages) break;
+
     const next = page.locator('[id*="gvMyReport"][id*="ibtnNext"]').first();
     if (!(await next.count())) break;
-    await next.click({ timeout: 15000 }).catch(() => {});
-    await page.waitForTimeout(1500);
+    const was = got.page;
+    let moved = false;
+    for (let t = 0; t < tries && !moved; t += 1) {
+      await next.click({ timeout: 15000 }).catch(() => {});
+      moved = await page
+        .waitForFunction(
+          ({ gridId, from }) => {
+            const g = document.getElementById(gridId);
+            const m = (g?.textContent ?? "").replace(/\s+/g, " ").match(/Page\s+(\d+)\s+of\s+\d+/i);
+            return Boolean(m) && Number(m[1]) !== from;
+          },
+          { gridId: MY_REPORTS_GRID, from: was },
+          { timeout: 15000, polling: 300 },
+        )
+        .then(() => true)
+        .catch(() => false);
+    }
+    if (!moved) break; // said in `read`, never passed off as the whole list
   }
-  return out;
+  return { rows, pages, read };
 }
 
 export const listMyReports = ({ env = process.env } = {}) => withSession((page) => myReportsOn(page), { env });
@@ -801,7 +828,7 @@ export const listMyReports = ({ env = process.env } = {}) => withSession((page) 
  */
 export async function openSavedReport({ env = process.env, report = {} } = {}) {
   return withSession(async (page) => {
-    const rows = (await myReportsOn(page)) ?? [];
+    const rows = (await myReportsOn(page))?.rows ?? [];
     const found = rows.find((r) => sameReport(r, report));
     if (!found) {
       throw new ArionError(`${report.label ?? report.horse} is no longer under My Reports; open the list again`, { status: 409, code: "session" });

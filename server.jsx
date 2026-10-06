@@ -15435,7 +15435,9 @@ app.post("/api/arion/report", async (req, res) => {
 app.get("/api/arion/my-reports", async (req, res) => {
   const { client } = await arion();
   try {
-    return res.json({ reports: await client.myReports() });
+    // myReports answers with how many of Arion's pages it managed to read, so
+    // a short list is never served as the whole list
+    return res.json(await client.myReports());
   } catch (err) {
     return arionFail(res, err);
   }

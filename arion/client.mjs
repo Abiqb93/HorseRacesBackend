@@ -870,8 +870,14 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
       serial(async () => {
         tidy();
         const browser = await loadBrowser();
-        const rows = (await browser.listMyReports({ env })) ?? [];
-        return rows.map((report) => {
+        const got = (await browser.listMyReports({ env })) ?? { rows: [], pages: 0, read: 0 };
+        // A short list must never pass as the whole list. Seventeen pages came
+        // back as two once, with nothing to say so.
+        // read > 0 matters: a grid that was not there at all reads nothing of
+        // nothing, and 0 >= 0 would call that a complete list.
+        const complete = got.read > 0 && got.read >= got.pages;
+        if (!complete) log(`[arion] My Reports: read ${got.read} of ${got.pages} pages; the list is short`);
+        const reports = got.rows.map((report) => {
           const t = token();
           // The token remembers the report by its four columns, not by a row
           // id: the id belongs to this visit, the report does not.
@@ -882,6 +888,7 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
             open: { token: t },
           };
         });
+        return { reports, pages: got.pages, read: got.read, complete };
       }),
 
     /** Open one of them. Nothing is made: the report menu is never touched. */
