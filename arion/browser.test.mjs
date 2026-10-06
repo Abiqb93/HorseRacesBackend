@@ -235,6 +235,12 @@ test("the header and the pager are not reports", () => {
   assert.equal(asSavedReport(["Horse Name", "Report Type", "Report Style", "Expiry Date"], []), null);
   assert.equal(asSavedReport(["Page 1 of 17", "12345678910", "1", "2"], []), null);
   assert.equal(asSavedReport([], OPEN(2)), null);
+  // The pager's row of page numbers sits in this same grid and looks like any
+  // other row. Eight of them reached a live listing of 390 before this.
+  assert.equal(asSavedReport(["1", "2", "3", "4"], []), null);
+  assert.equal(asSavedReport(["9", "10", "11", "12"], []), null);
+  // but a horse whose name merely starts with a digit is a horse
+  assert.ok(asSavedReport(["7 Brothers", "Research Document", "-", "06/11/2026"], OPEN(2)));
 });
 
 test("a pager number is not a way to open a report", () => {
