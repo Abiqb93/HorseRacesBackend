@@ -16,7 +16,7 @@
 
 import { statSync } from "node:fs";
 
-import { ORIGIN, REPORTS_PATH } from "./client.mjs";
+import { LOGIN_PATH, ORIGIN, REPORTS_PATH } from "./client.mjs";
 
 /** ASP.NET writes a control's name with $ and its id with _. */
 export const idOf = (name) => `#${String(name).replace(/\$/g, "_")}`;
@@ -167,51 +167,43 @@ export async function signedIn(page) {
   });
 }
 
-/** Sign in through the header box, which is the one Arion's session follows. */
+/**
+ * Sign in on Arion's own login page.
+ *
+ * The header's Login (`ctl00$btnLogin`) is a full postback that reloads the
+ * page to bring a panel forward, so filling a box straight after pressing it
+ * races the navigation — which is what the last run did, twice, and landed
+ * logged out on /Home.aspx. A dedicated page has no panel to reveal and no
+ * modal to lose, so that is where the login goes.
+ *
+ * Nothing here names a field. Arion's login form is the visible password box
+ * and the visible text box in front of it, and Enter in the password box
+ * presses whatever the page has set as its default button — which is what
+ * `btnLoginDefault` is for. Naming controls is what this integration keeps
+ * getting wrong.
+ */
 export async function signIn(page, user, password) {
-  // Press what the header offers, if it can be found.
-  await page
-    .locator("a, input[type=button], input[type=submit]")
-    .filter({ hasText: /^\s*log\s*in\s*$/i })
-    .first()
-    .click({ timeout: 5000 })
-    .catch(() => {});
-
-  // Then make sure. Arion's own hideLogin() hides ctl00_LoginTop_pnlLogin and
-  // coverScreen, so showing them is how the panel comes back — and not
-  // depending on finding the right button is the difference between a login
-  // and a fifteen-second wait on a field that was never going to appear.
-  await page.evaluate(() => {
-    for (const id of ["ctl00_LoginTop_pnlLogin", "coverScreen"]) {
-      const el = document.getElementById(id);
-      if (el) el.style.display = "block";
-    }
-  });
-
-  try {
-    await page.waitForSelector(idOf("ctl00$LoginTop$Password"), { state: "visible", timeout: 10000 });
-    await page.fill(idOf("ctl00$LoginTop$UserName"), user);
-    await page.fill(idOf("ctl00$LoginTop$Password"), password);
-    await Promise.all([
-      page.waitForLoadState("load", { timeout: 45000 }).catch(() => {}),
-      page.click(idOf("ctl00$LoginTop$LoginButton")),
-    ]);
-  } catch {
-    // The panel would not come forward. The form is still in the page and
-    // Arion's own __doPostBack will send it, so the login does not depend on
-    // the panel being on screen.
-    await page.evaluate(
-      ({ u, p }) => {
-        document.getElementById("ctl00_LoginTop_UserName").value = u;
-        document.getElementById("ctl00_LoginTop_Password").value = p;
-        // eslint-disable-next-line no-undef
-        __doPostBack("ctl00$LoginTop$LoginButton", "");
-      },
-      { u: user, p: password },
-    );
-    await page.waitForLoadState("load", { timeout: 45000 }).catch(() => {});
-  }
+  // ReturnUrl lands the session straight back on the reports page, which is\n  // the same trick the fetch client uses, rather than on /Home.aspx.\n  await page.goto(`${ORIGIN}${LOGIN_PATH}?ReturnUrl=${encodeURIComponent(REPORTS_PATH)}`, { waitUntil: "domcontentloaded", timeout: 45000 });
+  const pw = page.locator('input[type="password"]:visible').first();
+  await pw.waitFor({ state: "visible", timeout: 20000 });
+  await page.locator('input[type="text"]:visible, input[type="email"]:visible').first().fill(user);
+  await pw.fill(password);
+  await Promise.all([
+    page.waitForLoadState("load", { timeout: 45000 }).catch(() => {}),
+    pw.press("Enter"),
+  ]);
   await page.waitForTimeout(2500);
+  // If Enter did not carry it, press whatever submit the page shows.
+  if (!(await signedIn(page)).yes) {
+    const go = page.locator('input[type="submit"]:visible, a:visible').filter({ hasText: /^\s*log\s*in\s*$/i }).first();
+    if (await go.count()) {
+      await Promise.all([
+        page.waitForLoadState("load", { timeout: 45000 }).catch(() => {}),
+        go.click({ timeout: 10000 }).catch(() => {}),
+      ]);
+      await page.waitForTimeout(2000);
+    }
+  }
 }
 
 /**

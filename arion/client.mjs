@@ -70,7 +70,7 @@
 
 export const ORIGIN = "https://arion.co.nz";
 export const REPORTS_PATH = "/PedigreeReports/PedigreeReports.aspx";
-const LOGIN_PATH = "/Login.aspx";
+export const LOGIN_PATH = "/Login.aspx";
 const UA = "Mozilla/5.0 (compatible; BlandfordBloodstock/1.0; +https://www.blandfordbloodstock.tech)";
 
 /**
