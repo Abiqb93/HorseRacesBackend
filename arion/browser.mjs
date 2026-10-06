@@ -84,34 +84,47 @@ export async function withBrowser(fn, { env = process.env } = {}) {
  */
 export async function shapeOf(page) {
   return page.evaluate(() => {
-    const visible = (el) => {
+    const shown = (el) => {
       const r = el.getBoundingClientRect();
-      return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden";
+      if (r.width <= 0 || r.height <= 0) return false;
+      const c = getComputedStyle(el);
+      return c.visibility !== "hidden" && c.display !== "none";
     };
-    const interesting = [...document.querySelectorAll('[id*="SearchControl"], [id*="ModalDialog"], [id*="gvHorses"], [id*="gvMyReport"]')];
+    const rowsOf = (el) =>
+      [...el.querySelectorAll("tr")].slice(0, 15).map((tr) => ({
+        cells: [...tr.querySelectorAll("td, th")].map((td) => td.innerText.trim()).filter(Boolean).slice(0, 8),
+        posts: [...tr.querySelectorAll("a[href*='PostBack'], input[type=radio], input[type=submit]")].map((a) => a.id || a.name || a.getAttribute("href")?.slice(0, 90)).slice(0, 4),
+      }));
+
+    // Where Arion puts an answer, whatever it calls the container: every table
+    // on screen that has rows. Guessing a control's name is what made the
+    // old parsers blind, so nothing is assumed about the id here.
+    const tables = [...document.querySelectorAll("table")]
+      .filter((t) => shown(t) && t.querySelectorAll("tr").length > 0)
+      .slice(0, 10)
+      .map((t) => ({
+        id: t.id || null,
+        within: t.closest("[id]")?.id ?? null,
+        rows: t.querySelectorAll("tr").length,
+        sample: rowsOf(t),
+      }));
+
+    // A modal backdrop means Arion answered with a dialog. Which one, and
+    // what is in it.
+    const modals = [...document.querySelectorAll('[class*="modal"], [class*="Modal"]')]
+      .slice(0, 12)
+      .map((el) => ({ id: el.id || null, cls: el.className, shown: shown(el), text: (el.innerText || "").trim().slice(0, 300) }));
+
     return {
       url: location.pathname,
       title: document.title,
-      // which inputs the page has, so "the box is not here" is a readable
-      // answer rather than a locator timeout
       fields: [...document.querySelectorAll("input, select, textarea")].map((el) => el.id).filter(Boolean).slice(0, 60),
-      // the login box is markup on every page; it only means something when shown
-      loginShown: [...document.querySelectorAll('input[type="password"]')].some(visible),
-      found: interesting.map((el) => {
-        const rows = [...el.querySelectorAll("tr")];
-        return {
-          id: el.id,
-          tag: el.tagName.toLowerCase(),
-          visible: visible(el),
-          rows: rows.length,
-          // every row's cells, so a candidate's name, year and parents can be
-          // read however Arion lays them out
-          sample: rows.slice(0, 12).map((tr) => ({
-            cells: [...tr.querySelectorAll("td, th")].map((td) => td.innerText.trim()).filter(Boolean),
-            posts: [...tr.querySelectorAll("a[href*='__doPostBack'], a[href*='WebForm_DoPostBack'], input[type=radio]")].length,
-          })),
-        };
-      }),
+      loginShown: [...document.querySelectorAll('input[type="password"]')].some(shown),
+      // the page as a person reads it: the one thing that says whether a
+      // search resolved a horse
+      text: (document.body.innerText || "").replace(/\s*\n\s*/g, " | ").slice(0, 2500),
+      tables,
+      modals,
     };
   });
 }
@@ -124,7 +137,7 @@ export async function shapeOf(page) {
  * (hiddenMenuItemId), so it cannot order anything: searching on Arion is free
  * and this stays free.
  */
-export async function probe({ env = process.env, name = "Frankel", kind = "named" } = {}) {
+export async function probe({ env = process.env, name = "Frankel", kind = "named", shot = false } = {}) {
   const user = env.ARION_USERNAME;
   const password = env.ARION_PASSWORD;
   if (!user || !password) return { ok: false, stage: "login", why: "ARION_USERNAME and ARION_PASSWORD are not set on this service" };
@@ -177,18 +190,42 @@ export async function probe({ env = process.env, name = "Frankel", kind = "named
       await page.waitForTimeout(1200);
 
       out.afterSearch = await shapeOf(page);
+      // The one moment worth looking at. Reading a DOM through a selector is
+      // how the old parsers came to describe a page nobody had seen.
+      if (shot) out.screenshot = (await page.screenshot({ type: "jpeg", quality: 45 })).toString("base64");
 
-      // My Reports in the same visit. The fetch client reads that grid as
-      // empty although the page's own pager advertises nine pages of it, so
-      // its real shape is needed too — and gathering it here saves a second
-      // deploy to come back for it. Opening a tab touches no report menu.
+      // The search leaves Arion's own modal open, and its backdrop
+      // (div.modalBg) swallows every other click on the page — which is how
+      // the previous run discovered the dialog had opened at all. Close it
+      // before anything else is tried.
+      try {
+        const close = page
+          .locator([
+            idOf("ctl00$ModalDialogArea$ArionNamedHorseSearchControl$lnkClose"),
+            idOf("ctl00$ModalDialogArea$ArionNamedHorseSearchControl$imgClose"),
+          ].join(", "))
+          .first();
+        out.dialogWasOpen = await close.isVisible().catch(() => false);
+        if (out.dialogWasOpen) {
+          await close.click({ timeout: 8000 });
+          await page.waitForTimeout(1200);
+        }
+      } catch (err) {
+        out.dialogCloseWhy = err.message;
+      }
+
+      // My Reports in the same visit. That grid reads as empty through the
+      // old client although the page's own pager advertises nine pages of it,
+      // so its real shape is needed too, and gathering it here saves a deploy.
+      // Opening a tab touches no report menu.
       try {
         const tab = page.getByText(/^\s*my reports\s*$/i).first();
-        if (await tab.count()) {
-          await tab.click({ timeout: 8000 });
-          await page.waitForTimeout(1800);
+        const there = Boolean(await tab.count());
+        if (there) {
+          await tab.click({ timeout: 10000 });
+          await page.waitForTimeout(2000);
         }
-        out.myReportsTab = { opened: Boolean(await tab.count()), ...(await shapeOf(page)) };
+        out.myReportsTab = { opened: there, ...(await shapeOf(page)) };
       } catch (err) {
         // a tab that will not open is worth knowing about, not worth failing for
         out.myReportsTab = { opened: false, why: err.message };
