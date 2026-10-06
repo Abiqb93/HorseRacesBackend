@@ -139,7 +139,7 @@ export async function shapeOf(page) {
  * (hiddenMenuItemId), so it cannot order anything: searching on Arion is free
  * and this stays free.
  */
-export async function probe({ env = process.env, name = "Frankel", kind = "named", shot = false } = {}) {
+export async function probe({ env = process.env, name = "Frankel", kind = "named", year = null, country = "", shot = false } = {}) {
   const user = env.ARION_USERNAME;
   const password = env.ARION_PASSWORD;
   if (!user || !password) return { ok: false, stage: "login", why: "ARION_USERNAME and ARION_PASSWORD are not set on this service" };
@@ -196,6 +196,27 @@ export async function probe({ env = process.env, name = "Frankel", kind = "named
       // how the old parsers came to describe a page nobody had seen.
       if (shot) out.screenshot = (await page.screenshot({ type: "jpeg", quality: 45 })).toString("base64");
 
+      // Arion's answer, as horses
+      const horses = await candidatesOn(page);
+      out.candidates = horses === null ? null : horses.map((h) => ({ ...h, cells: undefined }));
+      const picked = pickCandidate(horses ?? [], { name, year, country });
+      out.picked = picked.one ? { ...picked.one, cells: undefined } : null;
+      out.among = picked.among.map((h) => h.label);
+
+      // Choosing from Arion's own dialog costs nothing — the report menu
+      // (hiddenMenuItemId) is still untouched, so nothing is ordered. What
+      // follows is the half of the flow this client has never seen.
+      if (picked.one?.link) {
+        try {
+          await page.click(`#${picked.one.link}`, { timeout: 15000 });
+          await page.waitForTimeout(3000);
+          out.afterSelect = await shapeOf(page);
+          if (shot) out.selectShot = (await page.screenshot({ type: "jpeg", quality: 40 })).toString("base64");
+        } catch (err) {
+          out.selectWhy = err.message;
+        }
+      }
+
       // The search leaves Arion's own modal open, and its backdrop
       // (div.modalBg) swallows every other click on the page — which is how
       // the previous run discovered the dialog had opened at all. Close it
@@ -239,4 +260,84 @@ export async function probe({ env = process.env, name = "Frankel", kind = "named
       return { ...out, stage: out.loggedIn ? "search" : "login", why: err.message, rss: { ...out.rss, after: process.memoryUsage().rss } };
     }
   }, { env });
+}
+
+/* ------------------------------------------------- reading Arion's answer */
+
+/**
+ * Arion's search dialog, as horses rather than as cells.
+ *
+ * Its grid is `ArionNamedHorseSearchControl_HorseSearchResultGridView`, whose
+ * columns are Horse, Country, Year of Birth, Sire, Dam and sometimes a sex.
+ * Each row's name is a link whose id ends `_ctlNN_lnkHorseName`, and clicking
+ * that is how a horse is chosen. None of this was guessable: the fixtures
+ * this client used to be written against named a `gvHorses` that does not
+ * exist.
+ */
+export const SEARCH_GRID = "ctl00_ModalDialogArea_ArionNamedHorseSearchControl_HorseSearchResultGridView";
+
+export function asCandidate(cells = [], link = null) {
+  const [name, country, year, sire, dam, sex] = cells.map((c) => String(c ?? "").trim());
+  if (!name) return null;
+  const y = Number(year);
+  return {
+    name,
+    country: country || null,
+    year: Number.isFinite(y) && y > 1700 && y < 2100 ? y : null,
+    sire: sire || null,
+    dam: dam || null,
+    sex: sex || null,
+    link,
+    label: [name, country ? `(${country})` : null, Number.isFinite(y) ? y : null].filter(Boolean).join(" "),
+    cells,
+  };
+}
+
+/** A row is a header, not a horse, when nothing in it can be clicked. */
+export const isHorseRow = (row) => Boolean(row?.posts?.length) && Boolean(row?.cells?.[0]);
+
+/**
+ * Which of Arion's rows is the horse that was meant.
+ *
+ * Name first, then year, then country — the same order the pedigree cache
+ * uses, and the reason it exists is on screen here: a search for
+ * Starspangledbanner returns two horses of that name, SAF 2008 by Indigo
+ * Magic and AUS 2006 by Choisir. One of them is the stallion; taking
+ * whichever Arion listed first would be a coin toss.
+ *
+ * Returns `{ one }` when a single row survives, and `{ among }` when several
+ * do. It never breaks a tie by position: an unresolved name is reported, not
+ * guessed at.
+ */
+export function pickCandidate(rows, { name = "", year = null, country = "" } = {}) {
+  const same = (a, b) => String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
+  const asked = String(name).trim().toLowerCase();
+  let live = rows.filter((r) => r && r.name);
+  if (asked) {
+    const exact = live.filter((r) => same(r.name, asked));
+    if (exact.length) live = exact;
+  }
+  if (live.length > 1 && Number(year)) {
+    const byYear = live.filter((r) => Number(r.year) === Number(year));
+    if (byYear.length) live = byYear;
+  }
+  if (live.length > 1 && country) {
+    const byCountry = live.filter((r) => same(r.country, country));
+    if (byCountry.length) live = byCountry;
+  }
+  return live.length === 1 ? { one: live[0], among: live } : { one: null, among: live };
+}
+
+/** Every horse in the dialog Arion has open, read from the live page. */
+export async function candidatesOn(page) {
+  const rows = await page.evaluate((gridId) => {
+    const grid = document.getElementById(gridId);
+    if (!grid) return null;
+    return [...grid.querySelectorAll("tr")].map((tr) => ({
+      cells: [...tr.querySelectorAll("td, th")].map((td) => (td.textContent ?? "").replace(/\s+/g, " ").trim()),
+      posts: [...tr.querySelectorAll("a[id], a[href*='PostBack']")].map((a) => a.id).filter(Boolean),
+    }));
+  }, SEARCH_GRID);
+  if (rows === null) return null; // no dialog at all, which is not an empty one
+  return rows.filter(isHorseRow).map((r) => asCandidate(r.cells, r.posts[0])).filter(Boolean);
 }
