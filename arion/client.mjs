@@ -515,7 +515,7 @@ export const RELAY_HTML_HEADERS = {
  * `fetch` and the environment are passed in so the tests can stand in for
  * Arion; in the server they are the real ones.
  */
-export function createClient({ fetch: doFetch = globalThis.fetch, env = process.env, now = () => Date.now(), log = () => {} } = {}) {
+export function createClient({ fetch: doFetch = globalThis.fetch, env = process.env, now = () => Date.now(), log = () => {}, store = null } = {}) {
   const jar = new Jar();
   let loggedInAt = 0;
   let landed = null; // where the last login went on to
@@ -540,6 +540,43 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
     for (const [k, v] of picks) if (v.at < now() - TOKEN_TTL) picks.delete(k);
     for (const [k, v] of files) if (v.at < now() - 6 * 60 * 60 * 1000) files.delete(k);
   };
+
+  /**
+   * How many reports the desk has bought today, and the spending of one more.
+   *
+   * `day` lives in this process alone, so a restart used to hand the desk a
+   * fresh allowance however much it had spent. `store`, when the server passes
+   * one, keeps the count somewhere a restart cannot reach.
+   *
+   * The store is authoritative for the guard and advisory for the display. If
+   * it cannot be read the in-process count still applies, so a broken table
+   * loosens the limit back to this process's own tally but never removes it.
+   */
+  async function spentToday() {
+    if (store) {
+      try {
+        const got = await store.read();
+        if (got) return got.date === today() ? Number(got.count) || 0 : 0;
+      } catch (err) {
+        log(`[arion] the day's count could not be read (${err.message}); falling back to this process's own`);
+      }
+    }
+    return day.date === today() ? day.count : 0;
+  }
+  async function spend() {
+    const count = (await spentToday()) + 1;
+    Object.assign(day, { date: today(), count });
+    if (store) {
+      try {
+        await store.write({ date: today(), count });
+      } catch (err) {
+        log(`[arion] the day's count could not be written (${err.message}); this process has it at ${count}`);
+      }
+    }
+    return count;
+  }
+  // so `status` is right about today after a restart, not only after a buy
+  if (store) spentToday().then((count) => Object.assign(day, { date: today(), count })).catch(() => {});
 
   /** One request to Arion, following its redirects by hand so every cookie is kept. */
   async function request(path, { form = null } = {}) {
@@ -752,18 +789,25 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
         const found = parseCandidates(result.html);
         if (found.length) {
           return {
+            found: true,
             candidates: found.map((choice) => {
               const t = token();
-              picks.set(t, { search, choice, at: now() });
+              picks.set(t, { search, choice, kind: "candidate", at: now() });
               return { token: t, label: choice.label, cells: choice.cells };
             }),
           };
         }
-        // no list to choose from: the search is the choice (a single horse,
-        // or a theoretical one), repeated with the report named when bought
-        const t = token();
-        picks.set(t, { search, choice: null, at: now() });
-        return { candidates: [], direct: { token: t }, text: textOf(result.html.replace(/<head\b[\s\S]*?<\/head>/i, "")).slice(0, 400) };
+        // No list came back, and this client cannot tell Arion's three silences
+        // apart: a horse so unambiguous it needs no choosing, no such horse at
+        // all, and a postback that did nothing. It used to call that first one
+        // and hand back a token worth 35 to 45 credits. It claims none of them
+        // now — nothing here is buyable — and says so rather than guessing.
+        return {
+          candidates: [],
+          found: false,
+          reason: "unconfirmed",
+          text: textOf(result.html.replace(/<head\b[\s\S]*?<\/head>/i, "")).slice(0, 400),
+        };
       }),
 
     /**
@@ -775,13 +819,19 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
         tidy();
         const pick = picks.get(String(t));
         if (!pick) throw new ArionError("That search has expired; search again", { status: 410, code: "expired" });
+        // Only a horse Arion itself listed is buyable. A token from My Reports
+        // names something already paid for, and buying against it would pay
+        // twice.
+        if (pick.kind !== "candidate") {
+          throw new ArionError("Arion has not confirmed which horse that is, so there is nothing to buy; search again and pick one from its list", { status: 400, code: "input" });
+        }
         const r = reports.find((x) => x.id === reportId);
         if (!r) throw new ArionError("Unknown report", { status: 400, code: "input" });
         if (confirm !== true || Number(credits) !== r.credits) {
           throw new ArionError(`This report costs ${r.credits} credits; confirm the price to buy it`, { status: 402, code: "confirm" });
         }
         if (day.date !== today()) Object.assign(day, { date: today(), count: 0 });
-        if (day.count >= LIMIT) throw new ArionError(`Today's limit of ${LIMIT} Arion reports is reached (ARION_DAILY_LIMIT)`, { status: 429, code: "limit" });
+        if ((await spentToday()) >= LIMIT) throw new ArionError(`Today's limit of ${LIMIT} Arion reports is reached (ARION_DAILY_LIMIT)`, { status: 429, code: "limit" });
 
         const menu = { [MENU_FIELD]: r.id };
         const { search, choice } = pick;
@@ -795,7 +845,7 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
           result = await postBack(page, { set: { ...search.set, ...menu }, button: SEARCHES[search.kind].button });
         }
         result = await confirmed(result);
-        day.count += 1;
+        await spend();
         picks.delete(String(t));
         const found = parseReportFiles(result.html);
         const horse = choice?.cells?.[0] ?? choice?.label ?? Object.values(search.set).join(" x ");
@@ -821,7 +871,7 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
           if (row.url) open = { file: remember({ url: row.url, kind: "file" }, row.label) };
           else if (row.target) {
             const t = token();
-            picks.set(t, { search: { fields }, choice: { target: row.target, argument: row.argument, label: row.label, saved: true }, at: now() });
+            picks.set(t, { search: { fields }, choice: { target: row.target, argument: row.argument, label: row.label, saved: true }, kind: "saved", at: now() });
             open = { token: t };
           }
           return { label: row.label, cells: row.cells, open };
@@ -832,7 +882,7 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
     openSaved: (t) =>
       serial(async () => {
         const pick = picks.get(String(t));
-        if (!pick?.choice?.saved) throw new ArionError("That list has expired; open My Reports again", { status: 410, code: "expired" });
+        if (pick?.kind !== "saved" || !pick.choice?.saved) throw new ArionError("That list has expired; open My Reports again", { status: 410, code: "expired" });
         const result = await postBack({ fields: pick.search.fields }, { target: pick.choice.target, argument: pick.choice.argument });
         picks.delete(String(t));
         return { files: parseReportFiles(result.html).map((f) => remember(f, pick.choice.label)) };

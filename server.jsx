@@ -15333,9 +15333,45 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
 // ---------------------------------------------------------------------------
 const loadArion = () => import("./arion/client.mjs");
 let arionClient = null;
+
+// The day's spend, kept out of process memory. The client used to count the
+// day's reports in a variable, so a Railway restart handed the desk a fresh
+// 25 however much it had already spent. One row per day, written after each
+// report goes through.
+db.query(
+  `CREATE TABLE IF NOT EXISTS arion_report_days (
+    day DATE NOT NULL PRIMARY KEY,
+    bought INT NOT NULL DEFAULT 0,
+    updatedAt DATETIME NOT NULL
+  )`,
+  (err) => { if (err) console.error("arion_report_days table check failed:", err.message); }
+);
+const arionDayStore = {
+  read: () => new Promise((resolve, reject) => {
+    db.query("SELECT day, bought FROM arion_report_days ORDER BY day DESC LIMIT 1", (err, rows) => {
+      if (err) return reject(err);
+      const row = rows?.[0];
+      if (!row) return resolve(null);
+      // DATE comes back as a Date; read it with local getters, as the rest of
+      // this file does, so a row written today is not read as yesterday's.
+      const d = row.day instanceof Date
+        ? `${row.day.getFullYear()}-${String(row.day.getMonth() + 1).padStart(2, "0")}-${String(row.day.getDate()).padStart(2, "0")}`
+        : String(row.day).slice(0, 10);
+      return resolve({ date: d, count: Number(row.bought) || 0 });
+    });
+  }),
+  write: ({ date, count }) => new Promise((resolve, reject) => {
+    db.query(
+      "INSERT INTO arion_report_days (day, bought, updatedAt) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE bought = VALUES(bought), updatedAt = NOW()",
+      [date, count],
+      (err) => (err ? reject(err) : resolve()),
+    );
+  }),
+};
+
 async function arion() {
   const mod = await loadArion();
-  arionClient ??= mod.createClient({ log: (...a) => console.log(...a) });
+  arionClient ??= mod.createClient({ log: (...a) => console.log(...a), store: arionDayStore });
   return { mod, client: arionClient };
 }
 function arionFail(res, err) {
@@ -15437,6 +15473,33 @@ app.get("/api/arion/diagnose", async (req, res) => {
     return res.json(await client.diagnose({ name: String(req.query.name ?? "Frankel").slice(0, 60) }));
   } catch (err) {
     return arionFail(res, err);
+  }
+});
+
+// Does a real browser work on this service, and what does Arion's search
+// actually answer with?
+//
+// The connection reads Arion by emulating its form posts, which cannot open
+// the modal dialog Arion puts its search results in — so every search came
+// back looking empty, including ones Arion certainly answers. This route
+// launches Chromium instead, logs in, runs one search and reports the shape of
+// what came back, along with the memory the browser cost. It never touches the
+// report menu, so it cannot order anything: searching on Arion is free.
+//
+// It answers 200 with `ok: false` and a `stage` when it fails, because saying
+// which step broke is the whole point of it.
+app.get("/api/arion/browser-check", async (req, res) => {
+  if (!/^(on|1|true)$/i.test(process.env.ARION_DIAGNOSE ?? "")) return res.status(404).json({ error: "Off: set ARION_DIAGNOSE=on to use it." });
+  try {
+    const mod = await import("./arion/browser.mjs");
+    return res.json(await mod.probe({
+      name: String(req.query.name ?? "Frankel").slice(0, 60),
+      kind: ["named", "dam"].includes(req.query.kind) ? req.query.kind : "named",
+    }));
+  } catch (err) {
+    // playwright-core missing, or no browser in the image: that is an answer
+    console.error("[arion] browser-check:", err.message);
+    return res.json({ ok: false, stage: "launch", why: err.message });
   }
 });
 
