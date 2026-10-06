@@ -465,7 +465,12 @@ export function pickCandidate(rows, { name = "", year = null, country = "" } = {
   let live = rows.filter((r) => r && r.name);
   if (asked) {
     const exact = live.filter((r) => same(r.name, asked));
-    if (exact.length) live = exact;
+    // Nothing of that name. The year and the country describe the horse that
+    // was asked for, so running them over a list it is not in picks a
+    // stranger: "Starspangledbanner x Lady Vivian" once resolved to Star
+    // Sparsh (IND) 2022, on the strength of the mare's foaling year alone.
+    if (!exact.length) return { one: null, among: live, matched: false };
+    live = exact;
   }
   if (live.length > 1 && Number(year)) {
     const byYear = live.filter((r) => Number(r.year) === Number(year));

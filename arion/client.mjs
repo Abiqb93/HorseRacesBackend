@@ -801,9 +801,19 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
         }
         // If the page knew a year or a country, say which one it means; the
         // desk still gets the whole list to choose from.
-        const narrowed = browser.pickCandidate(horses, { name: name || dam, year, country });
+        //
+        // Not on a theoretical mating. Arion answers that one with a list of
+        // SIRES to choose between first, and the year and country the page
+        // sends are the MARE's — so narrowing with them here matches a
+        // stranger. It did: Starspangledbanner x Lady Vivian came back
+        // claiming Star Sparsh (IND) 2022, on the mare's foaling year.
+        const narrowed = kind === "theoretical" ? { one: null, among: horses } : browser.pickCandidate(horses, { name, year, country });
         return {
           found: true,
+          // which horse this list is for: a theoretical mating starts by
+          // choosing the sire, so the page should say so rather than offering
+          // the list as if it were the mating
+          stage: kind === "theoretical" ? "sire" : "horse",
           best: narrowed.one ? narrowed.one.label : null,
           candidates: horses.map((horse) => {
             const t = token();
