@@ -15501,7 +15501,9 @@ app.get("/api/arion/browser-check", async (req, res) => {
     const mod = await import("./arion/browser.mjs");
     return res.json(await mod.probe({
       name: String(req.query.name ?? "Frankel").slice(0, 60),
-      kind: ["named", "dam"].includes(req.query.kind) ? req.query.kind : "named",
+      kind: ["named", "dam", "theoretical"].includes(req.query.kind) ? req.query.kind : "named",
+      sire: String(req.query.sire ?? "").slice(0, 60),
+      dam: String(req.query.dam ?? "").slice(0, 60),
       year: Number(req.query.year) || null,
       country: String(req.query.country ?? "").slice(0, 8),
       // ?shot=1 returns a JPEG of the page after the search, base64, so the

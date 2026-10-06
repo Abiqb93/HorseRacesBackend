@@ -285,7 +285,7 @@ export async function signIn(page, user, password) {
  * (hiddenMenuItemId), so it cannot order anything: searching on Arion is free
  * and this stays free.
  */
-export async function probe({ env = process.env, name = "Frankel", kind = "named", year = null, country = "", shot = false } = {}) {
+export async function probe({ env = process.env, name = "Frankel", kind = "named", sire = "", dam = "", year = null, country = "", shot = false } = {}) {
   const user = env.ARION_USERNAME;
   const password = env.ARION_PASSWORD;
   if (!user || !password) return { ok: false, stage: "login", why: "ARION_USERNAME and ARION_PASSWORD are not set on this service" };
@@ -319,20 +319,13 @@ export async function probe({ env = process.env, name = "Frankel", kind = "named
         return { ...out, stage: "reports", why: `Arion would not stay on ${REPORTS_PATH}; it is on ${out.reached}` };
       }
 
-      // the box, then the button a person presses — not the hidden Enter-key
-      // submit the fetch client was pressing
-      const box = idOf(`ctl00$MainContentArea$${{ named: "txtNamedHorse", dam: "txtUnnamedHorse" }[kind] ?? "txtNamedHorse"}`);
-      if (!(await page.locator(box).count())) {
-        return { ...out, stage: "search", why: `the reports page has no ${box}; the fields it does have are listed under beforeSearch` };
+      // One search, run the way the client runs it, so the probe and the
+      // client cannot drift apart.
+      try {
+        await runSearch(page, { kind, name, sire, dam });
+      } catch (err) {
+        return { ...out, stage: "search", why: err.message };
       }
-      await page.fill(box, name, { timeout: 15000 });
-      await page.click(idOf(`ctl00$MainContentArea$btnSearch${kind === "dam" ? "UnnamedHorse" : "NamedHorse"}`));
-
-      // a dialog, or the page settling without one
-      await page
-        .waitForSelector('[id*="SearchControl"] tr, [id*="gvHorses"] tr', { state: "visible", timeout: 20000 })
-        .catch(() => {});
-      await page.waitForTimeout(1200);
 
       out.afterSearch = await shapeOf(page);
       // The one moment worth looking at. Reading a DOM through a selector is
@@ -342,7 +335,12 @@ export async function probe({ env = process.env, name = "Frankel", kind = "named
       // Arion's answer, as horses
       const horses = await candidatesOn(page);
       out.candidates = horses === null ? null : horses.map((h) => ({ ...h, cells: undefined }));
-      const picked = pickCandidate(horses ?? [], { name, year, country });
+      // A sire x dam search answers with a list of sires, so for that one the
+      // sire is who to look for — the year and country belong to the mare and
+      // mean nothing here.
+      const want = kind === "theoretical" ? { name: sire } : { name, year, country };
+      const picked = pickCandidate(horses ?? [], want);
+      out.wanted = want;
       out.picked = picked.one ? { ...picked.one, cells: undefined } : null;
       out.among = picked.among.map((h) => h.label);
 
