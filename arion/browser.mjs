@@ -207,10 +207,23 @@ export async function signIn(page, user, password) {
         if (!name || !word) continue;
         name.value = u;
         word.value = p;
-        if (typeof __doPostBack !== "function") return { posted: false, why: "the page defines no __doPostBack" };
-        // eslint-disable-next-line no-undef
-        __doPostBack(form.button, "");
-        return { posted: true, used: form.button };
+        // Arion's __doPostBack is not reachable as a global from here, so do
+        // what it does: name the control in __EVENTTARGET and submit the
+        // form. Both hidden fields are on the page, and this is the whole of
+        // an ASP.NET postback — there is nothing else in that function.
+        if (typeof window.__doPostBack === "function") {
+          window.__doPostBack(form.button, "");
+          return { posted: true, used: form.button, by: "__doPostBack" };
+        }
+        const aspnet = document.forms.aspnetForm ?? document.forms[0];
+        if (!aspnet) return { posted: false, why: "the page has no form to post" };
+        const target = document.getElementById("__EVENTTARGET");
+        const argument = document.getElementById("__EVENTARGUMENT");
+        if (!target) return { posted: false, why: "the page has no __EVENTTARGET to name a control in" };
+        target.value = form.button;
+        if (argument) argument.value = "";
+        aspnet.submit();
+        return { posted: true, used: form.button, by: "form.submit" };
       }
       return { posted: false, inputs: [...document.querySelectorAll("input")].map((e) => e.id).filter(Boolean).slice(0, 40) };
     },
