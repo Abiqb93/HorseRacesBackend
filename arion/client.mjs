@@ -872,12 +872,18 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
 
         await spend();
         picks.delete(String(t));
-        const label = `${r.label} · ${horse.label}`;
-        log(`[arion] report made: ${r.label} for ${horse.label}${out.horseId ? ` (Arion horse ${out.horseId})` : ""}, ${out.files.length} file(s)`);
+        // A mating is named by both its parents. The file is what the desk
+        // keeps and sends on, so its name has to say which foal it describes
+        // — "Lady Vivian (IRE) 2022" alone names the mare, not the mating.
+        const subject = pick.sire ? `${pick.sire.label} × ${horse.label}` : horse.label;
+        const label = `${r.label} · ${subject}`;
+        log(`[arion] report made: ${r.label} for ${subject}${out.horseId ? ` (Arion horse ${out.horseId})` : ""}, ${out.files.length} file(s)`);
         return {
           report: { id: r.id, label: r.label, credits: r.credits },
-          horse: pick.sire ? `${pick.sire.label} × ${horse.label}` : horse.label,
+          horse: subject,
+          // A theoretical foal has no Arion id, because it does not exist.
           horseId: out.horseId,
+          theoretical: Boolean(pick.sire),
           files: out.files.map((f) => remember(f, label)),
           tabs: out.tabs,
           note: out.files.length

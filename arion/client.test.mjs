@@ -532,4 +532,7 @@ test("a mating is a dialog in two steps: the sire first, then the mares", async 
   assert.equal(asked.sire.name, "Starspangledbanner", "the settled sire is replayed, not searched for again");
   assert.equal(asked.horse.country, "IRE");
   assert.equal(made.horse, "Starspangledbanner (AUS) 2006 × Lady Vivian (IRE) 2022", "a mating is named as a mating");
+  assert.equal(made.theoretical, true, "and is marked as a foal that does not exist");
+  assert.match(made.files[0].label, /Starspangledbanner \(AUS\) 2006 × Lady Vivian \(IRE\) 2022/,
+    "the file the desk keeps and sends on names both parents, not just the mare");
 });
