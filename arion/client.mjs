@@ -43,14 +43,18 @@
  *     one shown logged in, where the report page should be: the client logs
  *     in again and repeats the step, once.
  *
- * ## What costs money
+ * ## What a report costs
  *
- * Searching costs nothing. A report costs its price in credits, from Arion's
- * price list (the General tab of the same page, read afresh as the page is
- * read, REPORTS below until then). A report is only asked for with
- * `confirm: true` and the price the person was shown, and only while the day's
- * count is under ARION_DAILY_LIMIT (25 unless set), so a slip cannot empty
- * the account.
+ * Nothing. The desk's Arion subscription is not metered, so neither searching
+ * nor making a report is charged, and there is no price to confirm. Arion's
+ * own list price is still read from the General tab of the same page (REPORTS
+ * below until then) because it is real and worth knowing, but nothing in this
+ * client gates on it.
+ *
+ * ARION_DAILY_LIMIT (200 unless set) therefore stops a runaway loop, not a
+ * bill: a retry that never gives up, or a page re-requesting on every render,
+ * hammering someone else's site. The count behind it lives in a table rather
+ * than in this process, so a restart does not reset it.
  *
  * ## What is known and what is not
  *
@@ -524,7 +528,11 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
   const picks = new Map(); // token -> { search, choice, at }
   const files = new Map(); // id -> { url, label, at }
   const day = { date: today(), count: 0 };
-  const LIMIT = Number(env.ARION_DAILY_LIMIT) > 0 ? Number(env.ARION_DAILY_LIMIT) : 25;
+  // Not a credit cap: the desk's Arion subscription is not metered, so a
+  // report costs nothing to make. This is the stop on a runaway loop — a
+  // retry that never gives up, a page that re-requests on every render —
+  // hammering someone else's site. Set well above any real day's work.
+  const LIMIT = Number(env.ARION_DAILY_LIMIT) > 0 ? Number(env.ARION_DAILY_LIMIT) : 200;
   const TOKEN_TTL = 20 * 60 * 1000;
   let reports = REPORTS;
   let seq = 0;
@@ -811,10 +819,14 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
       }),
 
     /**
-     * Buy one report for one search result. Refused unless `confirm` is true,
-     * `credits` is the price the person was shown, and the day has room.
+     * Make one report for one horse Arion listed.
+     *
+     * The desk's subscription is not metered, so there is no price to confirm
+     * and nothing to spend. What is still refused: a token Arion never
+     * confirmed a horse for, a token from My Reports (already made), and a
+     * day that has run past LIMIT, which stops a loop rather than a bill.
      */
-    report: ({ token: t, reportId, confirm = false, credits = null } = {}) =>
+    report: ({ token: t, reportId } = {}) =>
       serial(async () => {
         tidy();
         const pick = picks.get(String(t));
@@ -827,11 +839,13 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
         }
         const r = reports.find((x) => x.id === reportId);
         if (!r) throw new ArionError("Unknown report", { status: 400, code: "input" });
-        if (confirm !== true || Number(credits) !== r.credits) {
-          throw new ArionError(`This report costs ${r.credits} credits; confirm the price to buy it`, { status: 402, code: "confirm" });
-        }
         if (day.date !== today()) Object.assign(day, { date: today(), count: 0 });
-        if ((await spentToday()) >= LIMIT) throw new ArionError(`Today's limit of ${LIMIT} Arion reports is reached (ARION_DAILY_LIMIT)`, { status: 429, code: "limit" });
+        if ((await spentToday()) >= LIMIT) {
+          throw new ArionError(
+            `${LIMIT} Arion reports have been made today, which is more than a day's work and looks like something retrying in a loop. Raise ARION_DAILY_LIMIT if it is not.`,
+            { status: 429, code: "limit" },
+          );
+        }
 
         const menu = { [MENU_FIELD]: r.id };
         const { search, choice } = pick;

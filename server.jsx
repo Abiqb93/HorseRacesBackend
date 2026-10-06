@@ -15325,11 +15325,13 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
 // ARION_USERNAME and ARION_PASSWORD; without them /api/arion/status says so and
 // the site offers Arion's own page in a new tab instead.
 //
-// Searching costs nothing. Buying a report costs credits, so it needs the
-// price the person was shown, `confirm: true`, a registered platform user (or
-// one of ARION_USERS, when that is set), and room under the day's ceiling,
-// ARION_DAILY_LIMIT (25). /api/arion/diagnose, which reports the live pages'
-// shape for checking the client, answers only when ARION_DIAGNOSE=on.
+// Nothing here is metered: the desk's Arion subscription covers searches and
+// reports alike, so there is no price to confirm. A report still needs a
+// registered platform user (or one of ARION_USERS, when that is set) and room
+// under ARION_DAILY_LIMIT (200), which stops something retrying in a loop
+// against Arion rather than stopping a bill. /api/arion/diagnose and
+// /api/arion/browser-check, which report the live pages' shape for checking
+// the client, answer only when ARION_DIAGNOSE=on.
 // ---------------------------------------------------------------------------
 const loadArion = () => import("./arion/client.mjs");
 let arionClient = null;
@@ -15414,11 +15416,13 @@ app.post("/api/arion/search", async (req, res) => {
 
 app.post("/api/arion/report", async (req, res) => {
   const { client } = await arion();
-  const { token, reportId, confirm, credits, userId } = req.body ?? {};
-  if (!(await arionBuyer(userId))) return res.status(403).json({ error: "Only a signed-in member of the desk can buy Arion reports.", code: "buyer" });
+  // confirm and credits may still arrive from a site deployed before this
+  // build; there is no price to confirm, so they are read and ignored
+  const { token, reportId, userId } = req.body ?? {};
+  if (!(await arionBuyer(userId))) return res.status(403).json({ error: "Only a signed-in member of the desk can make Arion reports.", code: "buyer" });
   try {
-    const out = await client.report({ token, reportId, confirm, credits });
-    console.log(`[arion] ${userId} bought ${out.report.label} for ${out.horse} (${out.report.credits} credits)`);
+    const out = await client.report({ token, reportId });
+    console.log(`[arion] ${userId} made ${out.report.label} for ${out.horse}`);
     return res.json(out);
   } catch (err) {
     return arionFail(res, err);

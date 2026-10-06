@@ -242,7 +242,7 @@ test("a refused login says so, and the password goes nowhere but the login form"
   assert.equal(carrying[0].path.split("?")[0], "/Login.aspx");
 });
 
-test("search, choose, confirm the price, and read the report — a search never names a report", async () => {
+test("search, choose, and read the report — a search never names a report", async () => {
   const arion = fakeArion();
   const c = createClient({ fetch: arion.fetch, env: ENV });
   const found = await c.search({ kind: "named", name: "Frankel" });
@@ -255,12 +255,14 @@ test("search, choose, confirm the price, and read the report — a search never 
   assert.equal(c.status().loggedIn, true);
 
   const wi = c.status().reports.find((r) => r.label === "WI style");
-  await assert.rejects(c.report({ token: found.candidates[0].token, reportId: wi.id, credits: 40 }), (e) => e.code === "confirm" && e.status === 402);
-  await assert.rejects(c.report({ token: found.candidates[0].token, reportId: wi.id, credits: 35, confirm: true }), (e) => e.code === "confirm");
+  // No price to confirm: the desk's subscription is not metered, so a report
+  // is made on asking. An unknown report is still refused, and still without
+  // troubling Arion.
   const before = arion.calls.length;
+  await assert.rejects(c.report({ token: found.candidates[0].token, reportId: "no-such-report" }), (e) => e.code === "input" && e.status === 400);
   assert.equal(arion.calls.length, before, "a refused order asks nothing of Arion");
 
-  const bought = await c.report({ token: found.candidates[0].token, reportId: wi.id, credits: 40, confirm: true });
+  const bought = await c.report({ token: found.candidates[0].token, reportId: wi.id });
   const pick = arion.calls.find((x) => /gvHorses$/.test(x.form?.__EVENTTARGET ?? ""));
   assert.equal(pick.form.__EVENTARGUMENT, "Select$0");
   assert.equal(pick.form["ctl00$MainContentArea$hiddenMenuItemId"], wi.id);
@@ -274,16 +276,26 @@ test("search, choose, confirm the price, and read the report — a search never 
   assert.equal(pdf.type, "application/pdf");
   assert.equal(pdf.body.toString(), "%PDF-1.4 r1", "the print page is followed to the report it frames");
   await assert.rejects(c.file("nope"), (e) => e.status === 404);
-  await assert.rejects(c.report({ token: found.candidates[0].token, reportId: wi.id, credits: 40, confirm: true }), (e) => e.code === "expired", "a choice buys once");
+  await assert.rejects(c.report({ token: found.candidates[0].token, reportId: wi.id }), (e) => e.code === "expired", "a choice buys once");
 });
 
-test("the day's ceiling holds", async () => {
+// Not a credit cap — nothing is metered. It stops something retrying in a
+// loop against someone else's site, so the message says so.
+test("the day's ceiling stops a loop, and says that is what it is", async () => {
   const arion = fakeArion({ menuNeedsConfirm: false });
   const c = createClient({ fetch: arion.fetch, env: { ...ENV, ARION_DAILY_LIMIT: "1" } });
   const found = await c.search({ name: "Frankel" });
   const grid = c.status().reports.find((r) => r.label === "4x4");
-  await c.report({ token: found.candidates[0].token, reportId: grid.id, credits: 1, confirm: true });
-  await assert.rejects(c.report({ token: found.candidates[1].token, reportId: grid.id, credits: 1, confirm: true }), (e) => e.code === "limit" && e.status === 429);
+  await c.report({ token: found.candidates[0].token, reportId: grid.id });
+  await assert.rejects(
+    c.report({ token: found.candidates[1].token, reportId: grid.id }),
+    (e) => e.code === "limit" && e.status === 429 && /loop/.test(e.message) && !/credit/i.test(e.message),
+  );
+});
+
+test("the ceiling sits far above a day's work unless it is set", () => {
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV });
+  assert.equal(c.status().dailyLimit, 200);
 });
 
 // This test used to assert the opposite: that a search returning no list was a
@@ -317,7 +329,7 @@ test("a token from My Reports cannot be spent again", async () => {
   assert.ok(saved, "one of the fixture's rows opens by postback");
   const std = c.status().reports.find((r) => r.label === "Standard pedigree");
   await assert.rejects(
-    c.report({ token: saved.open.token, reportId: std.id, credits: std.credits, confirm: true }),
+    c.report({ token: saved.open.token, reportId: std.id }),
     (e) => e.code === "input" && e.status === 400,
   );
   // and it still opens, which is all it was ever for
@@ -331,10 +343,10 @@ test("the day's count survives a restart when a store keeps it", async () => {
   const c = createClient({ fetch: arion.fetch, env: { ...ENV, ARION_DAILY_LIMIT: "3" }, store });
   const found = await c.search({ kind: "named", name: "Frankel" });
   const grid = c.status().reports.find((r) => r.label === "Standard pedigree");
-  await c.report({ token: found.candidates[0].token, reportId: grid.id, credits: grid.credits, confirm: true });
+  await c.report({ token: found.candidates[0].token, reportId: grid.id });
   assert.equal(kept.count, 3, "the third of three went through and was written down");
   await assert.rejects(
-    c.report({ token: found.candidates[1].token, reportId: grid.id, credits: grid.credits, confirm: true }),
+    c.report({ token: found.candidates[1].token, reportId: grid.id }),
     (e) => e.code === "limit" && e.status === 429,
     "a fresh process does not get a fresh allowance",
   );
@@ -347,9 +359,9 @@ test("a store that cannot be read falls back to this process's own count", async
   const c = createClient({ fetch: arion.fetch, env: { ...ENV, ARION_DAILY_LIMIT: "1" }, store, log: (m) => said.push(m) });
   const found = await c.search({ kind: "named", name: "Frankel" });
   const grid = c.status().reports.find((r) => r.label === "Standard pedigree");
-  await c.report({ token: found.candidates[0].token, reportId: grid.id, credits: grid.credits, confirm: true });
+  await c.report({ token: found.candidates[0].token, reportId: grid.id });
   await assert.rejects(
-    c.report({ token: found.candidates[1].token, reportId: grid.id, credits: grid.credits, confirm: true }),
+    c.report({ token: found.candidates[1].token, reportId: grid.id }),
     (e) => e.code === "limit" && e.status === 429,
     "the limit is loosened to this process's tally, never removed",
   );
