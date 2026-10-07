@@ -7,6 +7,7 @@ import {
   FILE_MAX,
   SEARCH_GRID,
   frameFor,
+  framesNow,
   madeAs,
   reportParts,
   asCandidate,
@@ -566,4 +567,17 @@ test("a file written a moment late is still had", async () => {
   };
   const [got] = await fetchFiles(page, [f], { retryMs: 1 });
   assert.equal(got.body.toString(), "%PDF");
+});
+
+test("a frame moved on by script is read where it is now, not where its markup says", async () => {
+  // the markup still names the WI style built when the horse was opened; the
+  // frame itself has gone on to the Standard pedigree that was chosen
+  const wi = "https://arion.co.nz/ReportLoader.aspx?HorseName=Theoretical&SireId=103364639&DamId=105566883&Class=pedigreeReportFrame1&ReportType=PED01&Style=I&ProductType=Pedigrees&MainParameterTypeName=Style&MainParameterValue=I&SubParameter=[Depth]0[/Depth]&";
+  const std = "https://arion.co.nz/ReportLoader.aspx?HorseName=Theoretical&SireId=103364639&DamId=105566883&Class=pedigreeReportFrame1&ReportType=PED02&ProductType=Pedigrees&MainParameterTypeName=Depth&MainParameterValue=0&";
+  const page = { frames: () => [{ url: () => "https://arion.co.nz/PedigreeReports/PedigreeReports.aspx" }, { url: () => std }, { url: () => "about:blank" }] };
+  const frames = await framesNow(page, [wi]);
+  assert.equal(frames.includes("about:blank"), false);
+  assert.equal(frameFor(frames, "PED02|0#5D_a"), std);
+  // and the markup alone would have offered only the wrong report
+  assert.equal(frameFor([wi], "PED02|0#5D_a"), null);
 });
