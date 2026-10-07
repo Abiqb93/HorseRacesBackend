@@ -6,8 +6,10 @@ import {
   CHROMIUM_PATHS,
   FILE_MAX,
   SEARCH_GRID,
+  filesShown,
   frameFor,
   framesNow,
+  waitForReport,
   madeAs,
   reportParts,
   asCandidate,
@@ -580,4 +582,63 @@ test("a frame moved on by script is read where it is now, not where its markup s
   assert.equal(frameFor(frames, "PED02|0#5D_a"), std);
   // and the markup alone would have offered only the wrong report
   assert.equal(frameFor([wi], "PED02|0#5D_a"), null);
+});
+
+/**
+ * A page that shows the chosen report after `arriveAfter` looks, and puts up
+ * Arion's Yes/No box first when `asks` — building nothing until Yes is pressed.
+ */
+function fakeReportPage({ asks = false, arriveAfter = 1 } = {}) {
+  const seen = { looks: 0, yes: 0 };
+  let answered = !asks;
+  const yes = {
+    isVisible: async () => asks && !answered,
+    click: async () => {
+      seen.yes += 1;
+      answered = true;
+    },
+  };
+  const page = {
+    evaluate: async () => {
+      seen.looks += 1;
+      return answered && seen.looks >= arriveAfter;
+    },
+    locator: () => ({ count: async () => 1, nth: () => yes }),
+    waitForFunction: async () => {},
+    waitForTimeout: async () => {},
+  };
+  return { page, seen };
+}
+
+test("the chosen report is waited for, not a clock", async () => {
+  const { page, seen } = fakeReportPage({ arriveAfter: 3 });
+  assert.deepEqual(await waitForReport(page, "PED02|0#5D_a", { poll: 1 }), { arrived: true, asked: false });
+  assert.equal(seen.looks, 3);
+  assert.equal(seen.yes, 0);
+});
+
+test("Arion's 'are you sure' is answered yes, and then the report comes", async () => {
+  // the Standard pedigree sat unbuilt behind this box for as long as anyone waited
+  const { page, seen } = fakeReportPage({ asks: true, arriveAfter: 2 });
+  assert.deepEqual(await waitForReport(page, "PED02|0#5D_a", { poll: 1 }), { arrived: true, asked: true });
+  assert.equal(seen.yes, 1);
+});
+
+test("a report that never comes is said, within the time given", async () => {
+  const { page } = fakeReportPage({ arriveAfter: Infinity });
+  assert.deepEqual(await waitForReport(page, "PED02|0#5D_a", { timeout: 20, poll: 1 }), { arrived: false, asked: false });
+  assert.deepEqual(await waitForReport(page, "not an id", { timeout: 20 }), { arrived: false, asked: false });
+});
+
+test("a frame that has gone on to show a file names that file", () => {
+  const frames = [
+    "https://arion.co.nz/PedigreeReports/PedigreeReports.aspx",
+    "https://arion.co.nz/HabrokRefresh.aspx",
+    "https://arion.co.nz/files/reports/Theoretical_Pedigreesreport-3_134358323352437934.pdf",
+  ];
+  assert.deepEqual(filesShown(frames), [
+    { kind: "pdf", name: "Theoretical_Pedigreesreport-3_134358323352437934.pdf", url: frames[2] },
+  ]);
+  // and that file is the WI style's, which a Standard pedigree must not be handed
+  assert.equal(madeAs(filesShown(frames)[0].name, "PED02|0#5D_a"), false);
 });
