@@ -421,6 +421,102 @@ export async function probe({ env = process.env, name = "Frankel", kind = "named
   }, { env });
 }
 
+/**
+ * Make one report and look at every step of it, for checking the client
+ * against the live site. `mode` is the order tried:
+ *
+ *   before — the report chosen in the sidebar on a clean page, then the
+ *            search, then the horse opened
+ *   after  — the horse opened, then the report chosen (Arion's "are you
+ *            sure" answered yes if it asks)
+ *   field  — the sidebar's hidden field written just before the horse is
+ *            opened, the way the horse's own postback would carry it
+ *
+ * Each step reports what the sidebar holds, the files and frames on the page,
+ * any box on screen, and a screenshot. It makes real reports — the desk's
+ * subscription is not metered — in a browser of its own, so the one jobs keep
+ * is not disturbed.
+ */
+export async function reportProbe({ env = process.env, mode = "after", kind = "theoretical", name = "", sire = "", dam = "", year = null, country = "", reportId = "", label = "" } = {}) {
+  if (!env.ARION_USERNAME || !env.ARION_PASSWORD) return { ok: false, why: "ARION_USERNAME and ARION_PASSWORD are not set on this service" };
+  return withBrowser(async (page) => {
+    const steps = [];
+    const look = async (step, extra = {}) => {
+      const built = await reportOn(page).catch(() => ({ files: [], frames: [], loading: null }));
+      const shape = await shapeOf(page).catch(() => ({ modals: [] }));
+      steps.push({
+        step,
+        at: new Date().toISOString(),
+        menu: await menuHolds(page),
+        named: built.files.flatMap((f) => filesFrom(f.value)).map((f) => f.name),
+        frames: await framesNow(page, built.frames),
+        loading: built.loading,
+        modals: shape.modals.filter((m) => m.shown).map((m) => m.text.slice(0, 160)),
+        ...extra,
+        shot: (await page.screenshot({ type: "jpeg", quality: 40 }).catch(() => Buffer.from(""))).toString("base64"),
+      });
+    };
+    try {
+      await page.goto(`${ORIGIN}${REPORTS_PATH}`, { waitUntil: "load", timeout: 45000 });
+      if (!(await signedIn(page)).yes) await signIn(page, env.ARION_USERNAME, env.ARION_PASSWORD);
+      await reloadReports(page);
+      const item = menuItem(page, label);
+      const clicked = await item
+        .evaluate((el) => ({
+          tag: el.tagName,
+          id: el.id || null,
+          cls: String(el.className || "") || null,
+          href: (el.getAttribute("href") || el.closest("a")?.getAttribute("href") || "").slice(0, 200),
+          onclick: (el.getAttribute("onclick") || el.closest("[onclick]")?.getAttribute("onclick") || "").slice(0, 200),
+        }))
+        .catch((err) => ({ missing: err.message.slice(0, 120) }));
+      await look("signed in", { clicked });
+
+      if (mode === "before") {
+        await chooseReport(page, label);
+        await look("chose before opening");
+      }
+      const values = { kind, name, sire, dam };
+      const found = kind === "theoretical" ? await matingDialog(page, values) : { candidates: (await runSearch(page, values)) ?? [] };
+      const horses = found.candidates ?? [];
+      const pick = pickCandidate(horses, { name: kind === "theoretical" ? dam : name, year, country }).one ?? horses[0] ?? null;
+      if (!pick) {
+        await look("no horse", { stage: found.stage ?? null });
+        return { ok: false, why: "Arion listed no horse to open", mode, steps };
+      }
+      await look("searched", { horse: pick.label });
+      if (mode === "field") {
+        await page.evaluate((id) => {
+          const f = document.querySelector('input[id*="hiddenMenuItemId"]');
+          if (f) f.value = id;
+        }, reportId);
+      }
+      await openHorse(page, pick.link);
+      await look("opened");
+
+      if (mode === "after") {
+        await chooseReport(page, label);
+        const want = reportParts(reportId);
+        let asked = false;
+        for (let i = 0; i < 60; i += 1) {
+          if (want && (await reportShown(page, want, null))) break;
+          const yes = asked ? null : await shownYes(page);
+          if (yes) {
+            await yes.click({ timeout: 10000 }).catch(() => {});
+            asked = true;
+          }
+          await page.waitForTimeout(300);
+        }
+        await look("chose after opening", { asked });
+      }
+      return { ok: true, mode, steps };
+    } catch (err) {
+      await look("failed", { why: err.message }).catch(() => {});
+      return { ok: false, why: err.message, mode, steps };
+    }
+  }, { env });
+}
+
 /* ------------------------------------------------- reading Arion's answer */
 
 /**
@@ -739,13 +835,17 @@ export async function openHorse(page, link) {
  * the same name REPORTS carries. Clicking the menu is what sets
  * hiddenMenuItemId; nothing here writes that field by hand.
  */
+/** The sidebar's entry for a report, by the name Arion prints there. */
+export const menuItem = (page, label) =>
+  page
+    .locator("a, span, li, td")
+    .filter({ hasText: new RegExp(`^\\s*${String(label ?? "").trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "i") })
+    .first();
+
 export async function chooseReport(page, label) {
   const wanted = String(label ?? "").trim();
   if (!wanted) return { chosen: false, why: "no report named" };
-  const item = page
-    .locator("a, span, li, td")
-    .filter({ hasText: new RegExp(`^\\s*${wanted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "i") })
-    .first();
+  const item = menuItem(page, wanted);
   if (!(await item.count())) return { chosen: false, why: `Arion's menu offers no "${wanted}"` };
   await item.click({ timeout: 20000 }).catch(() => {});
   await settled(page);

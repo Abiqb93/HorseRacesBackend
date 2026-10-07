@@ -15630,6 +15630,32 @@ app.get("/api/arion/browser-check", async (req, res) => {
   }
 });
 
+// One report made step by step, a screenshot at each: which order of choosing
+// the report and opening the horse Arion actually builds from. It makes real
+// reports, in a browser of its own; off unless ARION_DIAGNOSE is on.
+app.get("/api/arion/report-check", async (req, res) => {
+  if (!/^(on|1|true)$/i.test(process.env.ARION_DIAGNOSE ?? "")) return res.status(404).json({ error: "Off: set ARION_DIAGNOSE=on to use it." });
+  try {
+    const mod = await import("./arion/browser.mjs");
+    const { REPORTS } = await import("./arion/client.mjs");
+    const report = REPORTS.find((r) => r.id === req.query.report) ?? REPORTS.find((r) => /^standard pedigree$/i.test(r.label));
+    return res.json(await mod.reportProbe({
+      mode: ["before", "after", "field"].includes(req.query.mode) ? req.query.mode : "after",
+      kind: ["named", "dam", "theoretical"].includes(req.query.kind) ? req.query.kind : "theoretical",
+      name: String(req.query.name ?? "").slice(0, 60),
+      sire: String(req.query.sire ?? "").slice(0, 60),
+      dam: String(req.query.dam ?? "").slice(0, 60),
+      year: Number(req.query.year) || null,
+      country: String(req.query.country ?? "").slice(0, 8),
+      reportId: report.id,
+      label: report.label,
+    }));
+  } catch (err) {
+    console.error("[arion] report-check:", err.message);
+    return res.json({ ok: false, stage: "launch", why: err.message });
+  }
+});
+
 // Start the server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
