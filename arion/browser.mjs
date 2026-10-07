@@ -615,10 +615,19 @@ const onReports = (page) => {
   }
 };
 
-/** Load the reports page afresh. Whatever dialog was open is gone. */
+/**
+ * How long the reports page is left to finish setting itself up after it
+ * loads. A search pressed on a page reloaded a moment earlier found nothing,
+ * every time, and waited out its 30 seconds doing it — while every search run
+ * on a page that had just signed in, which always waited this long, worked.
+ */
+export const SETTLE_MS = 2500;
+
+/** Load the reports page afresh, and let it settle. Whatever dialog was open is gone. */
 export async function reloadReports(page, s = null) {
   if (s) s.showing = null;
-  await page.goto(`${ORIGIN}${REPORTS_PATH}`, { waitUntil: "domcontentloaded", timeout: 45000 });
+  await page.goto(`${ORIGIN}${REPORTS_PATH}`, { waitUntil: "load", timeout: 45000 });
+  await page.waitForTimeout(SETTLE_MS);
 }
 
 /**
@@ -693,7 +702,12 @@ export async function runSearch(page, { kind = "named", ...values } = {}) {
   for (const [box, key] of Object.entries(how.boxes)) {
     const v = String(values[key] ?? "").trim();
     if (!v || v.length > 60) throw new ArionError(`Give the ${key === "name" ? "horse's name" : key}`, { status: 400, code: "input" });
-    await page.fill(idOf(`ctl00$MainContentArea$${box}`), v, { timeout: 15000 });
+    const sel = idOf(`ctl00$MainContentArea$${box}`);
+    await page.fill(sel, v, { timeout: 15000 });
+    // a box the page's own script set back to empty searches for nothing:
+    // look once more before pressing, and fill it again if it is gone
+    await page.waitForTimeout(250);
+    if ((await page.inputValue(sel).catch(() => v)) !== v) await page.fill(sel, v, { timeout: 15000 });
   }
   await page.click(idOf(`ctl00$MainContentArea$${how.button}`), { timeout: 20000 });
   // the dialog arrives by async postback, so wait for a row rather than a clock
