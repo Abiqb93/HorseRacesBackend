@@ -487,14 +487,42 @@ export const RELAY_HTML_HEADERS = {
  * `fetch` and the environment are passed in so the tests can stand in for
  * Arion; in the server they are the real ones.
  */
-export function createClient({ fetch: doFetch = globalThis.fetch, env = process.env, now = () => Date.now(), log = () => {}, store = null, loadBrowser = () => import("./browser.mjs") } = {}) {
+/**
+ * A report made here, as the page lists it. `archive` hands rows back in this
+ * shape, give or take a Date; the client builds one for a report just made.
+ */
+export const asMade = (row) => ({
+  id: row.id,
+  at: row.at instanceof Date ? row.at.toISOString() : row.at ?? null,
+  by: row.by ?? null,
+  subject: row.subject,
+  report: row.report,
+  label: `${row.subject} · ${row.report}`,
+  theoretical: Boolean(row.theoretical),
+  horseId: row.horseId ?? null,
+  files: (row.files ?? []).map((f) => ({ id: f.id, kind: f.kind })),
+});
+
+/** How long Arion's own list is kept before a load walks it again. */
+export const LIST_TTL = 30 * 60 * 1000;
+
+export function createClient({
+  fetch: doFetch = globalThis.fetch,
+  env = process.env,
+  now = () => Date.now(),
+  log = () => {},
+  store = null,
+  archive = null,
+  loadBrowser = () => import("./browser.mjs"),
+} = {}) {
   const jar = new Jar();
   let loggedInAt = 0;
   let landed = null; // where the last login went on to
   let refused = null; // { at, message, page }: the last refusal, which pauses the next try
   let queue = Promise.resolve();
   const picks = new Map(); // token -> { search, choice, at }
-  const files = new Map(); // id -> { url, label, at }
+  const files = new Map(); // id -> { url, label, at, type, body }: body when the session fetched it
+  let listed = null; // { got, at }: Arion's own list, as last walked whole
   const day = { date: today(), count: 0 };
   // Not a credit cap: the desk's Arion subscription is not metered, so a
   // report costs nothing to make. This is the stop on a runaway loop — a
@@ -715,8 +743,54 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
 
   const remember = (file, label) => {
     const id = token();
-    files.set(id, { url: file.url, label, at: now() });
+    files.set(id, { url: file.url, label, at: now(), type: file.type ?? null, body: file.body ?? null });
     return { id, kind: file.kind, tab: file.tab ?? null, label };
+  };
+
+  /**
+   * Put a report, and the files the session fetched for it, where a restart
+   * cannot reach them. `report` is null for a file opened from Arion's own
+   * list. It never fails what it records: the desk has its report either way,
+   * and the log says what was not kept.
+   */
+  async function keep(report, got, handed) {
+    if (!archive) return null;
+    const stored = got
+      .map((f, i) => ({ id: handed[i].id, kind: f.kind, name: f.name ?? null, label: handed[i].label, type: f.type ?? null, body: f.body ?? null }))
+      .filter((f) => f.body);
+    if (!report && !stored.length) return null;
+    try {
+      const saved = await archive.save({ report, files: stored });
+      // Kept in the database, a file need not also sit in this process's
+      // memory: it is read back from there when it is opened.
+      for (const f of stored) {
+        const m = files.get(f.id);
+        if (m) Object.assign(m, { body: null, kept: true });
+      }
+      return { id: saved?.id ?? null, files: stored.map((f) => ({ id: f.id, kind: f.kind })) };
+    } catch (err) {
+      log(`[arion] ${report ? `${report.report} for ${report.subject} was made but` : "an opened report was"} not kept: ${err.message}`);
+      return null;
+    }
+  }
+
+  /** Arion's own list as the page gets it, with open-tokens minted for this answer. */
+  const asListed = ({ got, at }) => {
+    // read > 0 matters: a grid that was not there at all reads nothing of
+    // nothing, and 0 >= 0 would call that a complete list.
+    const complete = got.read > 0 && got.read >= got.pages;
+    const reports = got.rows.map((report) => {
+      const t = token();
+      // The token remembers the report by its four columns, not by a row
+      // id: the id belongs to this visit, the report does not.
+      picks.set(t, { kind: "saved", report, at: now() });
+      return {
+        label: report.label,
+        cells: [report.horse, report.type, report.style, report.expires].filter(Boolean),
+        open: { token: t },
+      };
+    });
+    return { reports, pages: got.pages, read: got.read, complete, at: new Date(at).toISOString() };
   };
 
   return {
@@ -816,7 +890,7 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
      * and if Arion no longer offers it, that is said rather than guessed
      * around.
      */
-    report: ({ token: t, reportId } = {}) =>
+    report: ({ token: t, reportId, userId = null } = {}) =>
       serial(async () => {
         tidy();
         const pick = picks.get(String(t));
@@ -836,7 +910,7 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
 
         const browser = await loadBrowser();
         const { horse, values } = pick;
-        const out = await browser.makeReport({ env, values, horse, sire: pick.sire ?? null, label: r.label });
+        const out = await browser.makeReport({ env, values, horse, sire: pick.sire ?? null, label: r.label, reportId: r.id });
 
         await spend();
         picks.delete(String(t));
@@ -845,51 +919,75 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
         // — "Lady Vivian (IRE) 2022" alone names the mare, not the mating.
         const subject = pick.sire ? `${pick.sire.label} × ${horse.label}` : horse.label;
         const label = `${r.label} · ${subject}`;
-        log(`[arion] report made: ${r.label} for ${subject}${out.horseId ? ` (Arion horse ${out.horseId})` : ""}, ${out.files.length} file(s)`);
+        const handed = out.files.map((f) => remember(f, label));
+        const made = { at: new Date(now()), by: userId, subject, reportId: r.id, report: r.label, theoretical: Boolean(pick.sire), horseId: out.horseId ?? null };
+        const kept = await keep(made, out.files, handed);
+        const took = Object.entries(out.steps ?? {}).map(([k, ms]) => `${k} ${(ms / 1000).toFixed(1)}s`).join(", ");
+        log(
+          `[arion] report made: ${r.label} for ${subject}${out.horseId ? ` (Arion horse ${out.horseId})` : ""}, ${out.files.length} file(s)` +
+            `${kept ? `, kept as #${kept.id}` : ""}${out.reused ? ", from the search's open dialog" : ""}${took ? ` — ${took}` : ""}`,
+        );
         return {
-          report: { id: r.id, label: r.label, credits: r.credits },
+          report: { id: r.id, label: r.label },
           horse: subject,
           // A theoretical foal has no Arion id, because it does not exist.
           horseId: out.horseId,
           theoretical: Boolean(pick.sire),
-          files: out.files.map((f) => remember(f, label)),
+          files: handed,
           tabs: out.tabs,
           note: out.files.length
             ? null
-            : `Arion built no file${out.chose?.chosen ? "" : ` — its menu offers no "${r.label}"`}. Look under My Reports.`,
+            : out.chose?.chosen === false
+              ? `Arion's menu offers no "${r.label}", so nothing was built. Choose another report.`
+              : `Arion built the report on its own page but handed over no file for it. Open it on Arion.`,
+          // the record the page lists under My Reports; null if it could not be kept
+          made: kept ? asMade({ ...made, id: kept.id, files: kept.files }) : null,
+          // for checking this against the live site: where the time went, and
+          // what Arion offered
+          took: out.steps ?? null,
+          reused: Boolean(out.reused),
+          menu: out.menu ?? null,
+          seen: out.seen ?? null,
         };
       }),
 
-    /** The My Reports tab: what the account has bought, each with a way to open it. */
+    /** Reports made here, newest first, from the record: Arion is not asked, and nothing waits on it. */
+    made: async ({ limit = 200 } = {}) => {
+      if (!archive) return { reports: [], kept: false };
+      const n = Math.min(Math.max(Number(limit) || 200, 1), 500);
+      return { reports: (await archive.list({ limit: n })).map(asMade), kept: true };
+    },
+
     /**
      * The account's own reports. Read from Arion's own grid in the browser,
      * every page of it — the old parser read the same grid as empty while the
      * account held seventeen pages.
+     *
+     * Walking eighteen pages holds the queue for ten seconds and more, so a
+     * whole list is kept for LIST_TTL and answered from there; `fresh` walks it
+     * again. `cached` never walks: it answers at once with whatever is kept, or
+     * `reports: null` for nothing yet, so opening the page never holds a
+     * search up behind the walk.
      */
-    myReports: () =>
-      serial(async () => {
+    myReports: ({ fresh = false, cached = false } = {}) => {
+      if (cached) {
         tidy();
+        return Promise.resolve(listed ? asListed(listed) : { reports: null, pages: 0, read: 0, complete: false, at: null });
+      }
+      return serial(async () => {
+        tidy();
+        if (!fresh && listed && listed.at >= now() - LIST_TTL) return asListed(listed);
         const browser = await loadBrowser();
         const got = (await browser.listMyReports({ env })) ?? { rows: [], pages: 0, read: 0 };
+        const walked = { got, at: now() };
         // A short list must never pass as the whole list. Seventeen pages came
-        // back as two once, with nothing to say so.
-        // read > 0 matters: a grid that was not there at all reads nothing of
-        // nothing, and 0 >= 0 would call that a complete list.
-        const complete = got.read > 0 && got.read >= got.pages;
-        if (!complete) log(`[arion] My Reports: read ${got.read} of ${got.pages} pages; the list is short`);
-        const reports = got.rows.map((report) => {
-          const t = token();
-          // The token remembers the report by its four columns, not by a row
-          // id: the id belongs to this visit, the report does not.
-          picks.set(t, { kind: "saved", report, at: now() });
-          return {
-            label: report.label,
-            cells: [report.horse, report.type, report.style, report.expires].filter(Boolean),
-            open: { token: t },
-          };
-        });
-        return { reports, pages: got.pages, read: got.read, complete };
-      }),
+        // back as two once, with nothing to say so. It is answered, saying it
+        // is short, but not kept: kept, it would hide the rest for LIST_TTL.
+        if (got.read > 0 && got.read >= got.pages) listed = walked;
+        else log(`[arion] My Reports: read ${got.read} of ${got.pages} pages; the list is short`);
+        return asListed(walked);
+      });
+    },
 
     /** Open one of them. Nothing is made: the report menu is never touched. */
     openSaved: (t) =>
@@ -899,17 +997,30 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
         const browser = await loadBrowser();
         const out = await browser.openSavedReport({ env, report: pick.report });
         picks.delete(String(t));
-        return { files: out.files.map((f) => remember(f, pick.report.label)), tabs: out.tabs };
+        const handed = out.files.map((f) => remember(f, pick.report.label));
+        await keep(null, out.files, handed);
+        return { files: handed, tabs: out.tabs };
       }),
 
     /**
-     * A report file this client was handed, fetched with the session; Arion's
-     * print page is followed to the report it frames.
+     * A report file this client was handed. One the session fetched is served
+     * as it is, from this process or from the record, so it opens at once and
+     * after a restart. Only a bare address is fetched — Arion's print page
+     * followed to the report it frames — and only that waits in the queue.
      */
-    file: (id) =>
-      serial(async () => {
-        const f = files.get(String(id));
-        if (!f) throw new ArionError("No such report here; open it from the list again", { status: 404, code: "file" });
+    file: async (id) => {
+      const key = String(id);
+      const f = files.get(key);
+      if (f?.body) return { type: f.type, body: f.body, label: f.label, url: f.url };
+      if ((!f || f.kept) && archive) {
+        const got = await archive.file(key).catch((err) => {
+          log(`[arion] the record could not be read for a file (${err.message})`);
+          return null;
+        });
+        if (got) return { type: got.type, body: got.body, label: got.label, url: null };
+      }
+      if (!f?.url) throw new ArionError("No such report here; open it from the list again", { status: 404, code: "file" });
+      return serial(async () => {
         let got = await request(f.url);
         if (got.html !== undefined && asksForLogin(got.html)) {
           await login();
@@ -922,7 +1033,15 @@ export function createClient({ fetch: doFetch = globalThis.fetch, env = process.
           got = await request(inner.href);
         }
         return { ...got, label: f.label };
-      }),
+      });
+    },
+
+    /**
+     * Launch and sign in ahead of the desk's first search, so it happens while
+     * they type. Nothing is searched or made; a browser already kept is left
+     * as it is.
+     */
+    warm: () => serial(async () => (await loadBrowser()).warmSession({ env })),
 
     /**
      * The live pages' shape, for checking the parsers (names, never values).

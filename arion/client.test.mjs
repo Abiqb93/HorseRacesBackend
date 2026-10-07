@@ -138,7 +138,18 @@ function fakeBrowser({ horses = LIVE_HORSES, files = LIVE_FILES, menu = true, st
     },
     makeReport: async (args) => {
       calls.push({ makeReport: args });
-      return { chose: { chosen: menu }, tabs: ["General", args.horse.name], horseId: "103364639", files: menu ? files : [] };
+      return {
+        chose: { chosen: menu },
+        tabs: ["General", args.horse.name],
+        horseId: "103364639",
+        files: menu ? files : [],
+        reused: false,
+        steps: { check: 0, search: 1500, open: 4200, choose: 3100, files: 600 },
+      };
+    },
+    warmSession: async (args) => {
+      calls.push({ warmSession: args });
+      return { warm: true, already: false };
     },
     listMyReports: async (args) => {
       calls.push({ listMyReports: args });
@@ -346,7 +357,19 @@ test("a report Arion built no file for says so, and says whether its menu knew t
   const made = await c.report({ token: found.candidates[0].token, reportId: wi.id });
   assert.deepEqual(made.files, []);
   assert.match(made.note, /menu offers no "WI style"/);
-  assert.match(made.note, /My Reports/);
+  // nothing was built, so there is nothing under My Reports to look for
+  assert.match(made.note, /Choose another report/);
+});
+
+test("a report built with no file to hand over says so, and points at Arion", async () => {
+  const browser = fakeBrowser({ files: [] });
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load });
+  const found = await c.search({ kind: "named", name: "Starspangledbanner" });
+  const std = c.status().reports.find((r) => r.label === "Standard pedigree");
+  const made = await c.report({ token: found.candidates[0].token, reportId: std.id });
+  assert.deepEqual(made.files, []);
+  assert.match(made.note, /no file/);
+  assert.match(made.note, /Open it on Arion/);
 });
 
 test("a search Arion answered without a list sells nobody", async () => {
@@ -597,4 +620,173 @@ test("a grid that is not there at all is not an account with nothing in it", asy
   assert.deepEqual(got.reports, []);
   assert.equal(got.pages, 0);
   assert.equal(got.complete, false, "nothing was read, so nothing is claimed");
+});
+
+/* ------------------------------------------------ what is kept, and where */
+
+/** The record as the server keeps it in MySQL, kept here in memory. */
+function fakeArchive({ failSave = false } = {}) {
+  const reports = [];
+  const files = new Map();
+  let seq = 0;
+  return {
+    reports,
+    files,
+    save: async ({ report, files: fs }) => {
+      if (failSave) throw new Error("the database is down");
+      let id = null;
+      if (report) {
+        id = (seq += 1);
+        reports.unshift({ ...report, id, files: fs.map((f) => ({ id: f.id, kind: f.kind })) });
+      }
+      for (const f of fs) files.set(f.id, { ...f, report: id });
+      return { id };
+    },
+    list: async ({ limit }) => reports.slice(0, limit),
+    file: async (id) => files.get(id) ?? null,
+  };
+}
+
+// The files as the session fetched them: the report's bytes, not its address.
+const FETCHED = LIVE_FILES.map((f) => ({ ...f, type: f.kind === "pdf" ? "application/pdf" : "application/rtf", body: Buffer.from(`${f.kind} of the report`) }));
+
+async function makeMating(c) {
+  const found = await c.search({ kind: "theoretical", sire: "Starspangledbanner", dam: "Lady Vivian" });
+  const std = c.status().reports.find((r) => r.label === "Standard pedigree");
+  return c.report({ token: found.candidates[0].token, reportId: std.id, userId: "richardbrown1" });
+}
+
+test("a report made here is kept, under both parents' names, and listed newest first", async () => {
+  const archive = fakeArchive();
+  const browser = fakeBrowser({ horses: LIVE_DAMS, stage: "dam", sire: LIVE_HORSES[1], files: FETCHED });
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load, archive });
+  const made = await makeMating(c);
+
+  assert.equal(made.made.subject, "Starspangledbanner (AUS) 2006 × Lady Vivian (IRE) 2022");
+  assert.equal(made.made.report, "Standard pedigree");
+  assert.equal(made.made.by, "richardbrown1");
+  assert.equal(made.made.theoretical, true);
+  assert.deepEqual(made.made.files.map((f) => f.kind), ["pdf", "rtf"]);
+  // the file the page opens now is the one the record keeps
+  assert.deepEqual(made.made.files.map((f) => f.id), made.files.map((f) => f.id));
+  // the browser was told which report, so it can tell its files from another build's
+  assert.match(browser.calls.find((x) => x.makeReport).makeReport.reportId, /^PED02\|/);
+
+  const { reports } = await c.made();
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].label, "Starspangledbanner (AUS) 2006 × Lady Vivian (IRE) 2022 · Standard pedigree");
+});
+
+test("a fetched file opens from this process, and from the record after a restart", async () => {
+  const archive = fakeArchive();
+  const browser = fakeBrowser({ files: FETCHED });
+  const first = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load, archive });
+  const made = await makeMating(first);
+  const pdf = made.files.find((f) => f.kind === "pdf");
+
+  const now = await first.file(pdf.id);
+  assert.equal(now.type, "application/pdf");
+  assert.equal(now.body.toString(), "pdf of the report");
+
+  // a deploy: a new process, nothing in memory, the same database
+  const after = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load, archive });
+  const later = await after.file(pdf.id);
+  assert.equal(later.body.toString(), "pdf of the report");
+  assert.match(later.label, /Standard pedigree/);
+  await assert.rejects(after.file("no-such-id"), (e) => e.status === 404 && e.code === "file");
+});
+
+test("a report the record could not keep is still handed over, and says it was not kept", async () => {
+  const lines = [];
+  const browser = fakeBrowser({ files: FETCHED });
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load, archive: fakeArchive({ failSave: true }), log: (l) => lines.push(l) });
+  const made = await makeMating(c);
+  assert.equal(made.files.length, 2);
+  assert.equal(made.made, null);
+  assert.ok(lines.some((l) => /not kept: the database is down/.test(l)));
+});
+
+test("a file Arion would not hand over is not kept as if it were", async () => {
+  const archive = fakeArchive();
+  // addresses only: the session could not fetch them
+  const browser = fakeBrowser({ files: LIVE_FILES });
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load, archive });
+  const made = await makeMating(c);
+  assert.deepEqual(made.made.files, []);
+  assert.equal(archive.files.size, 0);
+});
+
+test("without a record there is nothing listed, and it says so", async () => {
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: fakeBrowser().load });
+  assert.deepEqual(await c.made(), { reports: [], kept: false });
+});
+
+test("the report says where its time went", async () => {
+  const lines = [];
+  const browser = fakeBrowser({ files: FETCHED });
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load, archive: fakeArchive(), log: (l) => lines.push(l) });
+  const made = await makeMating(c);
+  assert.equal(made.took.open, 4200);
+  assert.ok(lines.some((l) => /report made: Standard pedigree .* — check 0\.0s, search 1\.5s, open 4\.2s, choose 3\.1s, files 0\.6s/.test(l)));
+});
+
+test("Arion's own list is walked once and answered from there until it is due again", async () => {
+  let t = 1_000_000;
+  const browser = fakeBrowser();
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load, now: () => t });
+  const walks = () => browser.calls.filter((x) => x.listMyReports).length;
+
+  // before any walk, a cached read answers at once, with nothing
+  assert.equal((await c.myReports({ cached: true })).reports, null);
+  assert.equal(walks(), 0);
+
+  const first = await c.myReports();
+  assert.equal(first.reports.length, 2);
+  assert.equal(walks(), 1);
+  assert.equal((await c.myReports()).reports.length, 2);
+  assert.equal(walks(), 1, "the second load is answered from the kept list");
+  assert.equal((await c.myReports({ cached: true })).at, first.at);
+
+  await c.myReports({ fresh: true });
+  assert.equal(walks(), 2, "asked for fresh, it walks again");
+
+  t += 31 * 60 * 1000; // past LIST_TTL
+  await c.myReports();
+  assert.equal(walks(), 3);
+});
+
+test("a row answered from the kept list still opens, long after it was first listed", async () => {
+  let t = 1_000_000;
+  const browser = fakeBrowser();
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load, now: () => t });
+  await c.myReports();
+  t += 25 * 60 * 1000; // past the 20-minute life of a token
+  const { reports } = await c.myReports({ cached: true });
+  assert.ok(await c.openSaved(reports[0].open.token));
+});
+
+test("a short list is answered, saying it is short, but not kept", async () => {
+  const browser = fakeBrowser({ pages: 18, read: 2 });
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load });
+  assert.equal((await c.myReports()).complete, false);
+  assert.equal((await c.myReports({ cached: true })).reports, null);
+});
+
+test("warming hands the browser its login and nothing else", async () => {
+  const browser = fakeBrowser();
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load });
+  assert.deepEqual(await c.warm(), { warm: true, already: false });
+  assert.deepEqual(browser.calls.map((x) => Object.keys(x)[0]), ["warmSession"]);
+});
+
+test("a file kept in the record is not also held in memory, and still opens", async () => {
+  const archive = fakeArchive();
+  const reads = [];
+  const real = archive.file;
+  archive.file = async (id) => (reads.push(id), real(id));
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: fakeBrowser({ files: FETCHED }).load, archive });
+  const made = await makeMating(c);
+  const pdf = made.files.find((f) => f.kind === "pdf");
+  assert.equal((await c.file(pdf.id)).body.toString(), "pdf of the report");
+  assert.deepEqual(reads, [pdf.id], "read back from the record, not from memory");
 });
