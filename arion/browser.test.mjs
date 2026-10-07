@@ -9,7 +9,8 @@ import {
   filesShown,
   frameFor,
   framesNow,
-  waitForReport,
+  holdReport,
+  waitForBuilt,
   madeAs,
   reportParts,
   asCandidate,
@@ -585,10 +586,11 @@ test("a frame moved on by script is read where it is now, not where its markup s
 });
 
 /**
- * A page that shows the chosen report after `arriveAfter` looks, and puts up
- * Arion's Yes/No box first when `asks` — building nothing until Yes is pressed.
+ * A page whose report is built after `arriveAfter` looks — filed or drawn, as
+ * `how` says — and which puts up Arion's Yes/No box first when `asks`,
+ * building nothing until Yes is pressed.
  */
-function fakeReportPage({ asks = false, arriveAfter = 1 } = {}) {
+function fakeReportPage({ asks = false, arriveAfter = 1, how = "file" } = {}) {
   const seen = { looks: 0, yes: 0 };
   let answered = !asks;
   const yes = {
@@ -601,33 +603,46 @@ function fakeReportPage({ asks = false, arriveAfter = 1 } = {}) {
   const page = {
     evaluate: async () => {
       seen.looks += 1;
-      return answered && seen.looks >= arriveAfter;
+      return answered && seen.looks >= arriveAfter ? how : null;
     },
     locator: () => ({ count: async () => 1, nth: () => yes }),
-    waitForFunction: async () => {},
     waitForTimeout: async () => {},
   };
   return { page, seen };
 }
 
-test("the chosen report is waited for, not a clock", async () => {
+test("a filed report is taken as soon as its files carry its number", async () => {
   const { page, seen } = fakeReportPage({ arriveAfter: 3 });
-  assert.deepEqual(await waitForReport(page, "PED02|0#5D_a", { poll: 1 }), { arrived: true, asked: false });
+  assert.deepEqual(await waitForBuilt(page, "PED01|I#3S_a", { poll: 1 }), { built: "file", asked: false });
   assert.equal(seen.looks, 3);
-  assert.equal(seen.yes, 0);
 });
 
-test("Arion's 'are you sure' is answered yes, and then the report comes", async () => {
-  // the Standard pedigree sat unbuilt behind this box for as long as anyone waited
+test("a drawn report is given a moment for files it may also have, then taken as drawn", async () => {
+  // an Internet pedigree is only ever drawn: it must not wait forever for a file
+  const { page } = fakeReportPage({ how: "drawn" });
+  assert.deepEqual(await waitForBuilt(page, "PED02|0#5D_a", { poll: 1, grace: 5 }), { built: "drawn", asked: false });
+});
+
+test("Arion's 'are you sure' is answered yes if it asks, and then the report comes", async () => {
   const { page, seen } = fakeReportPage({ asks: true, arriveAfter: 2 });
-  assert.deepEqual(await waitForReport(page, "PED02|0#5D_a", { poll: 1 }), { arrived: true, asked: true });
+  assert.deepEqual(await waitForBuilt(page, "PED02|0#5D_a", { poll: 1 }), { built: "file", asked: true });
   assert.equal(seen.yes, 1);
 });
 
-test("a report that never comes is said, within the time given", async () => {
+test("a report never built is said, within the time given", async () => {
   const { page } = fakeReportPage({ arriveAfter: Infinity });
-  assert.deepEqual(await waitForReport(page, "PED02|0#5D_a", { timeout: 20, poll: 1 }), { arrived: false, asked: false });
-  assert.deepEqual(await waitForReport(page, "not an id", { timeout: 20 }), { arrived: false, asked: false });
+  assert.deepEqual(await waitForBuilt(page, "PED02|0#5D_a", { timeout: 20, poll: 1 }), { built: null, asked: false });
+  assert.deepEqual(await waitForBuilt(page, "not an id", { timeout: 20 }), { built: null, asked: false });
+});
+
+test("the report asked for is put in the sidebar's field, and read back", async () => {
+  let field = "PED01|I#3S_a";
+  const page = { evaluate: async (fn, id) => ((field = id), field) };
+  assert.equal(await holdReport(page, "PED02|0#5D_a"), "PED02|0#5D_a");
+  assert.equal(field, "PED02|0#5D_a");
+  // a page with no field to take it says so, rather than failing the report
+  assert.equal(await holdReport({ evaluate: async () => null }, "PED02|0#5D_a"), null);
+  assert.equal(await holdReport({ evaluate: async () => { throw new Error("detached"); } }, "PED02|0#5D_a"), null);
 });
 
 test("a frame that has gone on to show a file names that file", () => {

@@ -1036,7 +1036,15 @@ export async function frameAsFile(page, url, { name = "arion-report" } = {}) {
       login: Boolean(document.querySelector('input[type="password"]')),
     }));
     if (looks.login || looks.words < 200) return null;
-    const body = await p.pdf({ format: "A4", printBackground: true, margin: { top: "10mm", bottom: "10mm", left: "8mm", right: "8mm" } });
+    // One page the size of the report, as it looks on screen: a pedigree is
+    // wider than A4, and paper sizes would cut it into pieces.
+    await p.emulateMedia({ media: "screen" }).catch(() => {});
+    const size = await p.evaluate(() => ({
+      w: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth ?? 0),
+      h: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0),
+    }));
+    const px = (v, lo, hi) => `${Math.min(Math.max(Math.ceil(v) + 32, lo), hi)}px`;
+    const body = await p.pdf({ width: px(size.w, 600, 4000), height: px(size.h, 400, 8000), printBackground: true, pageRanges: "1" });
     return { kind: "pdf", name: `${name}.pdf`, url, type: "application/pdf", body, from: "drawn" };
   } catch {
     return null;
@@ -1102,35 +1110,102 @@ async function shownYes(page) {
 }
 
 /**
- * Wait for Arion to show the report that was chosen, not for a clock.
- *
- * Choosing a style asks first — Arion's own "are you sure", a Yes/No box in
- * every page's markup — and builds nothing until it is answered. Nothing here
- * answered it, so a Standard pedigree chosen after the horse had opened in WI
- * style sat unbuilt behind the box for as long as anyone waited, and the WI
- * style's files were all there was to read. The desk said yes by pressing
- * Generate, so the box is answered yes; and until the report comes the page
- * goes on showing the last one, so it is the report that is waited for.
+ * Has the report been built, and how? "file" when files carry its menu
+ * number — the catalogue styles are written to PDF and RTF, in the hidden
+ * field and in the frame, which goes on to show the PDF — or "drawn" when a
+ * report frame of its type has finished drawing and holds a report, which is
+ * all an Internet pedigree ever is. Otherwise null.
  */
-export async function waitForReport(page, reportId, { not = null, timeout = 30000, poll = 300 } = {}) {
+async function builtNow(page, { type, value, n }) {
+  return page
+    .evaluate(
+      ({ type, value, n }) => {
+        const mine = new RegExp(`report-${n}_`, "i");
+        const named = [...document.querySelectorAll('input[id*="hdnReportFileName"]')].map((el) => el.value || "");
+        if (named.some((v) => mine.test(v))) return "file";
+        for (const f of document.querySelectorAll("iframe")) {
+          let href = "";
+          let doc = null;
+          try {
+            href = f.contentWindow.location.href;
+            doc = f.contentDocument;
+          } catch {
+            /* another site's frame */
+          }
+          const src = href && href !== "about:blank" ? href : f.getAttribute("src") || "";
+          if (/\/files\/reports\//i.test(src) && mine.test(src)) return "file";
+          if (!/ReportLoader\.aspx/i.test(src)) continue;
+          let q;
+          try {
+            q = new URL(src, location.href).searchParams;
+          } catch {
+            continue;
+          }
+          const v = q.get("MainParameterValue") ?? q.get("Style");
+          if ((q.get("ReportType") || "").toUpperCase() !== type || (v !== null && v !== value)) continue;
+          const text = (doc?.body?.textContent ?? "").replace(/\s+/g, " ").trim();
+          if (doc?.readyState === "complete" && !/Loading Report/i.test(text) && text.length > 200) return "drawn";
+        }
+        return null;
+      },
+      { type, value, n },
+    )
+    .catch(() => null);
+}
+
+/**
+ * Wait for the report asked for to be built, not for a clock: Arion shows
+ * "Loading Report..." for as long as it takes. A report that is drawn and
+ * filed both is given a moment for its files, which are the better copy.
+ * Arion's "are you sure" is answered yes if it ever asks: the desk said yes
+ * by pressing Generate.
+ */
+export async function waitForBuilt(page, reportId, { timeout = 60000, poll = 400, grace = 3000 } = {}) {
   const want = reportParts(reportId);
-  if (!want) return { arrived: false, asked: false };
+  if (!want) return { built: null, asked: false };
   let asked = false;
+  let drawnAt = null;
   const until = Date.now() + timeout;
   for (;;) {
-    if (await reportShown(page, want, not)) return { arrived: true, asked };
+    const now = await builtNow(page, want);
+    if (now === "file") return { built: "file", asked };
+    if (now === "drawn") {
+      drawnAt ??= Date.now();
+      if (Date.now() - drawnAt >= grace) return { built: "drawn", asked };
+    }
     if (!asked) {
       const yes = await shownYes(page);
       if (yes) {
         await yes.click({ timeout: 10000 }).catch(() => {});
         asked = true;
-        await settled(page, 60000);
         continue;
       }
     }
-    if (Date.now() >= until) return { arrived: false, asked };
+    if (Date.now() >= until) return { built: drawnAt ? "drawn" : null, asked };
     await page.waitForTimeout(poll);
   }
+}
+
+/**
+ * Put a report in the sidebar's hands, as clicking its menu entry does.
+ *
+ * Arion builds whatever report the sidebar holds at the moment a horse is
+ * opened, and does not build again when the sidebar changes afterwards: seen
+ * on the live site, a Standard pedigree chosen after opening left the WI
+ * style on screen with nothing rebuilt, while the same choice made before
+ * opening — by the menu, or by this field — built the Standard pedigree. The
+ * field is written because the search's dialog may still be open over the
+ * menu. It is read back, so a page that would not take it says so.
+ */
+export async function holdReport(page, reportId) {
+  return page
+    .evaluate((id) => {
+      const f = document.querySelector('input[id*="hiddenMenuItemId"]');
+      if (!f) return null;
+      f.value = id;
+      return f.value;
+    }, reportId)
+    .catch(() => null);
 }
 
 /** The files a frame shows directly, as the hidden field would name them. */
@@ -1161,14 +1236,23 @@ export async function makeReport({ env = process.env, values = {}, horse = {}, s
     }
     lap("check");
 
+    // Arion builds the report its sidebar holds at the moment the horse is
+    // opened, so that is put there first (holdReport says why).
+    const before = await menuHolds(page);
+    let held = null;
+    const open = async (link) => {
+      held = await holdReport(page, reportId);
+      return openHorse(page, link);
+    };
+
     let opened = null;
     if (found) {
-      opened = await openHorse(page, found.link);
+      opened = await open(found.link);
       lap("open");
       // The dialog looked right and opened nothing — no report frame, no
       // file — so it is done the long way, once. Any frame will not do: a
       // banner is a frame too.
-      if (!opened.files.length && !frameFor(opened.frames, null)) opened = null;
+      if (!opened.files.length && !frameFor(await framesNow(page, opened.frames), null)) opened = null;
     }
     const reused = Boolean(opened);
     if (!opened) {
@@ -1184,23 +1268,12 @@ export async function makeReport({ env = process.env, values = {}, horse = {}, s
         throw new ArionError(`Arion no longer offers ${horse.label ?? horse.name} for that search; search again`, { status: 409, code: "session" });
       }
       lap("search");
-      opened = await openHorse(page, one.link);
+      opened = await open(one.link);
       lap("open");
     }
-    const held = await menuHolds(page);
-    const before = frameFor(await framesNow(page, opened.frames), null);
-    // Arion builds whatever style the sidebar already holds when a horse is
-    // opened. If that is the report asked for — the menu's own id says so,
-    // exactly — it is already there. If not, the one asked for is chosen now,
-    // and waited for: Arion asks first, and the last report stays on screen
-    // until the new one comes.
-    let chose = { chosen: true, already: true };
-    let waited = null;
-    if (held !== reportId) {
-      chose = await chooseReport(page, label);
-      if (chose.chosen) waited = await waitForReport(page, reportId, { not: before });
-    }
-    lap("choose");
+
+    const waited = await waitForBuilt(page, reportId);
+    lap("build");
     const built = await reportOn(page);
     built.frames = await framesNow(page, built.frames);
     // Only the files built for this report, and only those Arion actually
@@ -1220,21 +1293,17 @@ export async function makeReport({ env = process.env, values = {}, horse = {}, s
       lap("draw");
     }
     return {
-      chose,
+      chose: { chosen: held === reportId, held },
       tabs: built.tabs,
       horseId: horseIdFrom(built.frames),
       files,
       reused,
-      // where the time went, and what the sidebar held before and after the
-      // choice — the measurement a skipped second build would rest on
       steps: lap.spent,
-      menu: { before: held, after: await menuHolds(page) },
+      menu: { before, held, after: await menuHolds(page) },
       // what Arion offered, so a report that comes back without a file says why
       seen: {
         waited,
-        before,
-        // what Arion had up when the report did not come
-        modals: waited && !waited.arrived ? (await shapeOf(page)).modals.filter((m) => m.shown).map((m) => m.text.slice(0, 200)) : undefined,
+        modals: waited.built ? undefined : (await shapeOf(page)).modals.filter((m) => m.shown).map((m) => m.text.slice(0, 200)),
         named: named.map((f) => f.name),
         fetched: tried.map((f) => ({ name: f.name, status: f.status })),
         frames: built.frames,
