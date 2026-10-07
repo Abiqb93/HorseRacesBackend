@@ -10,6 +10,10 @@ import {
   frameFor,
   framesNow,
   holdReport,
+  keepReportFiles,
+  keptFile,
+  onArionError,
+  steadily,
   waitForBuilt,
   madeAs,
   reportParts,
@@ -305,7 +309,7 @@ const CREDS = { ARION_USERNAME: "desk", ARION_PASSWORD: "pw" };
  * what was launched, loaded and logged in, which is what these tests are about.
  */
 function fakeLauncher({ acceptLogin = true } = {}) {
-  const seen = { launched: [], loads: 0, logins: 0, signedIn: false };
+  const seen = { launched: [], loads: 0, logins: 0, signedIn: false, routes: [] };
   const launch = async () => {
     let url = "about:blank";
     const page = {
@@ -325,6 +329,10 @@ function fakeLauncher({ acceptLogin = true } = {}) {
       },
       waitForLoadState: async () => {},
       waitForTimeout: async () => {},
+      // the kept browser keeps a copy of every report file its page loads
+      route: async (pattern, handler) => {
+        seen.routes.push({ pattern, handler });
+      },
     };
     const browser = {
       closed: false,
@@ -656,4 +664,110 @@ test("a frame that has gone on to show a file names that file", () => {
   ]);
   // and that file is the WI style's, which a Standard pedigree must not be handed
   assert.equal(madeAs(filesShown(frames)[0].name, "PED02|0#5D_a"), false);
+});
+
+/* ------------------------------------- the copy the frame is handed */
+
+const PDF_URL = "https://arion.co.nz/files/reports/Theoretical_Pedigreesreport-3_134358338773484690.pdf";
+const RTF_URL = "https://arion.co.nz/files/reports/Theoretical_Pedigreesreport-3_134358338773484690.rtf";
+
+/** A page whose route() hands back the handler, and a request through it. */
+function fakeRouting() {
+  let handler = null;
+  const page = { route: async (pattern, h) => ((handler = h), pattern) };
+  const through = async (url, { status = 200, type = "application/pdf", body = "%PDF-1.4", fails = false } = {}) => {
+    const done = {};
+    await handler({
+      request: () => ({ url: () => url }),
+      fetch: async () => {
+        if (fails) throw new Error("connection reset");
+        return { status: () => status, headers: () => ({ "content-type": type }), body: async () => Buffer.from(body) };
+      },
+      fulfill: async (how) => (done.fulfilled = how),
+      continue: async () => (done.continued = true),
+    });
+    return done;
+  };
+  return { page, through };
+}
+
+test("the PDF the frame loads is handed to the frame unchanged, and a copy kept", async () => {
+  // Arion answered this address 404 to everything but the frame showing it
+  const { page, through } = fakeRouting();
+  const store = await keepReportFiles(page);
+  const done = await through(PDF_URL, { body: "%PDF-1.4 Theoretical: Starspangledbanner x Lady Vivian" });
+  assert.equal(done.fulfilled.body.toString(), "%PDF-1.4 Theoretical: Starspangledbanner x Lady Vivian");
+  const got = store.get(PDF_URL);
+  assert.equal(got.status, 200);
+  assert.equal(got.type, "application/pdf");
+  assert.match(got.body.toString(), /Lady Vivian/);
+});
+
+test("a file the copy could not be made of still reaches the frame", async () => {
+  const { page, through } = fakeRouting();
+  const store = await keepReportFiles(page);
+  const done = await through(PDF_URL, { fails: true });
+  assert.equal(done.continued, true);
+  assert.equal(store.size, 0);
+});
+
+test("only so many copies are kept", async () => {
+  const { page, through } = fakeRouting();
+  const store = await keepReportFiles(page, new Map(), { max: 2 });
+  for (const n of [1, 2, 3]) await through(`https://arion.co.nz/files/reports/H_Pedigreesreport-3_${n}.pdf`);
+  assert.deepEqual([...store.keys()].map((u) => u.slice(-5)), ["2.pdf", "3.pdf"]);
+});
+
+test("a kept copy is found by what it is, and a missing one is said", async () => {
+  const store = new Map([
+    [RTF_URL, { status: 200, type: "application/rtf", body: Buffer.from("{\\rtf1}"), at: 5 }],
+    [PDF_URL, { status: 200, type: "application/pdf", body: Buffer.from("%PDF"), at: 5 }],
+  ]);
+  const pdf = await keptFile(store, (url) => /\.pdf$/.test(url), { wait: 0 });
+  assert.equal(pdf.kind, "pdf");
+  assert.equal(pdf.name, "Theoretical_Pedigreesreport-3_134358338773484690.pdf");
+  assert.equal(pdf.body.toString(), "%PDF");
+  assert.equal(pdf.from, "frame");
+  assert.equal(await keptFile(store, (url) => /\.doc$/.test(url), { wait: 0 }), null);
+  // a 404 is not a file
+  const gone = new Map([[PDF_URL, { status: 404, type: "text/html", body: Buffer.from("x"), at: 5 }]]);
+  assert.equal(await keptFile(gone, () => true, { wait: 0 }), null);
+});
+
+test("a copy kept before this report's horse was opened is not this report", async () => {
+  const page = { evaluate: async () => null, url: () => "https://arion.co.nz/PedigreeReports/PedigreeReports.aspx", locator: () => ({ count: async () => 0 }), waitForTimeout: async () => {} };
+  const old = new Map([[PDF_URL, { status: 200, type: "application/pdf", body: Buffer.from("%PDF"), at: 100 }]]);
+  assert.deepEqual(await waitForBuilt(page, "PED01|I#3S_a", { captured: old, since: 200, timeout: 10, poll: 1 }), { built: null, asked: false });
+  assert.deepEqual(await waitForBuilt(page, "PED01|I#3S_a", { captured: old, since: 50, timeout: 10, poll: 1 }), { built: "file", asked: false });
+});
+
+test("Arion's own error page ends the wait, and says so", async () => {
+  const page = { evaluate: async () => null, url: () => "https://arion.co.nz/ArionError.aspx?aspxerrorpath=/PedigreeReports/PedigreeReports.aspx" };
+  assert.equal(onArionError(page), true);
+  assert.deepEqual(await waitForBuilt(page, "PED02|0#5D_a", { timeout: 1000, poll: 1 }), { built: "error", asked: false });
+  assert.equal(onArionError({ url: () => "https://arion.co.nz/PedigreeReports/PedigreeReports.aspx" }), false);
+});
+
+test("a read a navigation took away is read again, and any other failure is not", async () => {
+  const page = { waitForLoadState: async () => {}, waitForTimeout: async () => {} };
+  let tries = 0;
+  const got = await steadily(page, async () => {
+    tries += 1;
+    if (tries < 2) throw new Error("page.evaluate: Execution context was destroyed, most likely because of a navigation");
+    return "read";
+  });
+  assert.equal(got, "read");
+  assert.equal(tries, 2);
+  await assert.rejects(steadily(page, async () => { throw new Error("Timeout 30000ms exceeded"); }), /Timeout/);
+});
+
+test("the kept browser keeps copies of report files from its first job", async () => {
+  await closeSession();
+  const { launch, seen } = fakeLauncher();
+  await withSession(async () => {}, { env: CREDS, launch });
+  await withSession(async () => {}, { env: CREDS, launch });
+  // once, for the browser's life, not once a job
+  assert.equal(seen.routes.length, 1);
+  assert.equal(String(seen.routes[0].pattern), String(/\/files\/reports\//i));
+  await closeSession();
 });
