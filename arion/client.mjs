@@ -465,6 +465,26 @@ export function printFrame(html) {
 }
 
 /**
+ * An HTML report's text, read in the encoding it was written in: the
+ * Content-Type's charset, else the page's own meta tag, else UTF-8 if it is
+ * valid UTF-8, else Windows-1252. Arion's pages say ISO-8859-1 in a meta tag;
+ * read as UTF-8, a race at 12½f came out "12�f".
+ */
+export function decodeHtml(buf, contentType = "") {
+  const bytes = Buffer.isBuffer(buf) ? buf : Buffer.from(buf ?? "");
+  const head = bytes.subarray(0, 4096).toString("latin1");
+  const label = String(contentType ?? "").match(/charset\s*=\s*["']?([\w-]+)/i)?.[1] ?? head.match(/<meta[^>]+charset\s*=\s*["']?([\w-]+)/i)?.[1] ?? null;
+  const read = (as, fatal = false) => {
+    try {
+      return new TextDecoder(as, { fatal }).decode(bytes);
+    } catch {
+      return null;
+    }
+  };
+  return (label && read(label)) ?? read("utf-8", true) ?? read("windows-1252");
+}
+
+/**
  * A relayed HTML report: its own addresses kept pointing at Arion (a <base>),
  * and nothing in it allowed to run where it is shown.
  */

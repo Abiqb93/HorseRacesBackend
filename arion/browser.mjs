@@ -16,7 +16,7 @@
 
 import { statSync } from "node:fs";
 
-import { ArionError, LOGIN_PATH, ORIGIN, REPORTS_PATH, relayHtml } from "./client.mjs";
+import { ArionError, LOGIN_PATH, ORIGIN, REPORTS_PATH, decodeHtml, relayHtml } from "./client.mjs";
 
 /** ASP.NET writes a control's name with $ and its id with _. */
 export const idOf = (name) => `#${String(name).replace(/\$/g, "_")}`;
@@ -911,6 +911,7 @@ export async function keepReportFiles(page, store = new Map(), { max = 24 } = {}
       store.set(route.request().url(), {
         status: res.status(),
         type: String(res.headers()["content-type"] ?? "").split(";")[0].trim(),
+        contentType: String(res.headers()["content-type"] ?? ""),
         body,
         at: Date.now(),
       });
@@ -932,7 +933,7 @@ export async function keptFile(store, wanted, { wait = 8000, poll = 250 } = {}) 
         const name = decodeURIComponent(url.split("?")[0].split("/").pop());
         const kind = kindOf(name);
         const type = got.type || { pdf: "application/pdf", rtf: "application/rtf", html: "text/html" }[kind];
-        return { kind, name, url, type, body: got.body, from: "frame" };
+        return { kind, name, url, type, contentType: got.contentType ?? type, body: got.body, from: "frame" };
       }
     }
     if (Date.now() >= until) return null;
@@ -1488,7 +1489,7 @@ export async function makeReport({ env = process.env, values = {}, horse = {}, s
     // what the desk opens, keeps and sends on. Arion's own page is kept beside it.
     if (shown?.kind === "html") {
       const subject = sire ? `${sire.label} x ${horse.label}` : horse.label ?? horse.name;
-      const pdf = await htmlAsPdf(page, shown.body.toString("utf8"), shown.url, { name: fileName(`${subject} - ${label}`) });
+      const pdf = await htmlAsPdf(page, decodeHtml(shown.body, shown.contentType), shown.url, { name: fileName(`${subject} - ${label}`) });
       if (pdf) files = [pdf, ...files];
     }
     lap("files");
