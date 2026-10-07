@@ -955,21 +955,17 @@ export async function framesNow(page, attrs = []) {
 }
 
 /**
- * Wait for Arion to show the report that was chosen, not for a clock.
- * Choosing a style posts back, and until it returns the page goes on showing
- * the report built when the horse was opened — its frame and its files. So
- * this waits for a file carrying the chosen report's number, or for a report
- * frame of the chosen type that is not the one there before (`not`), and says
- * whether either came.
+ * Is the chosen report on screen yet? A file carrying its menu number — in
+ * the hidden field, or as the address a frame has gone on to — or a report
+ * frame of its type that is not the one there before (`not`).
  */
-export async function waitForReport(page, reportId, { not = null, timeout = 25000 } = {}) {
-  const want = reportParts(reportId);
-  if (!want) return false;
+async function reportShown(page, { type, value, n }, not) {
   return page
-    .waitForFunction(
+    .evaluate(
       ({ type, value, n, not }) => {
+        const mine = new RegExp(`report-${n}_`, "i");
         const named = [...document.querySelectorAll('input[id*="hdnReportFileName"]')].map((el) => el.value || "");
-        if (named.some((v) => new RegExp(`report-${n}_`, "i").test(v))) return true;
+        if (named.some((v) => mine.test(v))) return true;
         const where = [];
         for (const f of document.querySelectorAll("iframe")) {
           where.push(f.getAttribute("src") || "");
@@ -980,7 +976,9 @@ export async function waitForReport(page, reportId, { not = null, timeout = 2500
           }
         }
         return where.some((src) => {
-          if (!src || src === not || !/ReportLoader\.aspx/i.test(src)) return false;
+          if (!src || src === not) return false;
+          if (/\/files\/reports\//i.test(src)) return mine.test(src);
+          if (!/ReportLoader\.aspx/i.test(src)) return false;
           try {
             const q = new URL(src, location.href).searchParams;
             const v = q.get("MainParameterValue") ?? q.get("Style");
@@ -990,12 +988,59 @@ export async function waitForReport(page, reportId, { not = null, timeout = 2500
           }
         });
       },
-      { type: want.type, value: want.value, n: want.n, not },
-      { timeout, polling: 300 },
+      { type, value, n, not },
     )
-    .then(() => true)
     .catch(() => false);
 }
+
+/** Arion's own "are you sure", if it is on screen. */
+async function shownYes(page) {
+  const all = page.locator(`${idOf("ctl00$btnYes")}, a:text-is("Yes"), button:text-is("Yes"), input[value="Yes"]`);
+  const n = await all.count().catch(() => 0);
+  for (let i = 0; i < n; i += 1) if (await all.nth(i).isVisible().catch(() => false)) return all.nth(i);
+  return null;
+}
+
+/**
+ * Wait for Arion to show the report that was chosen, not for a clock.
+ *
+ * Choosing a style asks first — Arion's own "are you sure", a Yes/No box in
+ * every page's markup — and builds nothing until it is answered. Nothing here
+ * answered it, so a Standard pedigree chosen after the horse had opened in WI
+ * style sat unbuilt behind the box for as long as anyone waited, and the WI
+ * style's files were all there was to read. The desk said yes by pressing
+ * Generate, so the box is answered yes; and until the report comes the page
+ * goes on showing the last one, so it is the report that is waited for.
+ */
+export async function waitForReport(page, reportId, { not = null, timeout = 30000, poll = 300 } = {}) {
+  const want = reportParts(reportId);
+  if (!want) return { arrived: false, asked: false };
+  let asked = false;
+  const until = Date.now() + timeout;
+  for (;;) {
+    if (await reportShown(page, want, not)) return { arrived: true, asked };
+    if (!asked) {
+      const yes = await shownYes(page);
+      if (yes) {
+        await yes.click({ timeout: 10000 }).catch(() => {});
+        asked = true;
+        await settled(page, 60000);
+        continue;
+      }
+    }
+    if (Date.now() >= until) return { arrived: false, asked };
+    await page.waitForTimeout(poll);
+  }
+}
+
+/** The files a frame shows directly, as the hidden field would name them. */
+export const filesShown = (frames = []) =>
+  frames
+    .filter((src) => /\/files\/reports\/[^/?#]+\.(pdf|rtf)$/i.test(src))
+    .map((src) => {
+      const name = decodeURIComponent(src.split("/").pop());
+      return { kind: /\.rtf$/i.test(name) ? "rtf" : "pdf", name, url: src };
+    });
 
 /** A name safe to give a file, from what the report is of. */
 const fileName = (s) =>
@@ -1044,17 +1089,25 @@ export async function makeReport({ env = process.env, values = {}, horse = {}, s
     }
     const held = await menuHolds(page);
     const before = frameFor(await framesNow(page, opened.frames), null);
-    // Arion starts a report in whatever style the sidebar already holds, so
-    // the one that was asked for is chosen after the horse, not before — and
-    // then waited for, because the last one stays on screen until it comes.
-    const chose = await chooseReport(page, label);
-    const arrived = chose.chosen && held !== reportId ? await waitForReport(page, reportId, { not: before }) : null;
+    // Arion builds whatever style the sidebar already holds when a horse is
+    // opened. If that is the report asked for — the menu's own id says so,
+    // exactly — it is already there. If not, the one asked for is chosen now,
+    // and waited for: Arion asks first, and the last report stays on screen
+    // until the new one comes.
+    let chose = { chosen: true, already: true };
+    let waited = null;
+    if (held !== reportId) {
+      chose = await chooseReport(page, label);
+      if (chose.chosen) waited = await waitForReport(page, reportId, { not: before });
+    }
     lap("choose");
     const built = await reportOn(page);
     built.frames = await framesNow(page, built.frames);
     // Only the files built for this report, and only those Arion actually
-    // hands over: a name in a hidden field is not a file.
-    const named = built.files.flatMap((f) => filesFrom(f.value));
+    // hands over: a name in a hidden field is not a file. A frame that has
+    // gone on to show a file names it too.
+    const names = new Set();
+    const named = [...built.files.flatMap((f) => filesFrom(f.value)), ...filesShown(built.frames)].filter((f) => !names.has(f.name) && names.add(f.name));
     const tried = await fetchFiles(page, named.filter((f) => madeAs(f.name, reportId)));
     let files = tried.filter((f) => f.body);
     lap("files");
@@ -1078,8 +1131,10 @@ export async function makeReport({ env = process.env, values = {}, horse = {}, s
       menu: { before: held, after: await menuHolds(page) },
       // what Arion offered, so a report that comes back without a file says why
       seen: {
-        arrived,
+        waited,
         before,
+        // what Arion had up when the report did not come
+        modals: waited && !waited.arrived ? (await shapeOf(page)).modals.filter((m) => m.shown).map((m) => m.text.slice(0, 200)) : undefined,
         named: named.map((f) => f.name),
         fetched: tried.map((f) => ({ name: f.name, status: f.status })),
         frames: built.frames,
