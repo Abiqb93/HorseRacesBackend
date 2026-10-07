@@ -15454,6 +15454,16 @@ const arionArchive = {
     const f = rows[0];
     return f ? { type: f.type, label: f.label ?? f.name, body: f.content } : null;
   },
+  // A report and its files, gone - only when the one asking is the one who
+  // made it. Says which files went, so their links can stop answering at once.
+  remove: async ({ id, by }) => {
+    const mine = await arionQuery("SELECT id FROM arion_reports WHERE id = ? AND userId = ? LIMIT 1", [id, by]);
+    if (!mine.length) return { removed: false, files: [] };
+    const files = (await arionQuery("SELECT id FROM arion_report_files WHERE reportRow = ?", [id])).map((f) => f.id);
+    await arionQuery("DELETE FROM arion_report_files WHERE reportRow = ?", [id]);
+    await arionQuery("DELETE FROM arion_reports WHERE id = ?", [id]);
+    return { removed: true, files };
+  },
 };
 
 async function arion() {
@@ -15537,6 +15547,19 @@ app.get("/api/arion/my-reports/made", async (req, res) => {
   if (!(await arionBuyer(req.query.userId))) return res.status(403).json({ error: "Only a signed-in member of the desk can see the desk's Arion reports.", code: "buyer" });
   try {
     return res.json(await client.made({ limit: req.query.limit }));
+  } catch (err) {
+    return arionFail(res, err);
+  }
+});
+
+// Take a report off the list of those made here, with its files. Only the
+// desk member who made it can, and they are asked who they are the same way.
+app.delete("/api/arion/my-reports/made/:id", async (req, res) => {
+  const { client } = await arion();
+  const userId = req.query.userId ?? req.body?.userId;
+  if (!(await arionBuyer(userId))) return res.status(403).json({ error: "Only a signed-in member of the desk can remove the desk's Arion reports.", code: "buyer" });
+  try {
+    return res.json(await client.forget({ id: req.params.id, userId }));
   } catch (err) {
     return arionFail(res, err);
   }

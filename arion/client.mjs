@@ -979,6 +979,22 @@ export function createClient({
     },
 
     /**
+     * Take a report made here off the list, with its files. Only the one who
+     * made it can; any other id, theirs or nobody's, is not found. Its files
+     * stop answering at once, rather than falling back on Arion's address.
+     */
+    forget: async ({ id, userId = null } = {}) => {
+      if (!archive) throw new ArionError("Reports made here are not being kept, so there is nothing to remove", { status: 503, code: "unkept" });
+      const n = Number(id);
+      if (!Number.isInteger(n) || n <= 0) throw new ArionError("No such report under My Reports", { status: 404, code: "made" });
+      const out = await archive.remove({ id: n, by: userId });
+      if (!out?.removed) throw new ArionError("No such report of yours under My Reports", { status: 404, code: "made" });
+      for (const f of out.files ?? []) files.delete(f);
+      log(`[arion] ${userId} removed report #${n} and ${(out.files ?? []).length} file(s)`);
+      return { removed: true, id: n, files: (out.files ?? []).length };
+    },
+
+    /**
      * The account's own reports. Read from Arion's own grid in the browser,
      * every page of it — the old parser read the same grid as empty while the
      * account held seventeen pages.
