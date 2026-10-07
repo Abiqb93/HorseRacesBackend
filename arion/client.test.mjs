@@ -645,6 +645,14 @@ function fakeArchive({ failSave = false } = {}) {
     },
     list: async ({ limit }) => reports.slice(0, limit),
     file: async (id) => files.get(id) ?? null,
+    remove: async ({ id, by }) => {
+      const at = reports.findIndex((r) => r.id === id && r.by === by);
+      if (at < 0) return { removed: false, files: [] };
+      const gone = [...files].filter(([, f]) => f.report === id).map(([fid]) => fid);
+      for (const fid of gone) files.delete(fid);
+      reports.splice(at, 1);
+      return { removed: true, files: gone };
+    },
   };
 }
 
@@ -806,4 +814,33 @@ test("an HTML report is read in the encoding it says it is in", () => {
   // nothing said: UTF-8 if it is UTF-8, Windows-1252 if it is not
   assert.match(decodeHtml(Buffer.from("<p>€1</p>", "utf8")), /€1/);
   assert.match(decodeHtml(Buffer.from([0x3c, 0x70, 0x3e, 0x80, 0x31])), /€1/);
+});
+
+test("a report made here is taken off the list by the one who made it, and its files stop answering", async () => {
+  const archive = fakeArchive();
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: fakeBrowser({ files: FETCHED }).load, archive });
+  const made = await makeMating(c);
+  const pdf = made.files.find((f) => f.kind === "pdf");
+  assert.equal((await c.file(pdf.id)).body.toString(), "pdf of the report");
+
+  assert.deepEqual(await c.forget({ id: made.made.id, userId: "richardbrown1" }), { removed: true, id: made.made.id, files: 2 });
+  assert.deepEqual((await c.made()).reports, []);
+  // gone at once, not left to fall back on Arion's address
+  await assert.rejects(c.file(pdf.id), (e) => e.status === 404 && e.code === "file");
+});
+
+test("someone else's report, or one never made, is not found, and nothing is removed", async () => {
+  const archive = fakeArchive();
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: fakeBrowser({ files: FETCHED }).load, archive });
+  const made = await makeMating(c);
+  await assert.rejects(c.forget({ id: made.made.id, userId: "someone-else" }), (e) => e.status === 404 && e.code === "made");
+  await assert.rejects(c.forget({ id: 999, userId: "richardbrown1" }), (e) => e.status === 404);
+  await assert.rejects(c.forget({ id: "not a number", userId: "richardbrown1" }), (e) => e.status === 404);
+  assert.equal((await c.made()).reports.length, 1);
+  assert.equal(archive.files.size, 2);
+});
+
+test("without a record there is nothing to remove, and it says so", async () => {
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: fakeBrowser().load });
+  await assert.rejects(c.forget({ id: 1, userId: "richardbrown1" }), (e) => e.status === 503 && e.code === "unkept");
 });
