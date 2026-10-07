@@ -485,14 +485,38 @@ export async function reportProbe({ env = process.env, mode = "after", kind = "t
         return { ok: false, why: "Arion listed no horse to open", mode, steps };
       }
       await look("searched", { horse: pick.label });
-      if (mode === "field") {
-        await page.evaluate((id) => {
-          const f = document.querySelector('input[id*="hiddenMenuItemId"]');
-          if (f) f.value = id;
-        }, reportId);
-      }
+      if (mode === "field" || mode === "watch") await holdReport(page, reportId);
       await openHorse(page, pick.link);
       await look("opened");
+
+      if (mode === "watch") {
+        // Every two seconds for two minutes: what the hidden field says, what
+        // each frame is showing and whether it has finished, and whether the
+        // files the field names can actually be had yet.
+        const timeline = [];
+        const t0 = Date.now();
+        let doneAt = null;
+        for (let i = 0; i < 60; i += 1) {
+          const state = await frameStates(page);
+          const urls = [
+            ...state.fields.flatMap((v) => filesFrom(v).map((f) => f.url)),
+            ...state.frames.map((f) => f.href).filter((h) => /\/files\/reports\//i.test(h)),
+          ];
+          const fetched = [];
+          for (const u of [...new Set(urls)]) {
+            const res = await page.request.get(u, { timeout: 15000 }).catch(() => null);
+            fetched.push({ file: u.split("/").pop(), status: res ? res.status() : "error", type: res ? res.headers()["content-type"] ?? null : null });
+          }
+          timeline.push({ s: Math.round((Date.now() - t0) / 1000), ...state, fetched });
+          const ready = fetched.some((f) => f.status === 200) || state.frames.some((f) => /ReportLoader/i.test(f.href) && f.ready === "complete" && !f.loading && f.text > 200);
+          if (ready && doneAt === null) doneAt = i;
+          if (doneAt !== null && i - doneAt >= 3) break; // three more looks after it is done
+          await page.waitForTimeout(2000);
+        }
+        const frame = page.locator('iframe[src*="ReportLoader"]').first();
+        const frameShot = (await frame.screenshot({ type: "jpeg", quality: 50 }).catch(() => Buffer.from(""))).toString("base64");
+        await look("watched", { timeline, frameShot });
+      }
 
       if (mode === "after") {
         await chooseReport(page, label);
@@ -1099,6 +1123,39 @@ async function reportShown(page, { type, value, n }, not) {
       { type, value, n, not },
     )
     .catch(() => false);
+}
+
+/**
+ * The report area as it stands: the hidden file fields' raw values, and each
+ * frame's address (attribute and live), whether its document has finished,
+ * how much text it holds, and whether it still says "Loading Report".
+ */
+export async function frameStates(page) {
+  return page
+    .evaluate(() => ({
+      fields: [...document.querySelectorAll('input[id*="hdnReportFileName"]')].map((el) => el.value || "").filter(Boolean),
+      frames: [...document.querySelectorAll("iframe")].map((f) => {
+        let href = null;
+        let doc = null;
+        try {
+          href = f.contentWindow.location.href;
+          doc = f.contentDocument;
+        } catch {
+          /* another site's frame */
+        }
+        const text = (doc?.body?.textContent ?? "").replace(/\s+/g, " ").trim();
+        return {
+          src: (f.getAttribute("src") || "").slice(0, 220),
+          href: (href || "").slice(0, 220),
+          ready: doc?.readyState ?? null,
+          text: text.length,
+          loading: /Loading Report/i.test(text),
+          head: text.slice(0, 120),
+        };
+      }),
+      pageLoading: /Loading Report/i.test(document.body?.textContent ?? ""),
+    }))
+    .catch((err) => ({ fields: [], frames: [], why: String(err?.message ?? err).slice(0, 120) }));
 }
 
 /** Arion's own "are you sure", if it is on screen. */

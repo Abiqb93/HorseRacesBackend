@@ -15640,7 +15640,7 @@ app.get("/api/arion/report-check", async (req, res) => {
     const { REPORTS } = await import("./arion/client.mjs");
     const report = REPORTS.find((r) => r.id === req.query.report) ?? REPORTS.find((r) => /^standard pedigree$/i.test(r.label));
     return res.json(await mod.reportProbe({
-      mode: ["before", "after", "field"].includes(req.query.mode) ? req.query.mode : "after",
+      mode: ["before", "after", "field", "watch"].includes(req.query.mode) ? req.query.mode : "after",
       kind: ["named", "dam", "theoretical"].includes(req.query.kind) ? req.query.kind : "theoretical",
       name: String(req.query.name ?? "").slice(0, 60),
       sire: String(req.query.sire ?? "").slice(0, 60),
