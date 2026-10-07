@@ -1,7 +1,31 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { BROWSER_NAMES, CHROMIUM_PATHS, SEARCH_GRID, asCandidate, asSavedReport, filesFrom, horseIdFrom, idOf, isHorseRow, pickCandidate, pickChromium, sameReport, withSession } from "./browser.mjs";
+import {
+  BROWSER_NAMES,
+  CHROMIUM_PATHS,
+  FILE_MAX,
+  SEARCH_GRID,
+  frameFor,
+  madeAs,
+  reportParts,
+  asCandidate,
+  asSavedReport,
+  closeSession,
+  fetchFiles,
+  filesFrom,
+  horseIdFrom,
+  idOf,
+  isHorseRow,
+  pickCandidate,
+  pickChromium,
+  sameReport,
+  searchKey,
+  sessionKept,
+  warmSession,
+  withSession,
+} from "./browser.mjs";
+import { REPORTS_PATH } from "./client.mjs";
 
 test("a control's id is its name with the dollars swapped for underscores", () => {
   assert.equal(idOf("ctl00$MainContentArea$txtNamedHorse"), "#ctl00_MainContentArea_txtNamedHorse");
@@ -265,4 +289,281 @@ test("a report is the same report by its four columns, not by a row id", () => {
   const renewed = asSavedReport(["Starspangledbanner", "Catalogue Style Unedited", "WI style", "06/12/2026"], OPEN(2));
   assert.equal(sameReport(a, renewed), false);
   assert.equal(sameReport(a, null), false);
+});
+
+/* ------------------------------------------------- the browser jobs share */
+
+const CREDS = { ARION_USERNAME: "desk", ARION_PASSWORD: "pw" };
+
+/**
+ * Chromium as far as a session sees it: a page that loads addresses, answers
+ * "signed in?" from a flag, and turns a posted login into a session. It counts
+ * what was launched, loaded and logged in, which is what these tests are about.
+ */
+function fakeLauncher({ acceptLogin = true } = {}) {
+  const seen = { launched: [], loads: 0, logins: 0, signedIn: false };
+  const launch = async () => {
+    let url = "about:blank";
+    const page = {
+      goto: async (u) => {
+        seen.loads += 1;
+        url = u;
+      },
+      url: () => url,
+      // signedIn() asks with no argument; signIn() posts the login with one
+      evaluate: async (fn, arg) => {
+        if (arg?.forms) {
+          seen.logins += 1;
+          if (acceptLogin) seen.signedIn = true;
+          return { posted: true };
+        }
+        return { yes: seen.signedIn };
+      },
+      waitForLoadState: async () => {},
+      waitForTimeout: async () => {},
+    };
+    const browser = {
+      closed: false,
+      isConnected() {
+        return !this.closed;
+      },
+      newContext: async () => ({ newPage: async () => page }),
+      close: async () => {
+        browser.closed = true;
+      },
+      version: () => "fake",
+    };
+    seen.launched.push(browser);
+    return { browser, chosen: { path: "/fake/chromium" } };
+  };
+  return { launch, seen };
+}
+
+test("the browser is launched and signed in once, and kept for the next job", async () => {
+  await closeSession();
+  const { launch, seen } = fakeLauncher();
+  const pages = [];
+  assert.equal(await withSession(async (page) => (pages.push(page), "one"), { env: CREDS, launch }), "one");
+  assert.equal(await withSession(async (page) => (pages.push(page), "two"), { env: CREDS, launch }), "two");
+  assert.equal(seen.launched.length, 1);
+  assert.equal(seen.logins, 1);
+  assert.equal(pages[0], pages[1]);
+  assert.equal(new URL(pages[1].url()).pathname, REPORTS_PATH);
+  assert.equal(sessionKept(), true);
+  await closeSession();
+  assert.equal(sessionKept(), false);
+});
+
+test("every job but one that stays starts from a fresh load of the reports page", async () => {
+  await closeSession();
+  const { launch, seen } = fakeLauncher();
+  await withSession(async () => {}, { env: CREDS, launch });
+  const before = seen.loads;
+  await withSession(async () => {}, { env: CREDS, launch });
+  assert.equal(seen.loads, before + 1, "a job clears whatever the last one left open");
+  // a job that stays finds the page as it was, to check and use
+  await withSession(async () => {}, { env: CREDS, launch, stay: true });
+  assert.equal(seen.loads, before + 1);
+  await closeSession();
+});
+
+test("a job that fails closes the browser, and the next job starts another", async () => {
+  await closeSession();
+  const { launch, seen } = fakeLauncher();
+  await assert.rejects(
+    withSession(async () => {
+      throw new Error("Arion did something nobody has seen");
+    }, { env: CREDS, launch }),
+    /nobody has seen/,
+  );
+  assert.equal(seen.launched[0].closed, true);
+  assert.equal(sessionKept(), false);
+  await withSession(async () => {}, { env: CREDS, launch });
+  assert.equal(seen.launched.length, 2);
+  await closeSession();
+});
+
+test("a browser left idle past its time is closed", async () => {
+  await closeSession();
+  const { launch, seen } = fakeLauncher();
+  await withSession(async () => {}, { env: CREDS, launch, idleMs: 10 });
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(seen.launched[0].closed, true);
+  assert.equal(sessionKept(), false);
+});
+
+test("a session Arion has dropped is signed into again, in the same browser", async () => {
+  await closeSession();
+  const { launch, seen } = fakeLauncher();
+  await withSession(async () => {}, { env: CREDS, launch });
+  seen.signedIn = false; // Arion timed the desk out between jobs
+  await withSession(async () => {}, { env: CREDS, launch });
+  assert.equal(seen.launched.length, 1);
+  assert.equal(seen.logins, 2);
+  await closeSession();
+});
+
+test("a refused login is said, and the browser is not kept", async () => {
+  await closeSession();
+  const { launch, seen } = fakeLauncher({ acceptLogin: false });
+  await assert.rejects(withSession(async () => {}, { env: CREDS, launch }), (e) => e.code === "login" && e.status === 401);
+  assert.equal(seen.launched[0].closed, true);
+  assert.equal(sessionKept(), false);
+});
+
+test("warming launches and signs in once, and leaves a kept browser as it is", async () => {
+  await closeSession();
+  const { launch, seen } = fakeLauncher();
+  assert.deepEqual(await warmSession({ env: CREDS, launch }), { warm: true, already: false });
+  const loads = seen.loads;
+  // the kept page may hold the dialog a report is about to start from
+  assert.deepEqual(await warmSession({ env: CREDS, launch }), { warm: true, already: true });
+  assert.equal(seen.loads, loads);
+  assert.equal(seen.launched.length, 1);
+  await closeSession();
+});
+
+test("a search's dialog is known by the search, whatever its case or spacing", () => {
+  const a = searchKey({ kind: "named", name: "Frankel" });
+  assert.equal(searchKey({ kind: "named", name: "  frankel " }), a);
+  assert.notEqual(searchKey({ kind: "named", name: "Frankel II" }), a);
+  assert.notEqual(searchKey({ kind: "dam", dam: "Frankel" }), a);
+});
+
+test("a mating's dialog is known by the sire Arion settled on, too", () => {
+  const values = { kind: "theoretical", sire: "Starspangledbanner", dam: "Lady Vivian" };
+  const aus = { name: "Starspangledbanner", year: 2006, country: "AUS" };
+  const saf = { name: "Starspangledbanner", year: 2008, country: "SAF" };
+  // the same two names, but the dams on screen are a different sire's
+  assert.notEqual(searchKey(values, aus), searchKey(values, saf));
+  assert.equal(searchKey(values, aus), searchKey({ ...values }, { ...aus }));
+  assert.notEqual(searchKey(values, aus), searchKey(values, null));
+});
+
+/** page.request as a session sees it: an answer per address. */
+const fakeRequests = (answers) => ({
+  request: {
+    get: async (url) => {
+      const a = answers[url];
+      if (a instanceof Error) throw a;
+      return {
+        ok: () => a.status < 400,
+        status: () => a.status,
+        headers: () => ({ "content-type": a.type }),
+        body: async () => Buffer.from(a.body),
+      };
+    },
+  },
+});
+
+test("a report's files are fetched with the session, and what is not a file stays an address", async () => {
+  const files = [
+    { kind: "pdf", name: "a.pdf", url: "https://arion.co.nz/files/reports/a.pdf" },
+    { kind: "rtf", name: "a.rtf", url: "https://arion.co.nz/files/reports/a.rtf" },
+    { kind: "pdf", name: "b.pdf", url: "https://arion.co.nz/files/reports/b.pdf" },
+    { kind: "pdf", name: "c.pdf", url: "https://arion.co.nz/files/reports/c.pdf" },
+  ];
+  const page = fakeRequests({
+    [files[0].url]: { status: 200, type: "application/pdf", body: "%PDF-1.4 the report" },
+    [files[1].url]: { status: 200, type: "application/octet-stream", body: "{\\rtf1 the report}" },
+    // a login page where a report should be is not the report
+    [files[2].url]: { status: 200, type: "text/html; charset=utf-8", body: "<html>Login</html>" },
+    [files[3].url]: new Error("connection reset"),
+  });
+  const got = await fetchFiles(page, files);
+  assert.equal(got[0].type, "application/pdf");
+  assert.equal(got[0].body.toString(), "%PDF-1.4 the report");
+  assert.equal(got[1].body.toString(), "{\\rtf1 the report}");
+  assert.equal(got[2].body, undefined);
+  assert.equal(got[2].url, files[2].url);
+  assert.equal(got[3].body, undefined);
+  assert.equal(got[3].url, files[3].url);
+});
+
+test("a file too big to keep is left as its address", async () => {
+  const f = { kind: "pdf", name: "huge.pdf", url: "https://arion.co.nz/files/reports/huge.pdf" };
+  const page = fakeRequests({ [f.url]: { status: 200, type: "application/pdf", body: "x".repeat(FILE_MAX + 1) } });
+  const [got] = await fetchFiles(page, [f]);
+  assert.equal(got.body, undefined);
+});
+
+/* --------------------------------------------- which file is the report */
+
+test("a report id is read into its type, its style and its menu number", () => {
+  assert.deepEqual(reportParts("PED02|0#5D_a"), { type: "PED02", value: "0", n: "5" });
+  assert.deepEqual(reportParts("PED01|I#3S_a"), { type: "PED01", value: "I", n: "3" });
+  assert.deepEqual(reportParts("PED01|ZTT#30S_a"), { type: "PED01", value: "ZTT", n: "30" });
+  assert.equal(reportParts(""), null);
+  assert.equal(reportParts("Standard pedigree"), null);
+});
+
+test("a file is the report asked for only if it carries that report's menu number", () => {
+  // names as Arion wrote them: WI style is menu item 3, Tatts style 30
+  const wi = "Starspangledbanner_Pedigreesreport-3_134357747794695177.pdf";
+  const tatts = "LadyVivian_Pedigreesreport-30_134326401125740412.pdf";
+  assert.equal(madeAs(wi, "PED01|I#3S_a"), true);
+  assert.equal(madeAs(tatts, "PED01|ZTT#30S_a"), true);
+  // 3 is not 30, and 30 is not 3
+  assert.equal(madeAs(wi, "PED01|ZTT#30S_a"), false);
+  assert.equal(madeAs(tatts, "PED01|I#3S_a"), false);
+  // the dead link: a Standard pedigree (#5) handed the files of the style the
+  // sidebar held when the horse was opened
+  assert.equal(madeAs(wi, "PED02|0#5D_a"), false);
+  // with no id to check against, nothing is thrown away
+  assert.equal(madeAs(wi, ""), true);
+});
+
+const FRAME_WI =
+  "https://arion.co.nz/ReportLoader.aspx?HorseName=Starspangledbanner&HorseId=103364639&Class=pedigreeReportFrame1&ReportType=PED01&Style=I&ProductType=Pedigrees&MainParameterTypeName=Style&MainParameterValue=I&SubParameter=[Depth]0[/Depth]&";
+
+test("the frame taken is the one drawing the report asked for", () => {
+  const internet = "https://arion.co.nz/ReportLoader.aspx?HorseName=Starspangledbanner&Class=pedigreeReportFrame1&ReportType=PED02&ProductType=Pedigrees&MainParameterTypeName=Depth&MainParameterValue=0&";
+  const frames = ["https://arion.co.nz/Images/banner.swf", FRAME_WI, internet];
+  assert.equal(frameFor(frames, "PED02|0#5D_a"), internet);
+  assert.equal(frameFor(frames, "PED01|I#3S_a"), FRAME_WI);
+  // the same type in another style is the next best thing
+  assert.equal(frameFor([FRAME_WI], "PED01|M#2S_a"), FRAME_WI);
+  // another type is another report, and is not taken
+  assert.equal(frameFor([FRAME_WI], "PED05|55#10D_a"), null);
+  assert.equal(frameFor(["https://arion.co.nz/Images/banner.swf"], "PED01|I#3S_a"), null);
+  assert.equal(frameFor([], "PED01|I#3S_a"), null);
+});
+
+test("a saved report, with no menu id, takes the last report frame there is", () => {
+  assert.equal(frameFor(["https://arion.co.nz/Images/banner.swf", FRAME_WI], null), FRAME_WI);
+  assert.equal(frameFor(["not a url"], null), null);
+});
+
+test("a 404 is looked at once more, and still a 404 is said, not hidden", async () => {
+  const f = { kind: "pdf", name: "Horse_Pedigreesreport-5_1.pdf", url: "https://arion.co.nz/files/reports/Horse_Pedigreesreport-5_1.pdf" };
+  let asked = 0;
+  const page = {
+    request: {
+      get: async () => {
+        asked += 1;
+        return { ok: () => false, status: () => 404, headers: () => ({ "content-type": "text/html" }), body: async () => Buffer.from("") };
+      },
+    },
+  };
+  const [got] = await fetchFiles(page, [f], { retryMs: 1 });
+  assert.equal(asked, 2);
+  assert.equal(got.body, undefined);
+  assert.equal(got.status, 404);
+});
+
+test("a file written a moment late is still had", async () => {
+  const f = { kind: "pdf", name: "Horse_Pedigreesreport-3_1.pdf", url: "https://arion.co.nz/files/reports/Horse_Pedigreesreport-3_1.pdf" };
+  let asked = 0;
+  const page = {
+    request: {
+      get: async () => {
+        asked += 1;
+        return asked === 1
+          ? { ok: () => false, status: () => 404, headers: () => ({}), body: async () => Buffer.from("") }
+          : { ok: () => true, status: () => 200, headers: () => ({ "content-type": "application/pdf" }), body: async () => Buffer.from("%PDF") };
+      },
+    },
+  };
+  const [got] = await fetchFiles(page, [f], { retryMs: 1 });
+  assert.equal(got.body.toString(), "%PDF");
 });

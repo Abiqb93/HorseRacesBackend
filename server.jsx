@@ -15371,9 +15371,94 @@ const arionDayStore = {
   }),
 };
 
+// Every report made through the site, and the files the browser fetched for
+// it. Arion's own My Reports barely keeps a Standard pedigree — one row in
+// 427 — so without this a report the desk made was gone the moment the page
+// was reloaded, and its file with the next deploy.
+db.query(
+  `CREATE TABLE IF NOT EXISTS arion_reports (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    madeAt DATETIME NOT NULL,
+    userId VARCHAR(64) NULL,
+    subject VARCHAR(255) NOT NULL,
+    reportId VARCHAR(40) NOT NULL,
+    reportLabel VARCHAR(80) NOT NULL,
+    theoretical TINYINT(1) NOT NULL DEFAULT 0,
+    arionHorseId VARCHAR(20) NULL,
+    KEY madeAt (madeAt)
+  )`,
+  (err) => { if (err) console.error("arion_reports table check failed:", err.message); }
+);
+db.query(
+  `CREATE TABLE IF NOT EXISTS arion_report_files (
+    id VARCHAR(40) NOT NULL PRIMARY KEY,
+    reportRow INT NULL,
+    kind VARCHAR(10) NOT NULL,
+    name VARCHAR(255) NULL,
+    label VARCHAR(255) NULL,
+    type VARCHAR(100) NULL,
+    bytes INT NOT NULL,
+    content MEDIUMBLOB NOT NULL,
+    savedAt DATETIME NOT NULL,
+    KEY reportRow (reportRow)
+  )`,
+  (err) => { if (err) console.error("arion_report_files table check failed:", err.message); }
+);
+const arionQuery = (sql, params = []) => new Promise((resolve, reject) => {
+  db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
+});
+const arionArchive = {
+  // A report, then its files under its row. A file with no report is one
+  // opened from Arion's own list: kept so its link outlives a restart.
+  save: async ({ report, files = [] }) => {
+    let id = null;
+    if (report) {
+      const done = await arionQuery(
+        "INSERT INTO arion_reports (madeAt, userId, subject, reportId, reportLabel, theoretical, arionHorseId) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [report.at, report.by, String(report.subject).slice(0, 255), report.reportId, String(report.report).slice(0, 80), report.theoretical ? 1 : 0, report.horseId],
+      );
+      id = done.insertId;
+    }
+    for (const f of files) {
+      await arionQuery(
+        "INSERT INTO arion_report_files (id, reportRow, kind, name, label, type, bytes, content, savedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [f.id, id, f.kind, f.name ? String(f.name).slice(0, 255) : null, f.label ? String(f.label).slice(0, 255) : null, f.type, f.body.length, f.body, new Date()],
+      );
+    }
+    return { id };
+  },
+  // Newest first, each with its files' ids and kinds — never their bytes.
+  list: async ({ limit = 200 } = {}) => {
+    const rows = await arionQuery(
+      "SELECT id, madeAt, userId, subject, reportLabel, theoretical, arionHorseId FROM arion_reports ORDER BY madeAt DESC, id DESC LIMIT ?",
+      [limit],
+    );
+    if (!rows.length) return [];
+    const files = await arionQuery(
+      "SELECT id, reportRow, kind FROM arion_report_files WHERE reportRow IN (?) ORDER BY kind",
+      [rows.map((r) => r.id)],
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      at: r.madeAt,
+      by: r.userId,
+      subject: r.subject,
+      report: r.reportLabel,
+      theoretical: Boolean(r.theoretical),
+      horseId: r.arionHorseId,
+      files: files.filter((f) => f.reportRow === r.id).map((f) => ({ id: f.id, kind: f.kind })),
+    }));
+  },
+  file: async (id) => {
+    const rows = await arionQuery("SELECT type, label, name, content FROM arion_report_files WHERE id = ? LIMIT 1", [String(id)]);
+    const f = rows[0];
+    return f ? { type: f.type, label: f.label ?? f.name, body: f.content } : null;
+  },
+};
+
 async function arion() {
   const mod = await loadArion();
-  arionClient ??= mod.createClient({ log: (...a) => console.log(...a), store: arionDayStore });
+  arionClient ??= mod.createClient({ log: (...a) => console.log(...a), store: arionDayStore, archive: arionArchive });
   return { mod, client: arionClient };
 }
 function arionFail(res, err) {
@@ -15424,7 +15509,7 @@ app.post("/api/arion/report", async (req, res) => {
   const { token, reportId, userId } = req.body ?? {};
   if (!(await arionBuyer(userId))) return res.status(403).json({ error: "Only a signed-in member of the desk can make Arion reports.", code: "buyer" });
   try {
-    const out = await client.report({ token, reportId });
+    const out = await client.report({ token, reportId, userId });
     console.log(`[arion] ${userId} made ${out.report.label} for ${out.horse}`);
     return res.json(out);
   } catch (err) {
@@ -15436,11 +15521,37 @@ app.get("/api/arion/my-reports", async (req, res) => {
   const { client } = await arion();
   try {
     // myReports answers with how many of Arion's pages it managed to read, so
-    // a short list is never served as the whole list
-    return res.json(await client.myReports());
+    // a short list is never served as the whole list. ?cached=1 answers at
+    // once from what is kept and never walks Arion; ?fresh=1 walks it again.
+    const on = (v) => /^(1|true|yes)$/i.test(String(v ?? ""));
+    return res.json(await client.myReports({ fresh: on(req.query.fresh), cached: on(req.query.cached) }));
   } catch (err) {
     return arionFail(res, err);
   }
+});
+
+// The reports made through the site, from the record. A desk member's list,
+// so it asks what making one asks: who is looking.
+app.get("/api/arion/my-reports/made", async (req, res) => {
+  const { client } = await arion();
+  if (!(await arionBuyer(req.query.userId))) return res.status(403).json({ error: "Only a signed-in member of the desk can see the desk's Arion reports.", code: "buyer" });
+  try {
+    return res.json(await client.made({ limit: req.query.limit }));
+  } catch (err) {
+    return arionFail(res, err);
+  }
+});
+
+// Launch and sign in to Arion ahead of the first search: the page asks as it
+// opens, so the ~8s this takes passes while the desk is still typing. It is
+// answered at once and done in the background.
+app.post("/api/arion/warm", async (req, res) => {
+  const { client } = await arion();
+  if (!client.configured()) return res.json({ warming: false });
+  client.warm().catch((err) => {
+    if (!["unconfigured"].includes(err.code)) console.error("[arion] warm-up failed:", err.message);
+  });
+  return res.status(202).json({ warming: true });
 });
 
 app.post("/api/arion/my-reports/open", async (req, res) => {

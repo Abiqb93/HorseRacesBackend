@@ -59,8 +59,8 @@ const executable = (p) => {
   }
 };
 
-/** One Chromium, launched for one job and closed after it. */
-export async function withBrowser(fn, { env = process.env } = {}) {
+/** Start the Chromium this image carries. */
+export async function launchChromium({ env = process.env } = {}) {
   const chosen = pickChromium({ env, isExecutable: executable });
   const { chromium } = await import("playwright-core");
   const browser = await chromium.launch({
@@ -68,8 +68,19 @@ export async function withBrowser(fn, { env = process.env } = {}) {
     // Chromium runs as root in a container, where its sandbox cannot start
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
   });
+  return { browser, chosen };
+}
+
+const VIEWPORT = { width: 1280, height: 900 };
+
+/**
+ * One Chromium, launched for one job and closed after it. The diagnostic's:
+ * it must see Arion from cold, and must not disturb the browser jobs keep.
+ */
+export async function withBrowser(fn, { env = process.env, launch = launchChromium } = {}) {
+  const { browser, chosen } = await launch({ env });
   try {
-    const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
     return await fn(page, { chromium: chosen, version: browser.version() });
   } finally {
@@ -545,21 +556,99 @@ export function horseIdFrom(frames = []) {
 /* ---------------------------------------------------------------- a session */
 
 /**
- * A logged-in Arion on the reports page, for the length of one job.
+ * How long a signed-in browser waits for the next job before it is closed.
  *
- * One browser, one page, closed when the job ends. Arion is driven as a
- * person drives it — fill the box, press the button the page offers, click
- * the horse in the dialog — because that is the only version of this site
- * that works. Six attempts at reproducing its form posts by hand are the
- * evidence.
+ * Launching Chromium, loading Arion three times and posting the login took
+ * about 8.5 of the 10 seconds a search took, and all of it was thrown away
+ * when the search ended. Fifteen minutes covers a desk working down a list;
+ * past that the browser goes, and Arion's own session has likely lapsed too.
  */
-export async function withSession(fn, { env = process.env } = {}) {
+export const IDLE_MS = 15 * 60 * 1000;
+
+// The browser jobs share: { browser, page, info, timer, showing }. `showing`
+// is the search whose dialog the page still has open.
+let kept = null;
+
+/** Close the kept browser, if there is one. */
+export async function closeSession() {
+  const was = kept;
+  kept = null;
+  if (!was) return;
+  clearTimeout(was.timer);
+  await was.browser.close().catch(() => {});
+}
+
+/** Is a browser kept, and still connected? */
+export const sessionKept = () => Boolean(kept?.browser.isConnected());
+
+async function keptBrowser({ env, launch }) {
+  if (kept && !kept.browser.isConnected()) await closeSession();
+  if (!kept) {
+    const { browser, chosen } = await launch({ env });
+    try {
+      const context = await browser.newContext({ viewport: VIEWPORT });
+      const page = await context.newPage();
+      kept = { browser, page, info: { chromium: chosen, version: browser.version() }, timer: null, showing: null };
+    } catch (err) {
+      await browser.close().catch(() => {});
+      throw err;
+    }
+  }
+  clearTimeout(kept.timer);
+  return kept;
+}
+
+/** Start the idle clock again; when it runs out, the browser goes. */
+function rest(s, idleMs) {
+  clearTimeout(s.timer);
+  s.timer = setTimeout(() => {
+    if (kept === s) closeSession();
+  }, idleMs);
+  s.timer.unref?.();
+}
+
+const onReports = (page) => {
+  try {
+    return new URL(page.url()).pathname === REPORTS_PATH;
+  } catch {
+    return false;
+  }
+};
+
+/** Load the reports page afresh. Whatever dialog was open is gone. */
+export async function reloadReports(page, s = null) {
+  if (s) s.showing = null;
+  await page.goto(`${ORIGIN}${REPORTS_PATH}`, { waitUntil: "domcontentloaded", timeout: 45000 });
+}
+
+/**
+ * A logged-in Arion on the reports page, kept between jobs.
+ *
+ * Arion is driven as a person drives it — fill the box, press the button the
+ * page offers, click the horse in the dialog — because that is the only
+ * version of this site that works. Six attempts at reproducing its form posts
+ * by hand are the evidence.
+ *
+ * The browser is launched and signed in once, then kept for IDLE_MS. Each job
+ * starts from a fresh load of the reports page, because a dialog the last job
+ * left open would sit over the boxes, and signs in again only when Arion shows
+ * no session. A job that asks to `stay` gets the page as the last one left it,
+ * and must check what is on it before using it.
+ *
+ * Any failure closes the browser: a page in a state nobody has looked at is
+ * not handed to the next job. One job at a time is the client's to ensure,
+ * and it does — every call goes through one queue.
+ */
+export async function withSession(fn, { env = process.env, launch = launchChromium, idleMs = IDLE_MS, stay = false } = {}) {
   if (!env.ARION_USERNAME || !env.ARION_PASSWORD) {
     throw new ArionError("Arion is not connected: ARION_USERNAME and ARION_PASSWORD are not set on this service", { status: 503, code: "unconfigured" });
   }
-  return withBrowser(async (page, info) => {
-    await page.goto(`${ORIGIN}${REPORTS_PATH}`, { waitUntil: "domcontentloaded", timeout: 45000 });
+  const s = await keptBrowser({ env, launch });
+  try {
+    const { page } = s;
+    if (!stay || !onReports(page)) await reloadReports(page, s);
     if (!(await signedIn(page)).yes) {
+      s.showing = null;
       await signIn(page, env.ARION_USERNAME, env.ARION_PASSWORD);
       const now = await signedIn(page);
       if (!now.yes) {
@@ -567,11 +656,27 @@ export async function withSession(fn, { env = process.env } = {}) {
       }
     }
     // Arion sends a fresh login to /Home.aspx whatever asked for it
-    if (new URL(page.url()).pathname !== REPORTS_PATH) {
-      await page.goto(`${ORIGIN}${REPORTS_PATH}`, { waitUntil: "domcontentloaded", timeout: 45000 });
-    }
-    return fn(page, info);
-  }, { env });
+    if (!onReports(page)) await reloadReports(page, s);
+    const out = await fn(page, s.info, s);
+    rest(s, idleMs);
+    return out;
+  } catch (err) {
+    if (kept === s) await closeSession();
+    throw err;
+  }
+}
+
+/**
+ * Launch and sign in ahead of the first job, so it happens while the desk is
+ * still typing. A browser already kept is left as it is — its page may hold
+ * the dialog a report is about to be made from — and only its clock restarts.
+ */
+export async function warmSession({ env = process.env, launch = launchChromium, idleMs = IDLE_MS } = {}) {
+  if (sessionKept()) {
+    rest(kept, idleMs);
+    return { warm: true, already: true };
+  }
+  return withSession(async () => ({ warm: true, already: false }), { env, launch, idleMs });
 }
 
 /** The three searches the page offers, by the boxes each one fills. */
@@ -667,36 +772,249 @@ export async function matingDialog(page, { sire = "", dam = "", sireIs = null } 
   return { stage: "dam", sire: chosen.one, candidates: (await candidatesOn(page)) ?? [] };
 }
 
+/**
+ * What names the dialog a search leaves open: the search itself, and for a
+ * mating the sire Arion settled on, because the dams it lists are that sire's.
+ */
+export const searchKey = (values = {}, sire = null) =>
+  JSON.stringify([
+    values.kind ?? "named",
+    ...["name", "sire", "dam"].map((k) => String(values[k] ?? "").trim().toLowerCase()),
+    sire ? [sire.name, sire.year ?? null, sire.country ?? null] : null,
+  ]);
+
+/** How long a search's open dialog may be used to start a report from. */
+export const STAY_MS = 10 * 60 * 1000;
+
 export const searchHorses = ({ env = process.env, ...values } = {}) =>
-  withSession(async (page) => {
-    if (values.kind === "theoretical") return matingDialog(page, values);
-    return { stage: "horse", candidates: (await runSearch(page, values)) ?? null };
+  withSession(async (page, info, s) => {
+    const answer =
+      values.kind === "theoretical"
+        ? await matingDialog(page, values)
+        : { stage: "horse", candidates: (await runSearch(page, values)) ?? null };
+    // The dialog stays open on the kept page, so a report for a horse in it
+    // can start right here rather than from a second search.
+    s.showing = { key: searchKey(values, answer.sire ?? null), at: Date.now() };
+    return answer;
   }, { env });
 
-export async function makeReport({ env = process.env, values = {}, horse = {}, sire = null, label = "" } = {}) {
-  return withSession(async (page) => {
-    // A control id from the last visit means nothing in this one, so the
-    // search is run again and the same horse found by name, year and country.
-    const again =
-      values.kind === "theoretical"
-        ? (await matingDialog(page, { ...values, sireIs: sire })).candidates
-        : (await runSearch(page, values)) ?? [];
-    const found = again.find((h) => sameHorse(h, horse));
-    if (!found) {
-      throw new ArionError(`Arion no longer offers ${horse.label ?? horse.name} for that search; search again`, { status: 409, code: "session" });
+/** Milliseconds spent on each step of a job, for the line that reports it. */
+function stopwatch() {
+  const spent = {};
+  let last = Date.now();
+  const lap = (step) => {
+    const t = Date.now();
+    spent[step] = (spent[step] ?? 0) + (t - last);
+    last = t;
+  };
+  lap.spent = spent;
+  return lap;
+}
+
+/** Which report Arion's sidebar holds, as its own hidden field says. */
+const menuHolds = (page) =>
+  page.evaluate(() => document.querySelector('input[id*="hiddenMenuItemId"]')?.value || null).catch(() => null);
+
+/**
+ * The files a report was built into, fetched with the page's own cookies —
+ * no second login — so the desk can open them again later without Arion. A
+ * file that cannot be had, or a login page where a report should be, is left
+ * as its address, which is all it was before.
+ */
+export const FILE_MAX = 15 * 1024 * 1024;
+
+export async function fetchFiles(page, files = [], { retryMs = 1500 } = {}) {
+  const get = async (f) => {
+    const res = await page.request.get(f.url, { timeout: 30000 });
+    return { res, type: String(res.headers()["content-type"] ?? "").split(";")[0].trim() };
+  };
+  return Promise.all(
+    files.map(async (f) => {
+      try {
+        let { res, type } = await get(f);
+        // a file still being written is not yet there: one more look
+        if (res.status() === 404 && retryMs) {
+          await new Promise((r) => setTimeout(r, retryMs));
+          ({ res, type } = await get(f));
+        }
+        if (!res.ok()) return { ...f, status: res.status() };
+        if (/html/i.test(type)) return { ...f, status: "html" };
+        const body = await res.body();
+        if (!body.length || body.length > FILE_MAX) return { ...f, status: body.length ? "too big" : "empty" };
+        return { ...f, type: type || (f.kind === "pdf" ? "application/pdf" : "application/rtf"), body, status: res.status() };
+      } catch (err) {
+        return { ...f, status: String(err?.message ?? err).slice(0, 80) };
+      }
+    }),
+  );
+}
+
+/**
+ * A report id as Arion's menu writes it — PED02|0#5D_a — in its parts: the
+ * report type, the style or depth it is drawn in, and the menu item's number.
+ */
+export function reportParts(id) {
+  const m = String(id ?? "").match(/^([A-Z0-9]+)\|([^#]+)#(\d+)/i);
+  return m ? { type: m[1].toUpperCase(), value: m[2], n: m[3] } : null;
+}
+
+/**
+ * Is this file the report that was asked for? Arion names a file after the
+ * menu item it was built from — WI style (#3) into …_Pedigreesreport-3_…,
+ * Tatts style (#30) into …-30_… — so a name carrying another number belongs
+ * to another build: the style the sidebar held when the horse was opened.
+ * Handing that over is how a Standard pedigree came back as a dead link.
+ */
+export function madeAs(name, id) {
+  const n = reportParts(id)?.n;
+  if (!n) return true; // nothing to check against
+  return new RegExp(`report-${n}_`, "i").test(String(name ?? ""));
+}
+
+/**
+ * The frame a report is drawn in, for the report that was asked for:
+ *
+ *   ReportLoader.aspx?…&ReportType=PED01&Style=I&…&MainParameterValue=I&…
+ *
+ * The same type and style first, then the same type; anything else is some
+ * other report and is not taken.
+ */
+export function frameFor(frames = [], id) {
+  const want = reportParts(id);
+  const drawn = frames
+    .map((src) => {
+      try {
+        const u = new URL(src);
+        if (!/ReportLoader\.aspx$/i.test(u.pathname)) return null;
+        const q = (k) => [...u.searchParams].find(([key]) => key.toLowerCase() === k)?.[1] ?? null;
+        return { src, type: (q("reporttype") ?? "").toUpperCase(), value: q("mainparametervalue") ?? q("style") };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  if (!want) return drawn.at(-1)?.src ?? null;
+  const same = drawn.filter((d) => d.type === want.type);
+  return (same.find((d) => d.value === want.value) ?? same.at(-1))?.src ?? null;
+}
+
+/**
+ * A report Arion draws on its own page rather than into a file — the Internet
+ * pedigrees do — taken from the frame it is drawn in: as the PDF the frame
+ * serves, or printed to PDF by this browser from the page it shows. Either
+ * way the desk gets a file to keep. A login page, or a frame with next to
+ * nothing in it, is not taken for a report.
+ */
+export async function frameAsFile(page, url, { name = "arion-report" } = {}) {
+  const p = await page.context().newPage();
+  try {
+    const res = await p.goto(url, { waitUntil: "load", timeout: 45000 });
+    if (!res?.ok()) return null;
+    const type = String(res.headers()["content-type"] ?? "").split(";")[0].trim();
+    if (/pdf/i.test(type)) {
+      const body = await res.body();
+      return body.length && body.length <= FILE_MAX ? { kind: "pdf", name: `${name}.pdf`, url, type: "application/pdf", body, from: "frame" } : null;
     }
-    await openHorse(page, found.link);
+    await settled(p, 60000);
+    await p.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
+    const looks = await p.evaluate(() => ({
+      words: (document.body?.textContent ?? "").replace(/\s+/g, " ").trim().length,
+      login: Boolean(document.querySelector('input[type="password"]')),
+    }));
+    if (looks.login || looks.words < 200) return null;
+    const body = await p.pdf({ format: "A4", printBackground: true, margin: { top: "10mm", bottom: "10mm", left: "8mm", right: "8mm" } });
+    return { kind: "pdf", name: `${name}.pdf`, url, type: "application/pdf", body, from: "drawn" };
+  } catch {
+    return null;
+  } finally {
+    await p.close().catch(() => {});
+  }
+}
+
+/** A name safe to give a file, from what the report is of. */
+const fileName = (s) =>
+  String(s ?? "").replace(/×/g, "x").replace(/[^A-Za-z0-9 ().-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 100) || "arion-report";
+
+export async function makeReport({ env = process.env, values = {}, horse = {}, sire = null, label = "", reportId = "" } = {}) {
+  return withSession(async (page, info, s) => {
+    const lap = stopwatch();
+    // The search's dialog may still be open on the kept page. It is used only
+    // if it is the same search and it lists this horse now — by name, year
+    // and country, read off the page — never a control id from before.
+    const showing = s.showing;
+    s.showing = null; // opening a horse closes the dialog, whatever follows
+    let found = null;
+    if (showing && showing.key === searchKey(values, sire) && Date.now() - showing.at < STAY_MS) {
+      found = ((await candidatesOn(page)) ?? []).find((h) => sameHorse(h, horse)) ?? null;
+      if (found && !(await page.locator(`#${found.link}`).isVisible().catch(() => false))) found = null;
+    }
+    lap("check");
+
+    let opened = null;
+    if (found) {
+      opened = await openHorse(page, found.link);
+      lap("open");
+      // The dialog looked right and opened nothing — no report frame, no
+      // file — so it is done the long way, once. Any frame will not do: a
+      // banner is a frame too.
+      if (!opened.files.length && !frameFor(opened.frames, null)) opened = null;
+    }
+    const reused = Boolean(opened);
+    if (!opened) {
+      // A control id from another visit means nothing in this one, so the
+      // search is run again and the same horse found by name, year and country.
+      await reloadReports(page, s);
+      const again =
+        values.kind === "theoretical"
+          ? (await matingDialog(page, { ...values, sireIs: sire })).candidates
+          : (await runSearch(page, values)) ?? [];
+      const one = again.find((h) => sameHorse(h, horse));
+      if (!one) {
+        throw new ArionError(`Arion no longer offers ${horse.label ?? horse.name} for that search; search again`, { status: 409, code: "session" });
+      }
+      lap("search");
+      opened = await openHorse(page, one.link);
+      lap("open");
+    }
+    const held = await menuHolds(page);
     // Arion starts a report in whatever style the sidebar already holds, so
     // the one that was asked for is chosen after the horse, not before.
     const chose = await chooseReport(page, label);
+    lap("choose");
     const built = await reportOn(page);
+    // Only the files built for this report, and only those Arion actually
+    // hands over: a name in a hidden field is not a file.
+    const named = built.files.flatMap((f) => filesFrom(f.value));
+    const tried = await fetchFiles(page, named.filter((f) => madeAs(f.name, reportId)));
+    let files = tried.filter((f) => f.body);
+    lap("files");
+    // No file: the report is drawn on Arion's page, so it is taken from there.
+    const frame = files.length ? null : frameFor(built.frames, reportId);
+    if (frame) {
+      const subject = sire ? `${sire.label} x ${horse.label}` : horse.label ?? horse.name;
+      const drawn = await frameAsFile(page, frame, { name: fileName(`${subject} - ${label}`) });
+      if (drawn) files = [drawn];
+      lap("draw");
+    }
     return {
       chose,
       tabs: built.tabs,
       horseId: horseIdFrom(built.frames),
-      files: built.files.flatMap((f) => filesFrom(f.value)),
+      files,
+      reused,
+      // where the time went, and what the sidebar held before and after the
+      // choice — the measurement a skipped second build would rest on
+      steps: lap.spent,
+      menu: { before: held, after: await menuHolds(page) },
+      // what Arion offered, so a report that comes back without a file says why
+      seen: {
+        named: named.map((f) => f.name),
+        fetched: tried.map((f) => ({ name: f.name, status: f.status })),
+        frames: built.frames,
+        frame,
+      },
     };
-  }, { env });
+  }, { env, stay: true });
 }
 
 /* ------------------------------------------------------------- My Reports */
@@ -778,9 +1096,11 @@ export async function openMyReportsTab(page) {
  * walk reports how far it got.
  *
  * Returns { rows, pages, read }, or null when the grid is not there at all —
- * which is not the same as an account with nothing in it.
+ * which is not the same as an account with nothing in it. Given `until`, the
+ * walk stops at the first row it accepts and says so in `found`; that row's
+ * link is good on the page the grid is showing.
  */
-export async function myReportsOn(page, { maxPages = 40, tries = 3 } = {}) {
+export async function myReportsOn(page, { maxPages = 40, tries = 3, until = null } = {}) {
   await openMyReportsTab(page);
   const rows = [];
   let pages = 1;
@@ -792,7 +1112,9 @@ export async function myReportsOn(page, { maxPages = 40, tries = 3 } = {}) {
     read += 1;
     for (const row of got.rows) {
       const saved = asSavedReport(row.cells, row.links);
-      if (saved) rows.push(saved);
+      if (!saved) continue;
+      rows.push(saved);
+      if (until?.(saved)) return { rows, pages, read, found: saved };
     }
     if (got.page >= got.pages) break;
 
@@ -828,8 +1150,8 @@ export const listMyReports = ({ env = process.env } = {}) => withSession((page) 
  */
 export async function openSavedReport({ env = process.env, report = {} } = {}) {
   return withSession(async (page) => {
-    const rows = (await myReportsOn(page))?.rows ?? [];
-    const found = rows.find((r) => sameReport(r, report));
+    // Newest first, so a report made lately is a page or two in, not eighteen.
+    const found = (await myReportsOn(page, { until: (r) => sameReport(r, report) }))?.found ?? null;
     if (!found) {
       throw new ArionError(`${report.label ?? report.horse} is no longer under My Reports; open the list again`, { status: 409, code: "session" });
     }
@@ -840,6 +1162,12 @@ export async function openSavedReport({ env = process.env, report = {} } = {}) {
     await settled(page);
     await page.waitForTimeout(1200);
     const built = await reportOn(page);
-    return { files: built.files.flatMap((f) => filesFrom(f.value)), tabs: built.tabs };
+    let files = (await fetchFiles(page, built.files.flatMap((f) => filesFrom(f.value)))).filter((f) => f.body);
+    if (!files.length) {
+      const frame = frameFor(built.frames, null);
+      const drawn = frame ? await frameAsFile(page, frame, { name: fileName(found.label) }) : null;
+      if (drawn) files = [drawn];
+    }
+    return { files, tabs: built.tabs };
   }, { env });
 }
