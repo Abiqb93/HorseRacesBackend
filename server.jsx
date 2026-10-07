@@ -15577,7 +15577,7 @@ app.get("/api/arion/file/:id", async (req, res) => {
     // pointing back at Arion.
     if (/html/i.test(f.type ?? "") && f.body) {
       res.set(mod.RELAY_HTML_HEADERS);
-      return res.send(mod.relayHtml(Buffer.from(f.body).toString("utf8"), f.url || `${mod.ORIGIN}/files/reports/`));
+      return res.send(mod.relayHtml(mod.decodeHtml(f.body, f.type), f.url || `${mod.ORIGIN}/files/reports/`));
     }
     const name = String(f.label ?? "arion-report").replace(/[^A-Za-z0-9 ._()-]+/g, "").slice(0, 80) || "arion-report";
     const ext = /pdf/i.test(f.type) ? ".pdf" : /rtf/i.test(f.type) ? ".rtf" : "";

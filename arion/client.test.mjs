@@ -7,6 +7,7 @@ import {
   REPORTS,
   asksForLogin,
   createClient,
+  decodeHtml,
   describePage,
   isChallenge,
   loginFailure,
@@ -789,4 +790,20 @@ test("a file kept in the record is not also held in memory, and still opens", as
   const pdf = made.files.find((f) => f.kind === "pdf");
   assert.equal((await c.file(pdf.id)).body.toString(), "pdf of the report");
   assert.deepEqual(reads, [pdf.id], "read back from the record, not from memory");
+});
+
+test("an HTML report is read in the encoding it says it is in", () => {
+  // Arion's Standard pedigree: ISO-8859-1 in a meta tag, a half as the byte 0xBD
+  const page = Buffer.concat([
+    Buffer.from('<html><head><META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=ISO-8859-1" /></head><body>2 wins at 12', "latin1"),
+    Buffer.from([0xbd]),
+    Buffer.from("f, 2d Sandown</body></html>", "latin1"),
+  ]);
+  assert.match(decodeHtml(page), /at 12½f, 2d Sandown/);
+  assert.doesNotMatch(decodeHtml(page), /�/);
+  // the Content-Type's charset wins over the page's own
+  assert.match(decodeHtml(Buffer.from("<p>£5</p>", "utf8"), "text/html; charset=utf-8"), /£5/);
+  // nothing said: UTF-8 if it is UTF-8, Windows-1252 if it is not
+  assert.match(decodeHtml(Buffer.from("<p>€1</p>", "utf8")), /€1/);
+  assert.match(decodeHtml(Buffer.from([0x3c, 0x70, 0x3e, 0x80, 0x31])), /€1/);
 });
