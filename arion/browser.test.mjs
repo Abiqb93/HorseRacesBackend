@@ -10,6 +10,8 @@ import {
   frameFor,
   framesNow,
   holdReport,
+  kindOf,
+  sameList,
   keepReportFiles,
   keptFile,
   onArionError,
@@ -770,4 +772,60 @@ test("the kept browser keeps copies of report files from its first job", async (
   assert.equal(seen.routes.length, 1);
   assert.equal(String(seen.routes[0].pattern), String(/\/files\/reports\//i));
   await closeSession();
+});
+
+/* ----------------------------------- a Standard pedigree is an HTML page */
+
+const STD_FIELD = "/files/reports/Theoretical_Pedigreesreport-5_134358344142574836.html";
+
+test("a Standard pedigree's field is a bare path to an HTML page, and is read as one", () => {
+  // as the hidden field held it on the live site, with no XML around it
+  assert.deepEqual(filesFrom(STD_FIELD), [
+    {
+      kind: "html",
+      name: "Theoretical_Pedigreesreport-5_134358344142574836.html",
+      url: "https://arion.co.nz/files/reports/Theoretical_Pedigreesreport-5_134358344142574836.html",
+    },
+  ]);
+  // and it is the report asked for: Standard pedigree is menu item 5
+  assert.equal(madeAs(filesFrom(STD_FIELD)[0].name, "PED02|0#5D_a"), true);
+  // a path anywhere else is not a report file
+  assert.deepEqual(filesFrom("/PedigreeReports/PedigreeReports.aspx"), []);
+  assert.deepEqual(filesFrom("/files/reports/../web.config"), []);
+});
+
+test("a report file's kind is read from its name", () => {
+  assert.equal(kindOf("a.pdf"), "pdf");
+  assert.equal(kindOf("a.RTF"), "rtf");
+  assert.equal(kindOf("a.html"), "html");
+  assert.equal(kindOf("a.htm"), "html");
+});
+
+test("a frame showing an HTML report names it, and its kept copy is HTML", async () => {
+  const url = `https://arion.co.nz${STD_FIELD}`;
+  assert.deepEqual(filesShown([url]).map((f) => f.kind), ["html"]);
+  const store = new Map([[url, { status: 200, type: "text/html", body: Buffer.from("<html>Theoretical Horse Sire Choisir</html>"), at: 5 }]]);
+  const got = await keptFile(store, () => true, { wait: 0 });
+  assert.equal(got.kind, "html");
+  assert.equal(got.type, "text/html");
+});
+
+// The dialog's two lists, as a live mating search for Starspangledbanner x Lady Vivian showed them
+const SIRES = [
+  { name: "Starspangledbanner", year: 2006, country: "AUS" },
+  { name: "Star Spangled Day", year: 1993, country: "USA" },
+  { name: "Starspangled Gator", year: 2003, country: "USA" },
+];
+const DAMS = [
+  { name: "Lady Vivian", year: 2022, country: "IRE" },
+  { name: "Lady Vivian", year: 2014, country: "FR" },
+];
+
+test("the sires still in the dialog are not taken for the mares", () => {
+  // a fixed pause once read these back as the dams, with Lady Vivian nowhere in them
+  assert.equal(sameList(SIRES, SIRES), true);
+  assert.equal(sameList(SIRES.slice(0, 2), SIRES), true);
+  assert.equal(sameList(DAMS, SIRES), false);
+  // an empty grid has not been refilled yet
+  assert.equal(sameList([], SIRES), true);
 });
