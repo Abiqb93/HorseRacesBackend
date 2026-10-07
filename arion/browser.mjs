@@ -647,9 +647,19 @@ export async function candidatesOn(page) {
  */
 export const REPORT_FILES = "/files/reports/";
 
+/** What a report file is, by its name: a PDF, an RTF, or an HTML page. */
+export const kindOf = (name) => (/\.rtf$/i.test(name) ? "rtf" : /\.html?$/i.test(name) ? "html" : "pdf");
+
 export function filesFrom(value, { origin = ORIGIN } = {}) {
   const s = String(value ?? "");
   const out = [];
+  // An Internet pedigree's field holds a bare path instead:
+  //   /files/reports/Theoretical_Pedigreesreport-5_134358344142574836.html
+  const bare = s.trim().match(/^\/files\/reports\/([^/\\?#<>]+\.(pdf|rtf|html?))$/i);
+  if (bare) {
+    const name = decodeURIComponent(bare[1]);
+    return [{ kind: kindOf(name), name, url: `${origin}${REPORT_FILES}${encodeURIComponent(name)}` }];
+  }
   const take = (tag, kind) => {
     const name = s.match(new RegExp(`<${tag}>([^<]+)</${tag}>`, "i"))?.[1]?.trim();
     // a name with a slash in it is a path, not a file Arion built here
@@ -920,7 +930,9 @@ export async function keptFile(store, wanted, { wait = 8000, poll = 250 } = {}) 
     for (const [url, got] of store) {
       if (got.status === 200 && got.body?.length && wanted(url, got)) {
         const name = decodeURIComponent(url.split("?")[0].split("/").pop());
-        return { kind: /\.rtf$/i.test(name) ? "rtf" : "pdf", name, url, type: got.type || "application/pdf", body: got.body, from: "frame" };
+        const kind = kindOf(name);
+        const type = got.type || { pdf: "application/pdf", rtf: "application/rtf", html: "text/html" }[kind];
+        return { kind, name, url, type, body: got.body, from: "frame" };
       }
     }
     if (Date.now() >= until) return null;
@@ -979,9 +991,33 @@ export async function matingDialog(page, { sire = "", dam = "", sireIs = null } 
   // Arion's own list could not be narrowed to one sire, so the desk picks.
   if (!chosen.one) return { stage: "sire", candidates: chosen.among };
   await page.click(`#${chosen.one.link}`, { timeout: 20000 });
-  await page.waitForSelector(`#${SEARCH_GRID} tr`, { timeout: 30000 }).catch(() => {});
-  await page.waitForTimeout(900);
-  return { stage: "dam", sire: chosen.one, candidates: (await candidatesOn(page)) ?? [] };
+  // Arion refills the same grid with the dams, and until it has, the sires
+  // are still there to be read. A fixed pause read them on the live site and
+  // passed a list of sires off as the mares — Starspangledbanner (AUS) 2006,
+  // Star Spangled Day, … — with Lady Vivian nowhere in it.
+  return { stage: "dam", sire: chosen.one, candidates: await refilled(page, sires) };
+}
+
+/** Does the dialog still list just the horses it listed before? An empty one has not been refilled yet. */
+export const sameList = (now = [], before = []) => {
+  if (!now.length) return true;
+  const was = new Set(before.map((h) => `${h.name}|${h.year}|${h.country}`));
+  return now.every((h) => was.has(`${h.name}|${h.year}|${h.country}`));
+};
+
+/** The dialog's list once Arion has replaced `before` with something else, or [] if it never does. */
+async function refilled(page, before, { timeout = 30000, poll = 300 } = {}) {
+  const until = Date.now() + timeout;
+  for (;;) {
+    const now = (await candidatesOn(page).catch(() => null)) ?? [];
+    if (!sameList(now, before)) {
+      // a grid part-way through filling: one more look
+      await page.waitForTimeout(400);
+      return (await candidatesOn(page).catch(() => null)) ?? now;
+    }
+    if (Date.now() >= until) return [];
+    await page.waitForTimeout(poll);
+  }
 }
 
 /**
@@ -1142,13 +1178,21 @@ export async function drawnAsFile(page, src, { name = "arion-report" } = {}) {
   const frame = page.frames().find((f) => f.url() === src) ?? page.frames().find((f) => /ReportLoader\.aspx/i.test(f.url()));
   if (!frame) return null;
   const html = await frame.content().catch(() => null);
-  if (!html) return null;
+  return html ? htmlAsPdf(page, html, frame.url(), { name }) : null;
+}
+
+/**
+ * An HTML report printed to PDF — a Standard pedigree is an HTML page, and
+ * the desk keeps and sends PDFs. It is laid out at Arion's own address, so
+ * its styles and pictures come with the session, with its scripts taken out.
+ */
+export async function htmlAsPdf(page, html, url, { name = "arion-report" } = {}) {
   const p = await page.context().newPage();
   try {
-    await p.goto(new URL("/robots.txt", frame.url()).href, { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
-    await p.setContent(relayHtml(html, frame.url()), { waitUntil: "load", timeout: 30000 });
+    await p.goto(new URL("/robots.txt", url).href, { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
+    await p.setContent(relayHtml(html, url), { waitUntil: "load", timeout: 30000 });
     await p.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
-    return await printed(p, { name, url: src });
+    return await printed(p, { name, url });
   } catch {
     return null;
   } finally {
@@ -1352,10 +1396,10 @@ export async function holdReport(page, reportId) {
 /** The files a frame shows directly, as the hidden field would name them. */
 export const filesShown = (frames = []) =>
   frames
-    .filter((src) => /\/files\/reports\/[^/?#]+\.(pdf|rtf)$/i.test(src))
+    .filter((src) => /\/files\/reports\/[^/?#]+\.(pdf|rtf|html?)$/i.test(src))
     .map((src) => {
       const name = decodeURIComponent(src.split("/").pop());
-      return { kind: /\.rtf$/i.test(name) ? "rtf" : "pdf", name, url: src };
+      return { kind: kindOf(name), name, url: src };
     });
 
 /** A name safe to give a file, from what the report is of. */
@@ -1431,13 +1475,22 @@ export async function makeReport({ env = process.env, values = {}, horse = {}, s
     const names = new Set();
     const named = [...built.files.flatMap((f) => filesFrom(f.value)), ...filesShown(built.frames)].filter((f) => !names.has(f.name) && names.add(f.name));
     const ours = (name) => madeAs(name, reportId);
-    // The PDF as the frame was handed it — the only copy Arion gives out —
-    // and the rest by address, now that they are written.
-    const pdf = await keptFile(s.captured, (url, got) => got.at >= since && /\.pdf(\?|$)/i.test(url) && ours(decodeURIComponent(url.split("?")[0].split("/").pop())), {
+    const nameOf = (url) => decodeURIComponent(url.split("?")[0].split("/").pop());
+    // The report as the frame was handed it — the only copy Arion gives out:
+    // a catalogue style's PDF, or a Standard pedigree's HTML page — and the
+    // rest (the RTF) by address, now that it is written.
+    const shown = await keptFile(s.captured, (url, got) => got.at >= since && /\.(pdf|html?)(\?|$)/i.test(url) && ours(nameOf(url)), {
       wait: waited.built === "file" ? 8000 : 0,
     });
-    const tried = await fetchFiles(page, named.filter((f) => ours(f.name) && !(pdf && f.kind === "pdf")));
-    let files = [pdf, ...tried.filter((f) => f.body)].filter(Boolean);
+    const tried = await fetchFiles(page, named.filter((f) => ours(f.name) && f.kind === "rtf"));
+    let files = [shown, ...tried.filter((f) => f.body)].filter(Boolean);
+    // An HTML report is printed to PDF too, and the PDF comes first: it is
+    // what the desk opens, keeps and sends on. Arion's own page is kept beside it.
+    if (shown?.kind === "html") {
+      const subject = sire ? `${sire.label} x ${horse.label}` : horse.label ?? horse.name;
+      const pdf = await htmlAsPdf(page, shown.body.toString("utf8"), shown.url, { name: fileName(`${subject} - ${label}`) });
+      if (pdf) files = [pdf, ...files];
+    }
     lap("files");
     // No file: a report Arion only draws is printed from its frame, as drawn.
     const frame = files.length ? null : frameFor(built.frames, reportId);
