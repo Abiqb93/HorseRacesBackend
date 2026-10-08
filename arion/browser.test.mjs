@@ -14,6 +14,8 @@ import {
   sameList,
   keepReportFiles,
   keptFile,
+  ticksOf,
+  alreadyThere,
   onArionError,
   steadily,
   waitForBuilt,
@@ -828,4 +830,80 @@ test("the sires still in the dialog are not taken for the mares", () => {
   assert.equal(sameList(DAMS, SIRES), false);
   // an empty grid has not been refilled yet
   assert.equal(sameList([], SIRES), true);
+});
+
+/* ------------------------ the last horse's report is not this horse's */
+
+// As the live site did it: a Standard pedigree asked for Proof (FR) 2023 came
+// back as the Starspangledbanner x Lady Vivian one made before it, because
+// Arion re-rendered that tab too and its file loaded again, fresh.
+const OLD_HTML = "https://arion.co.nz/files/reports/Theoretical_Pedigreesreport-5_134358344142574836.html";
+const NEW_HTML = "https://arion.co.nz/files/reports/Proof_Pedigreesreport-5_134359201122334455.html";
+
+test("the time stamp in a file's name says which is newer", () => {
+  assert.ok(ticksOf(NEW_HTML) > ticksOf(OLD_HTML));
+  assert.equal(ticksOf("https://arion.co.nz/Images/banner.swf"), 0);
+  assert.equal(ticksOf(null), 0);
+});
+
+test("a copy kept again after the horse was opened is still the old report, and is not taken", async () => {
+  const store = new Map();
+  // the old report's copy, kept during the last job
+  store.set(OLD_HTML, { status: 200, type: "text/html", body: Buffer.from("old"), at: 100 });
+  const had = new Set(store.keys());
+  // opening the new horse re-renders the old tab: its file loads again, after `since`
+  store.set(OLD_HTML, { status: 200, type: "text/html", body: Buffer.from("old again"), at: 300 });
+  const since = 200;
+  const wanted = (url, got) => !had.has(url) && got.at >= since;
+  assert.equal(await keptFile(store, wanted, { wait: 0 }), null, "the old report is never this one");
+  // the new horse's own file arrives last, and is the one taken
+  store.set(NEW_HTML, { status: 200, type: "text/html", body: Buffer.from("Proof"), at: 400 });
+  const got = await keptFile(store, wanted, { wait: 0 });
+  assert.equal(got.name, "Proof_Pedigreesreport-5_134359201122334455.html");
+  assert.equal(got.body.toString(), "Proof");
+});
+
+test("of two new copies the newer one is taken, whatever order they were kept in", async () => {
+  const later = "https://arion.co.nz/files/reports/Proof_Pedigreesreport-5_134359300000000000.html";
+  const store = new Map([
+    [later, { status: 200, type: "text/html", body: Buffer.from("later"), at: 5 }],
+    [NEW_HTML, { status: 200, type: "text/html", body: Buffer.from("earlier"), at: 6 }],
+  ]);
+  assert.equal((await keptFile(store, () => true, { wait: 0 })).body.toString(), "later");
+});
+
+test("the old report's frame, re-rendered, is not the new report being built", async () => {
+  const had = new Set([OLD_HTML]);
+  // the page shows only the old tab's frame, finished and full of text
+  const page = {
+    evaluate: async (fn, arg) => fn(arg),
+    url: () => "https://arion.co.nz/PedigreeReports/PedigreeReports.aspx",
+    locator: () => ({ count: async () => 0 }),
+    waitForTimeout: async () => {},
+  };
+  globalThis.document = {
+    querySelectorAll: (sel) => (sel === "iframe" ? [{ getAttribute: () => OLD_HTML, contentWindow: { location: { href: OLD_HTML } }, contentDocument: { readyState: "complete", body: { textContent: "x".repeat(500) } } }] : []),
+  };
+  globalThis.location = { href: "https://arion.co.nz/PedigreeReports/PedigreeReports.aspx" };
+  try {
+    assert.deepEqual(await waitForBuilt(page, "PED02|0#5D_a", { timeout: 20, poll: 1, had }), { built: null, asked: false });
+    assert.deepEqual(await waitForBuilt(page, "PED02|0#5D_a", { timeout: 20, poll: 1 }), { built: "file", asked: false }, "without knowing it was there before, it would pass for the new one");
+  } finally {
+    delete globalThis.document;
+    delete globalThis.location;
+  }
+});
+
+test("what the page already shows is read before the horse is opened: names, frames, copies", async () => {
+  const page = {
+    evaluate: async () => ({ files: [{ id: "h", value: "/files/reports/Theoretical_Pedigreesreport-5_134358344142574836.html" }], tabs: [], actions: [], frames: ["https://arion.co.nz/HabrokRefresh.aspx"], loading: false }),
+    frames: () => [{ url: () => "https://arion.co.nz/PedigreeReports/PedigreeReports.aspx" }],
+    waitForLoadState: async () => {},
+    waitForTimeout: async () => {},
+  };
+  const had = await alreadyThere(page, new Map([[OLD_HTML, { status: 200, at: 1 }]]));
+  assert.ok(had.has("Theoretical_Pedigreesreport-5_134358344142574836.html"));
+  assert.ok(had.has("https://arion.co.nz/HabrokRefresh.aspx"));
+  assert.ok(had.has("https://arion.co.nz/PedigreeReports/PedigreeReports.aspx"));
+  assert.ok(had.has(OLD_HTML));
 });

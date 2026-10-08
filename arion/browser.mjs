@@ -928,17 +928,38 @@ export async function keepReportFiles(page, store = new Map(), { max = 24 } = {}
 export async function keptFile(store, wanted, { wait = 8000, poll = 250 } = {}) {
   const until = Date.now() + wait;
   for (;;) {
-    for (const [url, got] of store) {
-      if (got.status === 200 && got.body?.length && wanted(url, got)) {
-        const name = decodeURIComponent(url.split("?")[0].split("/").pop());
-        const kind = kindOf(name);
-        const type = got.type || { pdf: "application/pdf", rtf: "application/rtf", html: "text/html" }[kind];
-        return { kind, name, url, type, contentType: got.contentType ?? type, body: got.body, from: "frame" };
-      }
+    // The newest copy that fits, by the time stamp in Arion's own file name:
+    // a Map keeps a key where it was first put, so a file loaded again later
+    // would otherwise come first.
+    const fits = [...store].filter(([url, got]) => got.status === 200 && got.body?.length && wanted(url, got));
+    fits.sort(([a], [b]) => ticksOf(b) - ticksOf(a));
+    if (fits.length) {
+      const [url, got] = fits[0];
+      const name = decodeURIComponent(url.split("?")[0].split("/").pop());
+      const kind = kindOf(name);
+      const type = got.type || { pdf: "application/pdf", rtf: "application/rtf", html: "text/html" }[kind];
+      return { kind, name, url, type, contentType: got.contentType ?? type, body: got.body, from: "frame" };
     }
     if (Date.now() >= until) return null;
     await new Promise((r) => setTimeout(r, poll));
   }
+}
+
+/** The time stamp Arion writes into a report file's name - ..._134358344142574836.html - or 0. */
+export const ticksOf = (name) => Number(String(name ?? "").match(/_(\d{12,})\.[a-z]+(\?|$)/i)?.[1] ?? 0);
+
+/**
+ * Everything the report area already shows: the files named, the frames, and
+ * the copies kept. Arion keeps every horse's tab open across visits, and
+ * re-renders them all when another horse is opened - so the last report's
+ * file loads again, as fresh as the new one. On the live site a Standard
+ * pedigree asked for Proof (FR) 2023 came back as the Starspangledbanner x
+ * Lady Vivian one made before it. Only what is new since this is the report.
+ */
+export async function alreadyThere(page, captured = new Map()) {
+  const built = await steadily(page, () => reportOn(page)).catch(() => ({ files: [], frames: [] }));
+  const frames = await framesNow(page, built.frames).catch(() => []);
+  return new Set([...built.files.flatMap((f) => filesFrom(f.value)).map((f) => f.name), ...frames, ...captured.keys()]);
 }
 
 /**
@@ -1300,11 +1321,12 @@ async function shownYes(page) {
  * The hidden field's file names are no sign: Arion writes them about ten
  * seconds before the files exist, and they answer 404 until then.
  */
-async function builtNow(page, { type, value, n }) {
+async function builtNow(page, { type, value, n }, had = []) {
   return page
     .evaluate(
-      ({ type, value, n }) => {
+      ({ type, value, n, had }) => {
         const mine = new RegExp(`report-${n}_`, "i");
+        const old = new Set(had);
         for (const f of document.querySelectorAll("iframe")) {
           let href = "";
           let doc = null;
@@ -1315,6 +1337,7 @@ async function builtNow(page, { type, value, n }) {
             /* another site's frame */
           }
           const src = href && href !== "about:blank" ? href : f.getAttribute("src") || "";
+          if (old.has(src)) continue; // another horse's report, re-rendered
           if (/\/files\/reports\//i.test(src) && mine.test(src)) return "file";
           if (!/ReportLoader\.aspx/i.test(src)) continue;
           let q;
@@ -1330,7 +1353,7 @@ async function builtNow(page, { type, value, n }) {
         }
         return null;
       },
-      { type, value, n },
+      { type, value, n, had },
     )
     .catch(() => null);
 }
@@ -1342,7 +1365,7 @@ async function builtNow(page, { type, value, n }) {
  * Arion's "are you sure" is answered yes if it ever asks: the desk said yes
  * by pressing Generate.
  */
-export async function waitForBuilt(page, reportId, { timeout = 60000, poll = 400, grace = 3000, captured = null, since = 0 } = {}) {
+export async function waitForBuilt(page, reportId, { timeout = 60000, poll = 400, grace = 3000, captured = null, since = 0, had = new Set() } = {}) {
   const want = reportParts(reportId);
   if (!want) return { built: null, asked: false };
   const mine = new RegExp(`report-${want.n}_`, "i");
@@ -1352,8 +1375,8 @@ export async function waitForBuilt(page, reportId, { timeout = 60000, poll = 400
   for (;;) {
     if (onArionError(page)) return { built: "error", asked };
     // a copy of the report's own file, kept as the frame loaded it
-    if (captured && [...captured].some(([url, got]) => got.at >= since && got.status === 200 && mine.test(url))) return { built: "file", asked };
-    const now = await builtNow(page, want);
+    if (captured && [...captured].some(([url, got]) => !had.has(url) && got.at >= since && got.status === 200 && mine.test(url))) return { built: "file", asked };
+    const now = await builtNow(page, want, [...had]);
     if (now === "file") return { built: "file", asked };
     if (now === "drawn") {
       drawnAt ??= Date.now();
@@ -1431,6 +1454,7 @@ export async function makeReport({ env = process.env, values = {}, horse = {}, s
     lap("check");
 
     let since = Date.now();
+    let had = await alreadyThere(page, s.captured);
     let opened = null;
     if (found) {
       opened = await openHorse(page, found.link);
@@ -1461,12 +1485,13 @@ export async function makeReport({ env = process.env, values = {}, horse = {}, s
       }
       lap("search");
       since = Date.now();
+      had = await alreadyThere(page, s.captured);
       opened = await openHorse(page, one.link);
       lap("open");
     }
     const held = await steadily(page, () => menuHolds(page));
 
-    const waited = await waitForBuilt(page, reportId, { captured: s.captured, since });
+    const waited = await waitForBuilt(page, reportId, { captured: s.captured, since, had });
     lap("build");
     if (waited.built === "error") {
       throw new ArionError("Arion answered with its own error page while building the report; try again", { status: 502, code: "arion-error" });
@@ -1474,13 +1499,14 @@ export async function makeReport({ env = process.env, values = {}, horse = {}, s
     const built = await steadily(page, () => reportOn(page));
     built.frames = await framesNow(page, built.frames);
     const names = new Set();
-    const named = [...built.files.flatMap((f) => filesFrom(f.value)), ...filesShown(built.frames)].filter((f) => !names.has(f.name) && names.add(f.name));
+    const fresh = (f) => !had.has(f.name) && !had.has(f.url);
+    const named = [...built.files.flatMap((f) => filesFrom(f.value)), ...filesShown(built.frames)].filter((f) => fresh(f) && !names.has(f.name) && names.add(f.name));
     const ours = (name) => madeAs(name, reportId);
     const nameOf = (url) => decodeURIComponent(url.split("?")[0].split("/").pop());
     // The report as the frame was handed it — the only copy Arion gives out:
     // a catalogue style's PDF, or a Standard pedigree's HTML page — and the
     // rest (the RTF) by address, now that it is written.
-    const shown = await keptFile(s.captured, (url, got) => got.at >= since && /\.(pdf|html?)(\?|$)/i.test(url) && ours(nameOf(url)), {
+    const shown = await keptFile(s.captured, (url, got) => !had.has(url) && got.at >= since && /\.(pdf|html?)(\?|$)/i.test(url) && ours(nameOf(url)), {
       wait: waited.built === "file" ? 8000 : 0,
     });
     const tried = await fetchFiles(page, named.filter((f) => ours(f.name) && f.kind === "rtf"));
@@ -1494,7 +1520,7 @@ export async function makeReport({ env = process.env, values = {}, horse = {}, s
     }
     lap("files");
     // No file: a report Arion only draws is printed from its frame, as drawn.
-    const frame = files.length ? null : frameFor(built.frames, reportId);
+    const frame = files.length ? null : frameFor(built.frames.filter((f) => !had.has(f)), reportId);
     if (frame && waited.built === "drawn") {
       const subject = sire ? `${sire.label} x ${horse.label}` : horse.label ?? horse.name;
       const drawn = await drawnAsFile(page, frame, { name: fileName(`${subject} - ${label}`) });
@@ -1514,7 +1540,8 @@ export async function makeReport({ env = process.env, values = {}, horse = {}, s
         waited,
         modals: waited.built ? undefined : (await shapeOf(page)).modals.filter((m) => m.shown).map((m) => m.text.slice(0, 200)),
         named: named.map((f) => f.name),
-        kept: [...s.captured].filter(([, got]) => got.at >= since).map(([url, got]) => ({ file: url.split("/").pop(), status: got.status, bytes: got.body?.length ?? 0 })),
+        kept: [...s.captured].filter(([, got]) => got.at >= since).map(([url, got]) => ({ file: url.split("/").pop(), status: got.status, bytes: got.body?.length ?? 0, old: had.has(url) })),
+        had: [...had].map((x) => x.slice(-80)),
         fetched: tried.map((f) => ({ name: f.name, status: f.status })),
         frames: built.frames,
         frame,
@@ -1665,19 +1692,24 @@ export async function openSavedReport({ env = process.env, report = {} } = {}) {
       throw new ArionError(`Arion offers no way to open ${found.label} from its list; open it on Arion`, { status: 409, code: "session" });
     }
     const since = Date.now();
+    const had = await alreadyThere(page, s.captured);
     await page.click(`#${found.link}`, { timeout: 20000 });
     await page.waitForLoadState("load", { timeout: 30000 }).catch(() => {});
     await settled(page);
     if (onArionError(page)) throw new ArionError("Arion answered opening that report with its own error page; try again", { status: 502, code: "arion-error" });
     // The PDF as the frame was handed it, which is the only copy Arion gives
     // out; the RTF by its address.
-    const pdf = await keptFile(s.captured, (url, got) => got.at >= since && /\.pdf(\?|$)/i.test(url), { wait: 30000 });
+    const pdf = await keptFile(s.captured, (url, got) => !had.has(url) && got.at >= since && /\.(pdf|html?)(\?|$)/i.test(url), { wait: 30000 });
     const built = await steadily(page, () => reportOn(page));
     built.frames = await framesNow(page, built.frames);
-    const rtf = (await fetchFiles(page, built.files.flatMap((f) => filesFrom(f.value)).filter((f) => f.kind === "rtf"))).filter((f) => f.body);
+    const rtf = (await fetchFiles(page, built.files.flatMap((f) => filesFrom(f.value)).filter((f) => f.kind === "rtf" && !had.has(f.name)))).filter((f) => f.body);
     let files = [pdf, ...rtf].filter(Boolean);
+    if (pdf?.kind === "html") {
+      const printed = await htmlAsPdf(page, decodeHtml(pdf.body, pdf.contentType), pdf.url, { name: fileName(found.label) });
+      if (printed) files = [printed, ...files];
+    }
     if (!files.length) {
-      const frame = frameFor(built.frames, null);
+      const frame = frameFor(built.frames.filter((f) => !had.has(f)), null);
       const drawn = frame ? await drawnAsFile(page, frame, { name: fileName(found.label) }) : null;
       if (drawn) files = [drawn];
     }
