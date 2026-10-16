@@ -9,6 +9,7 @@ const mysql = require('mysql');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const nodemailer = require('nodemailer');
+const https = require('https');
 // const crypto = require('crypto');
 
 const app = express();
@@ -95,7 +96,7 @@ app.get("/api/version", (req, res) => res.json({ marker: "france-2cb2e46-trigger
 
 app.get("/api/env-status", (req, res) => {
   const names = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT",
-    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN"];
+    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN", "ML_SERVICE_URL"];
   res.json({ set: Object.fromEntries(names.map((n) => [n, Boolean(process.env[n])])) });
 });
 
@@ -103,7 +104,7 @@ app.get("/api/env-status", (req, res) => {
 // only, never values. Lets us verify the Railway variable configuration.
 app.get("/api/env-status", (req, res) => {
   const names = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT",
-    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN"];
+    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN", "ML_SERVICE_URL"];
   res.json({ set: Object.fromEntries(names.map((n) => [n, Boolean(process.env[n])])) });
 });
 
@@ -634,6 +635,132 @@ transporter.verify((err, success) => {
 
 
 
+
+// =======================================================
+// ML FUTURE OUTLOOK PREDICTIONS
+// Proxies live CatBoost predictions from the separate Railway
+// FastAPI service so the React frontend only talks to this API.
+// GET /api/predictions/horse?horseName=SPEECHMAN
+// =======================================================
+const ML_SERVICE_URL = String(
+  process.env.ML_SERVICE_URL ||
+  'https://horse-prediction-service-production.up.railway.app'
+).replace(/\/+$/, '');
+
+const ML_REQUEST_TIMEOUT_MS = Math.max(
+  5000,
+  Number(process.env.ML_REQUEST_TIMEOUT_MS) || 120000
+);
+
+/**
+ * Small dependency-free JSON GET helper for the ML service.
+ * Using Node's built-in https module avoids adding axios/node-fetch to this
+ * already-large backend just for one internal proxy call.
+ */
+const getPredictionJson = (url, timeoutMs = ML_REQUEST_TIMEOUT_MS) =>
+  new Promise((resolve, reject) => {
+    const request = https.get(
+      url,
+      {
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'HorseRacesBackend/1.0',
+        },
+      },
+      (response) => {
+        let raw = '';
+
+        response.setEncoding('utf8');
+        response.on('data', (chunk) => {
+          raw += chunk;
+        });
+
+        response.on('end', () => {
+          let body = null;
+          try {
+            body = raw ? JSON.parse(raw) : {};
+          } catch (parseError) {
+            const err = new Error(
+              `Prediction service returned non-JSON response (HTTP ${response.statusCode || 502})`
+            );
+            err.statusCode = 502;
+            err.responseBody = raw.slice(0, 500);
+            return reject(err);
+          }
+
+          const statusCode = Number(response.statusCode) || 502;
+          if (statusCode < 200 || statusCode >= 300) {
+            const err = new Error(
+              body?.detail || body?.error || `Prediction service returned HTTP ${statusCode}`
+            );
+            err.statusCode = statusCode;
+            err.responseBody = body;
+            return reject(err);
+          }
+
+          resolve(body);
+        });
+      }
+    );
+
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(
+        new Error(`Prediction service timed out after ${timeoutMs}ms`)
+      );
+    });
+
+    request.on('error', reject);
+  });
+
+app.get('/api/predictions/horse', async (req, res) => {
+  const horseName = String(req.query.horseName || '').trim();
+
+  if (!horseName) {
+    return res.status(400).json({
+      error: 'horseName parameter is required',
+    });
+  }
+
+  // Keep absurdly long input out of logs/URLs while allowing normal horse names.
+  if (horseName.length > 160) {
+    return res.status(400).json({
+      error: 'horseName is too long',
+    });
+  }
+
+  const predictionUrl = `${ML_SERVICE_URL}/predict/${encodeURIComponent(horseName)}`;
+
+  try {
+    const prediction = await getPredictionJson(predictionUrl);
+
+    // Predictions are generated live from the horse's current history.
+    res.set('Cache-Control', 'no-store');
+    return res.status(200).json(prediction);
+  } catch (error) {
+    const upstreamStatus = Number(error?.statusCode);
+
+    console.error('[ML] Prediction request failed:', {
+      horseName,
+      message: error?.message,
+      upstreamStatus: Number.isFinite(upstreamStatus) ? upstreamStatus : null,
+    });
+
+    // Preserve useful 4xx responses from FastAPI (horse missing, insufficient
+    // history, etc.). Convert upstream/internal failures into a gateway error.
+    if (Number.isFinite(upstreamStatus) && upstreamStatus >= 400 && upstreamStatus < 500) {
+      return res.status(upstreamStatus).json(
+        error?.responseBody && typeof error.responseBody === 'object'
+          ? error.responseBody
+          : { error: error?.message || 'Prediction request failed' }
+      );
+    }
+
+    return res.status(502).json({
+      error: 'Unable to retrieve horse prediction',
+      detail: error?.message || 'Prediction service unavailable',
+    });
+  }
+});
 
 // GET: Fetch all predicted timeform ratings
 app.get('/api/predicted_timeform', (req, res) => {
