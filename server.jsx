@@ -282,6 +282,22 @@ db.query(
   )`,
   (err) => { if (err) console.error("hit_sale_categories table check failed:", err.message); }
 );
+// The desk's own data on a lot, shared by everyone: figures checked by hand
+// and links to hand (a French or German horse's France Galop or
+// galopp-sieger page), one record per (sale, lot). The site and the nightly
+// build lay it over what the warehouse says (hitsales/lotOverrides.mjs).
+db.query(
+  `CREATE TABLE IF NOT EXISTS hit_sale_lot_overrides (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    sale_id VARCHAR(64) NOT NULL,
+    lot VARCHAR(32) NOT NULL,
+    record JSON,
+    updated_by VARCHAR(64) NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_sale_lot (sale_id, lot)
+  )`,
+  (err) => { if (err) console.error("hit_sale_lot_overrides table check failed:", err.message); }
+);
 
 /** mysql2 hands a JSON column back parsed on some drivers and as text on others. */
 const parseJsonCol = (v) => {
@@ -457,6 +473,48 @@ app.put("/api/hitsales/briefs/:userId", express.json({ limit: "1mb" }), (req, re
       res.json({ ok: true });
     }
   );
+});
+
+// Every override on a sale, keyed by lot: read by the site with the
+// catalogue and by the nightly build before it rates.
+app.get("/api/hitsales/overrides/:saleId", (req, res) => {
+  db.query(
+    "SELECT lot, record, updated_by, updated_at FROM hit_sale_lot_overrides WHERE sale_id = ?",
+    [String(req.params.saleId)],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      const data = {};
+      for (const r of rows) { const rec = parseJsonCol(r.record); if (rec) data[r.lot] = { ...rec, by: r.updated_by ?? rec.by ?? null, at: r.updated_at ?? rec.at ?? null }; }
+      res.json({ data });
+    }
+  );
+});
+
+// One lot's override, laid over what is stored: fields given are set (null
+// clears one), fields not given stand, links given replace the links. Done
+// once, by anyone on the desk, it holds for everyone until changed again.
+app.put("/api/hitsales/overrides/:saleId/:lot", express.json({ limit: "256kb" }), async (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const saleId = String(req.params.saleId);
+  const lot = String(req.params.lot).slice(0, 32);
+  const by = body.by ? String(body.by).slice(0, 64) : null;
+  try {
+    const { mergeLotOverride } = await import("./hitsales/lotOverrides.mjs");
+    const rows = await new Promise((resolve, reject) => db.query("SELECT record FROM hit_sale_lot_overrides WHERE sale_id = ? AND lot = ?", [saleId, lot], (e, r) => (e ? reject(e) : resolve(r))));
+    const stored = rows.length ? parseJsonCol(rows[0].record) : null;
+    const merged = mergeLotOverride(stored, body, { by });
+    if (!merged) {
+      await new Promise((resolve, reject) => db.query("DELETE FROM hit_sale_lot_overrides WHERE sale_id = ? AND lot = ?", [saleId, lot], (e) => (e ? reject(e) : resolve())));
+      return res.json({ ok: true, data: null });
+    }
+    await new Promise((resolve, reject) => db.query(
+      `INSERT INTO hit_sale_lot_overrides (sale_id, lot, record, updated_by) VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE record = VALUES(record), updated_by = VALUES(updated_by)`,
+      [saleId, lot, JSON.stringify(merged), by], (e) => (e ? reject(e) : resolve())));
+    res.json({ ok: true, data: merged });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get("/api/hitsales/categories/:userId", (req, res) => {
