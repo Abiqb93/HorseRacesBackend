@@ -282,6 +282,20 @@ db.query(
   )`,
   (err) => { if (err) console.error("hit_sale_categories table check failed:", err.message); }
 );
+// A user's saved filters for the HIT catalogue: named sets of the filter
+// panel's filters, put back on with a click on any sale (the desk, 21 October
+// 2026: "save that and say, right, that's Bahrain now"). Per user and not per
+// sale, like briefs; the frontend owns the shape (src/utils/hitSavedFilters.js).
+db.query(
+  `CREATE TABLE IF NOT EXISTS hit_sale_filters (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    filters JSON,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_user (user_id)
+  )`,
+  (err) => { if (err) console.error("hit_sale_filters table check failed:", err.message); }
+);
 // The desk's own data on a lot, shared by everyone: figures checked by hand
 // and links to hand (a French or German horse's France Galop or
 // galopp-sieger page), one record per (sale, lot). The site and the nightly
@@ -536,6 +550,32 @@ app.put("/api/hitsales/categories/:userId", express.json({ limit: "256kb" }), (r
     `INSERT INTO hit_sale_categories (user_id, categories) VALUES (?, ?)
      ON DUPLICATE KEY UPDATE categories = VALUES(categories)`,
     [String(req.params.userId), JSON.stringify(categories)],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ ok: true });
+    }
+  );
+});
+
+app.get("/api/hitsales/filters/:userId", (req, res) => {
+  db.query(
+    "SELECT filters, updated_at FROM hit_sale_filters WHERE user_id = ?",
+    [String(req.params.userId)],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      const filters = rows.length ? parseJsonCol(rows[0].filters) : null;
+      res.json({ data: Array.isArray(filters) ? filters : [], updatedAt: rows.length ? rows[0].updated_at : null });
+    }
+  );
+});
+
+app.put("/api/hitsales/filters/:userId", express.json({ limit: "256kb" }), (req, res) => {
+  const filters = req.body && typeof req.body === "object" ? req.body.filters : undefined;
+  if (!Array.isArray(filters)) return res.status(400).json({ error: "An array of saved filters is required." });
+  db.query(
+    `INSERT INTO hit_sale_filters (user_id, filters) VALUES (?, ?)
+     ON DUPLICATE KEY UPDATE filters = VALUES(filters)`,
+    [String(req.params.userId), JSON.stringify(filters)],
     (err) => {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ ok: true });
