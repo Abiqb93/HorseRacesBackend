@@ -128,14 +128,25 @@ export function mergeListNotes(stored, incoming, { now = new Date().toISOString(
     if (note.text) lotNotes[lot] = note.text;
     if (note.at) lotNotesAt[lot] = note.at;
   }
-  const entries = (Array.isArray(incoming?.entries) ? incoming.entries : []).map((e) => {
+  // The lots on the list and the categories: merged by their times where
+  // the save carries them, the save's own where it does not (an older page).
+  const placed = mergeListEntries(stored, incoming);
+  const entries = placed.entries.map((e) => {
     const lot = lotKey(e?.lot);
     // A listed lot carries its note on its entry too, where older pages and
     // the daily sale mail read it.
     return lot === null ? e : { ...e, note: merged.get(lot)?.text || "" };
   });
 
-  const list = { ...(isObject(incoming) ? incoming : {}), entries, lotNotes, lotNotesAt, notes: sale.text };
+  const list = {
+    ...(isObject(incoming) ? incoming : {}),
+    entries, categories: placed.categories, lotNotes, lotNotesAt, notes: sale.text,
+  };
+  if (Object.keys(placed.entryEdits).length) list.entryEdits = placed.entryEdits;
+  else delete list.entryEdits;
+  if (Object.keys(placed.categoryEdits).length) list.categoryEdits = placed.categoryEdits;
+  else delete list.categoryEdits;
+  if (!Array.isArray(incoming?.categories) && !Array.isArray(stored?.categories)) delete list.categories;
   if (sale.at) list.notesAt = sale.at;
   else delete list.notesAt;
   // The desk's hand-set checks, by the notes' rule: the later setting of each
@@ -227,6 +238,65 @@ export function mergeClientStates(stored, incoming) {
   const out = {};
   for (const { cat, lot, s, at } of merged.values()) (out[cat] ||= {})[lot] = { s, at };
   return out;
+}
+
+/**
+ * The lots on a list and its categories, merged lot by lot and category by
+ * category (the desk, 21 October 2026: selections made offline on the sales
+ * ground, synced when the iPad finds wifi; the site's hitLists.mergeNotes).
+ * A save from the current site carries `entryEdits` (lot -> when its entry
+ * was last added, changed or taken off) and `categoryEdits` (category id ->
+ * when it was last made, renamed or deleted); a time with no entry or
+ * category is a removal. The later time wins, the stored copy a tie, and a
+ * lot neither copy has a time for is kept from either. A save from an older
+ * page carries no times, and its lots and categories stand as they did
+ * before: the save's.
+ */
+const timesOf = (raw) => {
+  const out = {};
+  if (!isObject(raw)) return out;
+  for (const [k, v] of Object.entries(raw)) if (lotKey(k) !== null && noteTime(v)) out[lotKey(k)] = v;
+  return out;
+};
+
+function mergeTimed(storedItems, storedTimes, incomingItems, incomingTimes, keyOf) {
+  const a = new Map();
+  for (const x of Array.isArray(storedItems) ? storedItems : []) { const k = keyOf(x); if (k !== null && !a.has(k)) a.set(k, x); }
+  const b = new Map();
+  for (const x of Array.isArray(incomingItems) ? incomingItems : []) { const k = keyOf(x); if (k !== null && !b.has(k)) b.set(k, x); }
+  const keys = [...new Set([...a.keys(), ...b.keys(), ...Object.keys(storedTimes), ...Object.keys(incomingTimes)])];
+  const items = [];
+  const times = {};
+  for (const k of keys) {
+    const ta = storedTimes[k] || "";
+    const tb = incomingTimes[k] || "";
+    const pick = tb > ta ? b.get(k) : ta > tb ? a.get(k) : a.get(k) ?? (ta ? undefined : b.get(k));
+    if (pick) items.push(pick);
+    if (ta || tb) times[k] = tb > ta ? tb : ta;
+  }
+  return { items, times };
+}
+
+export function mergeListEntries(stored, incoming) {
+  const timed = isObject(incoming?.entryEdits) || isObject(incoming?.categoryEdits);
+  if (!timed) {
+    return {
+      entries: Array.isArray(incoming?.entries) ? incoming.entries : [],
+      categories: Array.isArray(incoming?.categories) ? incoming.categories : (Array.isArray(stored?.categories) ? stored.categories : []),
+      entryEdits: timesOf(stored?.entryEdits),
+      categoryEdits: timesOf(stored?.categoryEdits),
+    };
+  }
+  const catId = (c) => (isObject(c) && typeof c.id === "string" && c.id ? c.id : null);
+  const cats = mergeTimed(stored?.categories, timesOf(stored?.categoryEdits), incoming?.categories, timesOf(incoming?.categoryEdits), catId);
+  const known = new Set(cats.items.map(catId));
+  const ents = mergeTimed(stored?.entries, timesOf(stored?.entryEdits), incoming?.entries, timesOf(incoming?.entryEdits), (e) => lotKey(e?.lot));
+  return {
+    entries: ents.items.map((e) => (Array.isArray(e?.categories) ? { ...e, categories: e.categories.filter((c) => known.has(c)) } : e)),
+    categories: cats.items,
+    entryEdits: ents.times,
+    categoryEdits: cats.times,
+  };
 }
 
 /** The client reports sent (hitLists.sends): every one either copy holds, once, in time order, the last 200. */
