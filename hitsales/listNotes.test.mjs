@@ -155,3 +155,32 @@ test("where each lot stands with each client merges by time; the send log is eve
   assert.deepEqual(mergeClientStates(null, { "Bad Key": { 6: { s: "dropped", at: at(9) } }, job: { 6: { s: "sold", at: at(9) } } }), {});
   assert.deepEqual(mergeSends(null, [{ id: 3, at: at(9) }, { id: "x", at: "yesterday" }]), []);
 });
+
+test("lots and categories saved offline are merged by their times, not replaced by the later save", () => {
+  // on the server: lot 9 starred on the desktop at 10:01, lot 3 taken off at 10:02
+  const stored = {
+    entries: [{ lot: "4", categories: [] }, { lot: "9", categories: [] }],
+    entryEdits: { "3": "2026-10-21T10:02:00Z", "4": "2026-10-21T08:00:00Z", "9": "2026-10-21T10:01:00Z" },
+    categories: [{ id: "hk", name: "HK" }],
+  };
+  // the iPad, back on wifi: still has lot 3 from before, starred 5, filed 4 under a new category
+  const incoming = {
+    entries: [{ lot: "3", categories: [] }, { lot: "4", categories: ["bahrain"] }, { lot: "5", categories: [] }],
+    entryEdits: { "3": "2026-10-21T08:00:00Z", "4": "2026-10-21T10:05:00Z", "5": "2026-10-21T10:00:00Z" },
+    categories: [{ id: "hk", name: "HK" }, { id: "bahrain", name: "Bahrain" }],
+    categoryEdits: { bahrain: "2026-10-21T10:04:00Z" },
+    lotNotesAt: {},
+  };
+  const { list } = mergeListNotes(stored, incoming);
+  assert.deepEqual(list.entries.map((e) => e.lot).sort(), ["4", "5", "9"]);
+  assert.deepEqual(list.entries.find((e) => e.lot === "4").categories, ["bahrain"]);
+  assert.deepEqual(list.categories.map((c) => c.id), ["hk", "bahrain"]);
+  assert.equal(list.entryEdits["3"], "2026-10-21T10:02:00Z");
+});
+
+test("a save from an older page, with no times, keeps its own lots as before", () => {
+  const stored = { entries: [{ lot: "1" }, { lot: "2" }], entryEdits: { "2": "2026-10-21T10:00:00Z" } };
+  const { list } = mergeListNotes(stored, { entries: [{ lot: "1" }, { lot: "7" }] });
+  assert.deepEqual(list.entries.map((e) => e.lot), ["1", "7"]);
+  assert.equal(list.entryEdits["2"], "2026-10-21T10:00:00Z", "the stored times are kept for the next timed save");
+});
