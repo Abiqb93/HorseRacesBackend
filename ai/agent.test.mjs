@@ -504,3 +504,236 @@ test("a path through nothing is nothing, not a crash", async () => {
   assert.deepEqual(applySelect(rows, { fields: ["move.abci"] }).items,
     [{ "move.abci": undefined }, { "move.abci": undefined }]);
 });
+
+/* ------------------------------------------------ the cache and the loop */
+
+/** Stand the site in with one JSON body, and count the reads. */
+function stubSite(body) {
+  const real = globalThis.fetch;
+  let reads = 0;
+  globalThis.fetch = async () => {
+    reads += 1;
+    return {
+      status: 200,
+      ok: true,
+      headers: new Headers({ etag: 'W/"t"' }),
+      text: async () => JSON.stringify(body),
+    };
+  };
+  return { reads: () => reads, restore: () => { globalThis.fetch = real; } };
+}
+
+const BOARD = {
+  generatedAt: "2026-10-22T07:04:36.146Z",
+  windows: {
+    w7: {
+      "ukire-2yo-2026": [
+        { horse: "Night In Vegas", zS: 0.6, zT: 1, d: "2026-10-17" },
+        { horse: "Fast One", zS: 2.4, zT: 1.1, d: "2026-10-18" },
+      ],
+      "fr-3yo-2026": [{ horse: "Vite", zS: 2.1, zT: 0.3, d: "2026-10-19" }],
+    },
+  },
+};
+
+test("a dataset is read from the site once in a turn, however many slices are asked for", async () => {
+  const { resetDatasetCache } = await import("./agent.mjs");
+  resetDatasetCache();
+  const site = stubSite(BOARD);
+  try {
+    await call("get_dataset", { name: "sectional-ratings", path: "windows.w7.ukire-2yo-2026" });
+    await call("get_dataset", { name: "sectional-ratings", path: "windows.w7.fr-3yo-2026" });
+    await call("describe_dataset", { name: "sectional-ratings" });
+    assert.equal(site.reads(), 1, "the 2.5 MB board was being fetched on every call");
+  } finally {
+    site.restore();
+    resetDatasetCache();
+  }
+});
+
+test("every cohort in a window is one select, with the cohort on each row", async () => {
+  const { resetDatasetCache } = await import("./agent.mjs");
+  resetDatasetCache();
+  const site = stubSite(BOARD);
+  try {
+    const out = await call("get_dataset", {
+      name: "sectional-ratings",
+      path: "windows.w7",
+      select: { where: { zS: { gte: 2 } }, sort: "zS desc", fields: ["_group", "horse", "zS"] },
+    });
+    const body = JSON.parse(out.content);
+    assert.equal(body.of, 3);
+    assert.deepEqual(body.items, [
+      { _group: "ukire-2yo-2026", horse: "Fast One", zS: 2.4 },
+      { _group: "fr-3yo-2026", horse: "Vite", zS: 2.1 },
+    ]);
+    assert.equal(out.meta.rowCount, 2);
+  } finally {
+    site.restore();
+    resetDatasetCache();
+  }
+});
+
+test("describe_dataset says where the rows are, from the file itself", async () => {
+  const { resetDatasetCache } = await import("./agent.mjs");
+  resetDatasetCache();
+  const site = stubSite(BOARD);
+  try {
+    const out = await call("describe_dataset", { name: "sectional-ratings" });
+    const body = JSON.parse(out.content);
+    assert.equal(body.name, "sectional-ratings");
+    assert.match(body.layout, /windows\.w7/);
+    const shape = JSON.parse(body.shape);
+    assert.equal(shape.windows.w7["ukire-2yo-2026"].array, 2);
+    assert.equal(shape.windows.w7["ukire-2yo-2026"].item.horse, "Night In Vegas");
+  } finally {
+    site.restore();
+    resetDatasetCache();
+  }
+});
+
+test("a wrong path is answered with the layout, not just the top-level keys", async () => {
+  const { resetDatasetCache } = await import("./agent.mjs");
+  resetDatasetCache();
+  const site = stubSite(BOARD);
+  try {
+    const out = await call("get_dataset", { name: "sectional-ratings", path: "cohorts['ukire-2yo-2026']" });
+    assert.equal(out.is_error, true);
+    assert.match(out.content, /Layout: windows\.w7/);
+  } finally {
+    site.restore();
+    resetDatasetCache();
+  }
+});
+
+test("the brief tells it to describe a dataset first and read a window whole", () => {
+  const brief = systemPrompt({ userId: "x", today: "2026-10-22" });
+  assert.match(brief, /describe_dataset/);
+  assert.match(brief, /never read it one cohort at a time/);
+  assert.match(brief, new RegExp(`${AI_LIMITS.MAX_STEPS} tool steps`));
+});
+
+/**
+ * A model that answers from a script: each call takes the next response.
+ * The requests are kept so a test can see what each call was given.
+ */
+function scriptedAnthropic(responses) {
+  const requests = [];
+  return {
+    requests,
+    messages: {
+      stream(params) {
+        requests.push(params);
+        const response = responses[requests.length - 1];
+        if (!response) throw new Error(`no scripted response for call ${requests.length}`);
+        const handlers = {};
+        return {
+          on(event, fn) { handlers[event] = fn; return this; },
+          async finalMessage() {
+            for (const block of response.content) {
+              if (block.type === "text") handlers.text?.(block.text);
+              handlers.contentBlock?.(block);
+            }
+            return response;
+          },
+        };
+      },
+    },
+  };
+}
+
+const askPages = (id) => ({
+  stop_reason: "tool_use",
+  content: [{ type: "tool_use", id, name: "list_site_pages", input: {} }],
+});
+const answer = (text) => ({ stop_reason: "end_turn", content: [{ type: "text", text }], usage: { output_tokens: 3 } });
+
+async function turn({ responses, maxSteps, answerNow }) {
+  const { runTurn, resetAnthropicClient } = await import("./agent.mjs");
+  resetAnthropicClient();
+  const anthropic = scriptedAnthropic(responses);
+  const events = [];
+  const result = await runTurn({
+    messages: [{ role: "user", content: "which pages are there?" }],
+    userId: "Tom",
+    db: stubDb(),
+    allowedTables: TABLES,
+    emit: (event, data) => events.push({ event, data }),
+    anthropic,
+    maxSteps,
+    answerNow,
+  });
+  return { result, events, requests: anthropic.requests };
+}
+
+test("a question that runs out of steps still ends with an answer", async () => {
+  // Three steps: two tool calls, then the closing call, which answers. Before
+  // this the turn ended at the budget with a trace and no reply at all.
+  const { result, events, requests } = await turn({
+    responses: [askPages("t1"), askPages("t2"), answer("Found it.")],
+    maxSteps: 3,
+  });
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0].tool_choice, undefined);
+  assert.equal(requests[1].tool_choice, undefined);
+  assert.deepEqual(requests[2].tool_choice, { type: "none" });
+  const lastUser = requests[2].messages.at(-1);
+  assert.equal(lastUser.role, "user");
+  assert.match(lastUser.content.at(-1).text, /used every tool step/);
+  assert.equal(result.stopped, "end_turn");
+  assert.equal(result.limit, "max_steps");
+  assert.deepEqual(events.find((e) => e.event === "phase")?.data, { phase: "answering", why: "max_steps" });
+  assert.equal(events.filter((e) => e.event === "text").map((e) => e.data.delta).join(""), "Found it.");
+});
+
+test("asked for the answer now, the next call answers", async () => {
+  let asked = false;
+  const { result, requests } = await turn({
+    responses: [askPages("t1"), answer("So far: pages.")],
+    maxSteps: 12,
+    answerNow: () => asked,
+  });
+  // The flag was never set, so the second call was an ordinary one that
+  // happened to answer.
+  assert.equal(requests[1].tool_choice, undefined);
+  assert.equal(result.limit, undefined);
+
+  asked = true;
+  const again = await turn({
+    responses: [askPages("t1"), answer("So far: pages.")],
+    maxSteps: 12,
+    answerNow: () => asked,
+  });
+  assert.deepEqual(again.requests[1].tool_choice, { type: "none" });
+  assert.match(again.requests[1].messages.at(-1).content.at(-1).text, /asked for the answer now/);
+  assert.equal(again.result.limit, "answer_now");
+  // Never on the first call: there is nothing yet to answer from.
+  assert.equal(again.requests[0].tool_choice, undefined);
+});
+
+test("each call carries a cache breakpoint on the last block of the conversation", async () => {
+  const { requests } = await turn({
+    responses: [askPages("t1"), answer("ok")],
+    maxSteps: 12,
+  });
+  const first = requests[0].messages.at(-1).content;
+  assert.deepEqual(first.at(-1).cache_control, { type: "ephemeral" }, "the question itself, as a block");
+  const second = requests[1].messages.at(-1).content;
+  assert.equal(second.at(-1).type, "tool_result");
+  assert.deepEqual(second.at(-1).cache_control, { type: "ephemeral" });
+  // The original conversation is not altered: the breakpoint is on a copy.
+  assert.equal(requests[1].messages[0].content[0].cache_control, undefined);
+});
+
+test("the model is called at the configured effort, and a step reports how long its tool took", async () => {
+  const { EFFORT } = await import("./agent.mjs");
+  const { events, requests } = await turn({
+    responses: [askPages("t1"), answer("ok")],
+    maxSteps: 12,
+  });
+  assert.equal(requests[0].output_config.effort, EFFORT);
+  assert.equal(requests[0].model, "claude-opus-5");
+  const done = events.find((e) => e.event === "tool_done");
+  assert.equal(typeof done.data.ms, "number");
+  assert.equal(done.data.ok, true);
+});

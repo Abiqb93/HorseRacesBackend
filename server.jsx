@@ -15497,8 +15497,11 @@ app.get("/api/ai/status", async (req, res) => {
     res.json({
       available: Boolean(process.env.ANTHROPIC_API_KEY),
       model: agent.MODEL,
+      effort: agent.EFFORT,
       tables: aiAllowedTables().length,
       limits: agent.AI_LIMITS,
+      // The published datasets held in memory, with when each was last read.
+      datasets: agent.datasetCacheStatus(),
       // Reported so a key that is set but unusable is visible here rather than
       // only as a 400 on somebody's first question. Whether the key itself
       // carries a workspace is not something this service can see, so this
@@ -15528,8 +15531,29 @@ loadAiAgent()
   })
   .catch((err) => console.error("ai_questions bootstrap failed:", err.message));
 
+/**
+ * Turns in progress, by the id the page gave them, so that "Answer now" can
+ * reach the one it means. A turn is listed while its stream is open and
+ * forgotten when it closes; the id is the page's own (a UUID) and carries no
+ * authority beyond interrupting that one turn.
+ */
+const aiTurns = new Map();
+const AI_TURN_ID = /^[A-Za-z0-9_-]{8,64}$/;
+
+/**
+ * Stop looking things up and answer with what has been found. The next model
+ * call in that turn is made without tools; nothing already running is cut off.
+ */
+app.post("/api/ai/answer-now", express.json(), (req, res) => {
+  const turnId = String(req.body?.turnId || "");
+  const turn = AI_TURN_ID.test(turnId) ? aiTurns.get(turnId) : null;
+  if (!turn) return res.status(404).json({ error: "No such turn is running." });
+  turn.answerNow = true;
+  res.json({ ok: true });
+});
+
 app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
-  const { messages, userId } = req.body || {};
+  const { messages, userId, turnId } = req.body || {};
 
   if (!Array.isArray(messages) || !messages.length) {
     return res.status(400).json({ error: "messages must be a non-empty array" });
@@ -15599,6 +15623,10 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
     if (!res.writableEnded) res.write(": keep-alive\n\n");
   }, 15000);
 
+  const turn = { answerNow: false };
+  const turnKey = typeof turnId === "string" && AI_TURN_ID.test(turnId) ? turnId : null;
+  if (turnKey) aiTurns.set(turnKey, turn);
+
   let agentModule = null;
   try {
     const agent = await loadAiAgent();
@@ -15610,8 +15638,11 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
       allowedTables: aiAllowedTables(),
       emit: send,
       signal: abort.signal,
+      answerNow: () => turn.answerNow,
     });
-    send("done", { stopped: result.stopped, usage: result.usage });
+    // `limit` says the closing call was made without tools, and why: the step
+    // budget, or the user asking for the answer now. The page says so.
+    send("done", { stopped: result.stopped, limit: result.limit, usage: result.usage });
   } catch (err) {
     // A closed tab aborts the request mid-turn. That is the normal way a
     // conversation ends, not a failure, and there is nobody left to tell.
@@ -15627,6 +15658,7 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
     }
   } finally {
     clearInterval(keepAlive);
+    if (turnKey) aiTurns.delete(turnKey);
     if (!res.writableEnded) res.end();
   }
 });
