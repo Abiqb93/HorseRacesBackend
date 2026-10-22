@@ -18,7 +18,16 @@
  * it, which is fine: whether the chart is held is read from the cache, and a
  * fetch can be asked for again.
  *
- * Everything that talks to the database or the source is handed in, so this
+ * Two sources. Equineline first, through the scraper, because its record is
+ * the richer (reference numbers, dosage, nicking); then Arion's 5x5 grid
+ * (`arion/pedigreeGrid.mjs`), which holds the same five generations and
+ * answers in seconds on the desk's unmetered subscription. A key the
+ * scraper rejects is remembered for a while, so the mares added after it
+ * go straight to Arion rather than each waiting a turn in the scraper's
+ * queue to be told the same thing. A fetch can also be asked of one source
+ * by name (`source: "arion"`), as the row's "try Arion" does.
+ *
+ * Everything that talks to the database or the sources is handed in, so this
  * can be tested without either.
  */
 
@@ -78,6 +87,8 @@ export function describeFailure(err) {
 }
 
 export const KEEP_MS = 6 * 60 * 60 * 1000;
+/** After the scraper rejects the key, this long before it is asked again. */
+export const SKIP_EQUINELINE_MS = 15 * 60 * 1000;
 
 /**
  * The fetcher: one per process.
@@ -87,20 +98,23 @@ export const KEEP_MS = 6 * 60 * 60 * 1000;
  * her. `retry(mare, { ref })` runs it again, with the horse the desk picked
  * when the source could not tell.
  */
-export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, log = console, now = () => Date.now(), keep = KEEP_MS }) {
-  const jobs = new Map(); // mare id -> { state, message, matches, reference, at }
+export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, loadGrid = null, log = console, now = () => Date.now(), keep = KEEP_MS }) {
+  const jobs = new Map(); // mare id -> { state, message, matches, reference, source, at }
+  let keyRejectedAt = 0;
 
   const tidy = () => {
     for (const [k, v] of jobs) if (v.at < now() - keep) jobs.delete(k);
   };
   const set = (id, patch) => {
-    const next = { state: null, message: null, matches: null, reference: null, ...(jobs.get(String(id)) ?? {}), ...patch, at: now() };
+    const next = { state: null, message: null, matches: null, reference: null, source: null, ...(jobs.get(String(id)) ?? {}), ...patch, at: now() };
     jobs.set(String(id), next);
     return next;
   };
   const statusOf = (id) => {
     const j = jobs.get(String(id));
-    return j ? { state: j.state, message: j.message, matches: j.matches, reference: j.reference, at: new Date(j.at).toISOString() } : null;
+    return j
+      ? { state: j.state, message: j.message, matches: j.matches, reference: j.reference, source: j.source, blocked: Boolean(j.blocked), rejectedKey: Boolean(j.rejectedKey), at: new Date(j.at).toISOString() }
+      : null;
   };
 
   /** The reference of a chart already held for her, by the same rule the list uses. */
@@ -120,39 +134,103 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
   const link = (id, reference) =>
     runQuery("UPDATE my_mares SET pedigree_reference = ? WHERE id = ? AND pedigree_reference IS NULL", [String(reference), id]);
 
-  /** The fetch itself, already decided on. Never throws: the outcome is recorded. */
-  async function run(mare, { ref = null } = {}) {
-    const id = String(mare.id);
+  /**
+   * Her chart from Equineline. A name the source cannot settle is settled
+   * by her year, country and sire; when they cannot either, the error is
+   * thrown on with `undecided` and the source's matches, for the desk.
+   */
+  async function fromEquineline(mare, ref) {
+    const client = await loadClient();
+    const y = year(mare.foaling_year);
+    // A reference alone is not a query the source accepts; it goes with the name.
+    const ask = { name: mare.horse_name, year: y, ref: ref ? String(ref) : null };
     try {
-      const client = await loadClient();
+      return await client.getPedigree(ask);
+    } catch (err) {
+      if (!err?.ambiguous || ref) throw err;
+      const hers = pickHers(err.matches ?? [], mare);
+      if (!hers) {
+        err.undecided = true;
+        throw err;
+      }
+      return client.getPedigree({ ...ask, ref: String(hers.reference_number) });
+    }
+  }
+
+  /** Her chart from Arion's 5x5 grid, when the server has Arion. */
+  async function fromArion(mare) {
+    if (!loadGrid) {
+      const err = new Error("Arion is not wired on this server");
+      err.unconfigured = true;
+      throw err;
+    }
+    const grid = await loadGrid();
+    return grid.fetchGrid({ name: mare.horse_name, year: year(mare.foaling_year), country: mare.country_code ?? null, sire: mare.sire_name ?? null, userId: mare.user_id ?? null });
+  }
+
+  /**
+   * The fetch itself, already decided on. Never throws: the outcome is
+   * recorded. `source` names one source to use; otherwise Equineline is
+   * tried first and Arion when it fails.
+   */
+  async function run(mare, { ref = null, source = null } = {}) {
+    const id = String(mare.id);
+    const y = year(mare.foaling_year);
+    // what each source said when it did not answer: one failure reads as
+    // itself, two read side by side
+    const failures = [];
+    const said = (f) => (f.err?.undecided ? `${f.err.count ?? "several"} horses of the name, none plainly hers` : describeFailure(f.err));
+    let payload = null;
+    let via = null;
+    let undecided = null;
+    try {
       const store = await loadStore();
-      const y = year(mare.foaling_year);
-      // A reference alone is not a query the source accepts; it goes with the name.
-      const ask = { name: mare.horse_name, year: y, ref: ref ? String(ref) : null };
-      let payload;
-      try {
-        payload = await client.getPedigree(ask);
-      } catch (err) {
-        if (!err?.ambiguous || ref) throw err;
-        const hers = pickHers(err.matches ?? [], mare);
-        if (!hers) {
-          set(id, { state: "ambiguous", message: String(err.message ?? ""), matches: err.matches ?? [] });
-          log.log(`mares: ${mare.horse_name} (${y ?? "?"}) is ${err.count ?? "several"} horses to the source; the desk must choose`);
+      if (source !== "arion") {
+        const skip = !source && loadGrid && keyRejectedAt && keyRejectedAt > now() - SKIP_EQUINELINE_MS;
+        if (skip) {
+          failures.push({ via: "Equineline", err: Object.assign(new Error("the server's key was rejected a moment ago, so the source was not asked again"), { unconfigured: true, rejectedKey: true }) });
+        } else {
+          try {
+            payload = await fromEquineline(mare, ref);
+            via = "equineline";
+          } catch (err) {
+            if (err?.rejectedKey) keyRejectedAt = now();
+            if (err?.undecided) undecided = err;
+            failures.push({ via: "Equineline", err });
+          }
+        }
+      }
+      if (!payload && source !== "equineline" && (loadGrid || source === "arion")) {
+        try {
+          payload = await fromArion(mare);
+          via = "arion";
+        } catch (err) {
+          if (err?.ambiguous && !undecided) undecided = err;
+          failures.push({ via: "Arion", err });
+        }
+      }
+      if (!payload) {
+        if (undecided) {
+          set(id, { state: "ambiguous", message: failures.length > 1 ? failures.map((f) => `${f.via}: ${said(f)}`).join("; ") : String(undecided.message ?? ""), matches: undecided.matches ?? [], source: null });
+          log.log(`mares: ${mare.horse_name} (${y ?? "?"}) is ${undecided.count ?? "several"} horses to the source; the desk must choose`);
           return statusOf(id);
         }
-        payload = await client.getPedigree({ ...ask, ref: String(hers.reference_number) });
+        if (failures.length === 1) throw failures[0].err;
+        const err = new Error(failures.map((f) => `${f.via}: ${said(f)}`).join("; ") || "no pedigree source answered");
+        err.blocked = failures.length > 0 && failures.every((f) => f.err?.blocked);
+        throw err;
       }
       const row = store.rowFor(payload);
       if (!row) {
-        set(id, { state: "failed", message: "the source answered without a reference number, so the chart could not be filed" });
+        set(id, { state: "failed", message: "the source answered without a reference number, so the chart could not be filed", source: via });
         return statusOf(id);
       }
       await runQuery(store.UPSERT, store.upsertArgs(row));
       await link(id, row.reference);
-      set(id, { state: "held", reference: row.reference, message: null, matches: null });
-      log.log(`mares: fetched the pedigree of ${mare.horse_name} (${y ?? "?"}) ref ${row.reference}`);
+      set(id, { state: "held", reference: row.reference, message: null, matches: null, source: via, blocked: false, rejectedKey: false });
+      log.log(`mares: fetched the pedigree of ${mare.horse_name} (${y ?? "?"}) from ${via}, ref ${row.reference}${failures.length ? ` (${failures.map((f) => `${f.via}: ${said(f)}`).join("; ")})` : ""}`);
     } catch (err) {
-      set(id, { state: "failed", message: describeFailure(err), matches: null, blocked: Boolean(err?.blocked), rejectedKey: Boolean(err?.rejectedKey) });
+      set(id, { state: "failed", message: describeFailure(err), matches: null, source: null, blocked: Boolean(err?.blocked), rejectedKey: Boolean(err?.rejectedKey) });
       log.error(`mares: pedigree of ${mare.horse_name} not fetched: ${err?.message ?? err}`);
     }
     return statusOf(id);
@@ -162,22 +240,22 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
    * Start, unless there is nothing to do. Answers "held" (and links the row
    * to the chart it already had) or "pending"; the fetch runs on.
    */
-  async function queue(mare, { ref = null, again = false } = {}) {
+  async function queue(mare, { ref = null, again = false, source = null } = {}) {
     tidy();
     const id = String(mare.id);
     const have = ref ? null : await heldFor(mare).catch(() => null);
     if (have) {
       if (!mare.pedigree_reference) await link(id, have).catch(() => null);
-      set(id, { state: "held", reference: have, message: null, matches: null });
+      set(id, { state: "held", reference: have, message: null, matches: null, source: /^arion:/.test(have) ? "arion" : "equineline" });
       return "held";
     }
     const current = jobs.get(id);
     if (current?.state === "pending" && !again) return "pending";
-    set(id, { state: "pending", message: null, matches: null });
-    // Not awaited: the add answers now, the source is slow.
-    run(mare, { ref }).catch(() => null);
+    set(id, { state: "pending", message: null, matches: null, source: null });
+    // Not awaited: the add answers now, the sources are slow.
+    run(mare, { ref, source }).catch(() => null);
     return "pending";
   }
 
-  return { queue, statusOf, run, pickHers, heldFor, size: () => jobs.size };
+  return { queue, statusOf, run, pickHers, heldFor, size: () => jobs.size, keyRejectedAt: () => keyRejectedAt };
 }

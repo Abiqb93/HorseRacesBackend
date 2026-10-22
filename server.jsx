@@ -5880,18 +5880,46 @@ app.get("/api/pedigree", async (req, res) => {
 
     const client = await loadPedigreeClient();
 
-    // A caller that would sit behind a long queue is told so rather than left
-    // hanging on a request that may take minutes to reach the front.
-    const wait = client.throttle.waitEstimateMs();
-    if (client.throttle.isBlocked) {
-      return res.status(503).json({
-        error: "the pedigree source is throttling us; try again shortly",
-        retryAfterSeconds: Math.ceil(wait / 1000),
-        blocked: true,
-      });
-    }
+    // Arion's 5x5 grid, when Equineline will not answer for a named horse:
+    // a rejected key, a throttle, or a horse the scraper does not find. Not
+    // for a name the scraper could not settle (409): that choice is the
+    // desk's, and Arion would face the same namesakes.
+    const country = (req.query.country ?? "").toString().trim() || null;
+    const askedBy = (req.query.userId ?? "").toString().trim() || null;
+    const viaArion = async (why) => {
+      if (!name || (req.query.source ?? "") === "equineline") throw why;
+      try {
+        const grid = await arionGrid();
+        return await grid.fetchGrid({ name, year, country, userId: askedBy });
+      } catch (err2) {
+        console.error("pedigree: Arion could not stand in:", err2.message);
+        why.message = `${why.message}; Arion: ${err2.message}`;
+        throw why;
+      }
+    };
 
-    const payload = await client.getPedigree({ name, year, ref });
+    let source = "upstream";
+    let payload;
+    if ((req.query.source ?? "") === "arion") {
+      payload = await (await arionGrid()).fetchGrid({ name, year, country, userId: askedBy });
+      source = "arion";
+    } else if (client.throttle.isBlocked) {
+      // A caller that would sit behind a long queue is told so rather than
+      // left hanging on a request that may take minutes to reach the front
+      // — unless Arion can answer now.
+      const wait = client.throttle.waitEstimateMs();
+      const blocked = Object.assign(new Error("the pedigree source is throttling us; try again shortly"), { blocked: true, retryAfterSeconds: Math.ceil(wait / 1000) });
+      payload = await viaArion(blocked);
+      source = "arion";
+    } else {
+      try {
+        payload = await client.getPedigree({ name, year, ref });
+      } catch (err) {
+        if (err?.ambiguous) throw err;
+        payload = await viaArion(err);
+        source = "arion";
+      }
+    }
     const row = store.rowFor(payload);
     if (row) {
       await runQuery(store.UPSERT, store.upsertArgs(row));
@@ -5901,7 +5929,7 @@ app.get("/api/pedigree", async (req, res) => {
       console.warn("pedigree not cacheable (no reference):", name || ref);
     }
     return res.json({
-      source: "upstream",
+      source,
       reference: row?.reference ?? null,
       cached: Boolean(row),
       data: payload,
@@ -5915,7 +5943,7 @@ app.get("/api/pedigree", async (req, res) => {
       return res.status(501).json({ error: err.rejectedKey ? err.message : "pedigree lookup is not configured on this server", rejectedKey: Boolean(err.rejectedKey) });
     }
     if (err?.blocked) {
-      return res.status(503).json({ error: err.message, blocked: true });
+      return res.status(503).json({ error: err.message, blocked: true, retryAfterSeconds: err.retryAfterSeconds ?? undefined });
     }
     // Which parse.bot resource answered, so a caller comparing the personal
     // scraper against the named Equineline API can tell them apart in the
@@ -6012,16 +6040,25 @@ let mareFetcher = null;
 async function pedigreeFetcher() {
   if (!mareFetcher) {
     const { createMareFetcher } = await import("./breeding/pedigreeFetch.mjs");
-    mareFetcher = createMareFetcher({ runQuery, queryOne, loadClient: loadPedigreeClient, loadStore: loadPedigreeStore });
+    mareFetcher = createMareFetcher({ runQuery, queryOne, loadClient: loadPedigreeClient, loadStore: loadPedigreeStore, loadGrid: arionGrid });
   }
   return mareFetcher;
 }
+/** Arion's 5x5 grid as a pedigree source: the client the Arion routes run, read into the cache's shape. */
+let gridFetcher = null;
+async function arionGrid() {
+  if (!gridFetcher) {
+    const { createGridFetcher } = await import("./arion/pedigreeGrid.mjs");
+    gridFetcher = createGridFetcher({ loadArion: arion, log: console });
+  }
+  return gridFetcher;
+}
 /** Start her fetch, and say "held" or "pending"; an add is never failed by it. */
-async function fetchPedigreeFor(mareId, { ref = null, again = false } = {}) {
+async function fetchPedigreeFor(mareId, { ref = null, again = false, source = null } = {}) {
   try {
-    const mare = await queryOne("SELECT id, horse_name, foaling_year, country_code, sire_name, pedigree_reference FROM my_mares WHERE id = ? LIMIT 1", [mareId]);
+    const mare = await queryOne("SELECT id, user_id, horse_name, foaling_year, country_code, sire_name, pedigree_reference FROM my_mares WHERE id = ? LIMIT 1", [mareId]);
     if (!mare) return null;
-    return await (await pedigreeFetcher()).queue(mare, { ref, again });
+    return await (await pedigreeFetcher()).queue(mare, { ref, again, source });
   } catch (err) {
     console.error("mares: pedigree fetch not started:", err.message);
     return "failed";
@@ -6818,7 +6855,9 @@ app.post("/api/mares/:userId/:id/pedigree", express.json(), async (req, res) => 
     const mine = await queryOne("SELECT id FROM my_mares WHERE user_id = ? AND id = ? LIMIT 1", [req.params.userId, req.params.id]);
     if (!mine) return res.status(404).json({ error: "no such mare on your list" });
     const ref = req.body?.ref ? String(req.body.ref).trim() : null;
-    const pedigree = await fetchPedigreeFor(mine.id, { ref, again: true });
+    // "try Arion" on her row: that source alone, whatever the scraper says
+    const source = req.body?.source === "arion" ? "arion" : null;
+    const pedigree = await fetchPedigreeFor(mine.id, { ref, again: true, source });
     res.json({ ok: true, id: mine.id, pedigree, status: pedigreeFetchStatus(mine.id) });
   } catch (err) {
     console.error("mares: pedigree fetch failed to start:", err.message);
