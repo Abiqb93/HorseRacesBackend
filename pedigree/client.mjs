@@ -298,6 +298,17 @@ async function call(endpoint, params, { fetchImpl = fetch } = {}) {
   }
 
   const message = body?.error?.message ?? body?.error ?? null;
+  // The source rejecting the key is a configuration fault, not a failed
+  // lookup: nothing will work until PARSE_API_KEY is replaced on the server.
+  // Said as such, rather than as "pedigree lookup failed" for every horse.
+  if (res.status === 401 || /invalid api key|missing x-api-key/i.test(String(message ?? ""))) {
+    const err = new Error(
+      `the pedigree source rejected this server's API key (PARSE_API_KEY): it has expired or been replaced${message ? ` — the source says "${message}"` : ""}`,
+    );
+    err.unconfigured = true;
+    err.rejectedKey = true;
+    throw err;
+  }
   if (isBlockMessage(message)) throw new BlockedError(String(message));
   if (res.status === 429 || res.status === 503) {
     throw new BlockedError(`upstream returned HTTP ${res.status}`);
