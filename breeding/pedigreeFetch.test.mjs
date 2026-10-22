@@ -165,3 +165,109 @@ test("a fetch already running is not started twice, and an old outcome is forgot
   await f.queue({ id: 2, horse_name: "Other", foaling_year: 2011 }); // any call tidies
   assert.equal(f.statusOf(1), null);
 });
+
+/* ------------------------------------------------------- the second source */
+
+/** Arion's grid as the fetcher sees it: a payload per name, or an error. */
+const gridOf = (answers = {}, calls = []) => async () => ({
+  fetchGrid: async (ask) => {
+    calls.push({ fetchGrid: ask });
+    await new Promise((r) => setTimeout(r, 2));
+    const a = answers[ask.name];
+    if (a instanceof Error) throw a;
+    if (!a) throw Object.assign(new Error(`Arion holds no horse called ${ask.name}`), { notFound: true });
+    return a;
+  },
+});
+const arionPayload = (name, year) => ({ source: "arion", horse: { reference_number: `arion:${name.toLowerCase()}${year}`, name, foaled: String(year), sex: "Mare" }, ancestors: [] });
+const REJECTED = () => Object.assign(new Error("the pedigree source rejected this server's API key (PARSE_API_KEY)"), { unconfigured: true, rejectedKey: true });
+
+test("when the scraper rejects the key, her chart comes from Arion instead, and the row says so", async () => {
+  const { fake, calls, cache } = harness({ answers: { "name:Prudenzia": REJECTED() } });
+  const f = createMareFetcher({ ...fake, loadGrid: gridOf({ Prudenzia: arionPayload("Prudenzia (IRE)", 2005) }, calls) });
+  assert.equal(await f.queue({ id: 45, user_id: "desk", horse_name: "Prudenzia", foaling_year: 2005, country_code: "IRE", sire_name: "Dansili" }), "pending");
+  await settle();
+  const s = f.statusOf(45);
+  assert.equal(s.state, "held");
+  assert.equal(s.source, "arion");
+  assert.equal(s.reference, "arion:prudenzia (ire)2005");
+  assert.ok(cache.has("arion:prudenzia (ire)2005"), "the chart is in the cache");
+  const asked = calls.find((c) => c.fetchGrid).fetchGrid;
+  assert.deepEqual(asked, { name: "Prudenzia", year: 2005, country: "IRE", sire: "Dansili", userId: "desk" });
+  assert.ok(calls.some((c) => /^UPDATE my_mares SET pedigree_reference/.test(c.sql) && c.args[0] === "arion:prudenzia (ire)2005"));
+});
+
+test("a rejected key is remembered: the next mare goes straight to Arion without a turn in the scraper's queue", async () => {
+  let t = 1_000_000;
+  const { fake, calls } = harness({ answers: { "name:First": REJECTED(), "name:Second": REJECTED() } });
+  const f = createMareFetcher({ ...fake, now: () => t, loadGrid: gridOf({ First: arionPayload("First", 2010), Second: arionPayload("Second", 2011) }, calls) });
+  await f.queue({ id: 1, horse_name: "First", foaling_year: 2010 });
+  await settle();
+  await f.queue({ id: 2, horse_name: "Second", foaling_year: 2011 });
+  await settle();
+  assert.equal(calls.filter((c) => c.getPedigree).length, 1, "the scraper was asked once");
+  assert.equal(calls.filter((c) => c.fetchGrid).length, 2);
+  assert.equal(f.statusOf(2).state, "held");
+  // a quarter of an hour on, the scraper is tried again
+  t += 16 * 60 * 1000;
+  await f.queue({ id: 3, horse_name: "Third", foaling_year: 2012 });
+  await settle();
+  assert.equal(calls.filter((c) => c.getPedigree).length, 2);
+});
+
+test("Arion stands in for a horse the scraper does not find, and Equineline is still first when it answers", async () => {
+  const { fake, calls } = harness({ answers: { "name:Known": payload(10555, "Known (GB)", "April 3,2005") } });
+  const f = createMareFetcher({ ...fake, loadGrid: gridOf({ Known: arionPayload("Known", 2005), Unknown: arionPayload("Unknown", 2006) }, calls) });
+  await f.queue({ id: 1, horse_name: "Known", foaling_year: 2005 });
+  await f.queue({ id: 2, horse_name: "Unknown", foaling_year: 2006 });
+  await settle();
+  assert.deepEqual([f.statusOf(1).state, f.statusOf(1).source, f.statusOf(1).reference], ["held", "equineline", "10555"]);
+  assert.deepEqual([f.statusOf(2).state, f.statusOf(2).source], ["held", "arion"]);
+  assert.equal(calls.filter((c) => c.fetchGrid).length, 1, "Arion is asked only for the one the scraper lacked");
+});
+
+test("when both sources fail, the row names both reasons", async () => {
+  const { fake } = harness({ answers: {} });
+  const f = createMareFetcher({ ...fake, loadGrid: gridOf({}) });
+  await f.queue({ id: 9, horse_name: "Nobody", foaling_year: 2010 });
+  await settle();
+  assert.equal(f.statusOf(9).state, "failed");
+  assert.match(f.statusOf(9).message, /Equineline: No horse matched; Arion: Arion holds no horse called Nobody/);
+});
+
+test("a source can be named: 'arion' never asks the scraper, 'equineline' never asks Arion", async () => {
+  const { fake, calls } = harness({ answers: { "name:Mare": payload(1, "Mare", "May 1,2010") } });
+  const f = createMareFetcher({ ...fake, loadGrid: gridOf({ Mare: arionPayload("Mare", 2010) }, calls) });
+  await f.queue({ id: 1, horse_name: "Mare", foaling_year: 2010 }, { source: "arion" });
+  await settle();
+  assert.deepEqual([f.statusOf(1).state, f.statusOf(1).source], ["held", "arion"]);
+  assert.equal(calls.filter((c) => c.getPedigree).length, 0);
+  const g = createMareFetcher({ ...fake, loadGrid: gridOf({}, calls) });
+  await g.queue({ id: 2, horse_name: "Other", foaling_year: 2010 }, { source: "equineline" });
+  await settle();
+  assert.equal(g.statusOf(2).state, "failed");
+  assert.equal(calls.filter((c) => c.fetchGrid).length, 1, "Arion was not asked for the second");
+});
+
+test("without Arion wired, a server behaves as before: the scraper's failure is the row's", async () => {
+  const { fake } = harness({ answers: { "name:Prudenzia": REJECTED() } });
+  const f = createMareFetcher(fake);
+  await f.queue({ id: 45, horse_name: "Prudenzia", foaling_year: 2005 });
+  await settle();
+  assert.equal(f.statusOf(45).state, "failed");
+  assert.match(f.statusOf(45).message, /PARSE_API_KEY/);
+  assert.equal(f.statusOf(45).rejectedKey, true);
+});
+
+test("a name neither source can settle is left for the desk with Equineline's choices, which carry references", async () => {
+  const amb = Object.assign(new Error("2 horses matched; disambiguate with reference_number"), { ambiguous: true, count: 2, matches: ANTISANA });
+  const arionAmb = Object.assign(new Error("Arion lists 2 horses called Antisana"), { ambiguous: true, count: 2, matches: [{ name: "Antisana (GB)", reference_number: null }] });
+  const { fake } = harness({ answers: { "name:Antisana": amb } });
+  const f = createMareFetcher({ ...fake, loadGrid: gridOf({ Antisana: arionAmb }) });
+  await f.queue({ id: 7, horse_name: "Antisana", foaling_year: null });
+  await settle();
+  const s = f.statusOf(7);
+  assert.equal(s.state, "ambiguous");
+  assert.equal(s.matches.length, 2);
+  assert.equal(s.matches[0].reference_number, 9924938);
+});
