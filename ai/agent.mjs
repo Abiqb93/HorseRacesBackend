@@ -28,10 +28,27 @@ import {
   webTools, refusedWebTools, noteWebRefusal, serverToolStarted, serverToolFinished,
   isServerToolResult, citedSources, WEB_SEARCH_MAX_USES, WEB_FETCH_MAX_USES,
 } from "./web.mjs";
+import { loadDataset, describeShapeText, flattenGroups } from "./datasets.mjs";
 
 export const MODEL = "claude-opus-5";
 
-/** How many tool round-trips one question may take before we stop. */
+/**
+ * How hard the model thinks on each call. Every tool round-trip is a full
+ * call, and at "high" each one - including the trivial ones that only pick
+ * the next query - spent as long thinking as the answer did. Medium is the
+ * default; AI_EFFORT raises or lowers it without a deploy of code.
+ */
+export const EFFORT = (() => {
+  const set = String(process.env.AI_EFFORT || "").trim().toLowerCase();
+  return ["low", "medium", "high"].includes(set) ? set : "medium";
+})();
+
+/**
+ * How many tool round-trips one question may take. The last of them is
+ * always an answer: the model is called once more with its tools withheld and
+ * told to say what it has found, so a question that runs out of steps ends
+ * with a reply rather than a trace and silence.
+ */
 const MAX_STEPS = 12;
 
 /** Rows and time one query may spend. Both are bounds on cost, not authority. */
@@ -81,40 +98,70 @@ const SITE_PAGES = [
  * they are the same numbers the pages draw.
  */
 const DATASETS = {
+  // [path, what it is, how it is laid out]. The third entry is what the model
+  // is told before it reads the file: the keys that matter and where the rows
+  // are. describe_dataset gives the full shape, computed from the file itself.
+
   // Sectionals, stride and pars
-  "sectionals-index": ["/data/rtv/index.json", "Every meeting with sectional data: date, track, file"],
-  "sectional-ratings": ["/data/rtv/ratings.json", "The sectional ratings board, by cohort and 7/30/90-day window"],
-  "course-distance-pars": ["/data/rtv/pars.json", "Course-and-distance pars: winning time, finishing speed, stride"],
-  "cd-pars": ["/data/rtv/cd-pars.json", "Course-and-distance pars, per-furlong detail"],
-  "pars-history": ["/data/rtv/pars-history.json", "How pars have moved over time"],
-  "tfr-equivalent": ["/data/rtv/tfr-equivalent.json", "Timeform-equivalent conversion for sectional ratings"],
-  "horse-sectional-runs": ["/data/rtv/horses.json", "Which meetings each horse has sectional data in"],
+  "sectionals-index": ["/data/rtv/index.json", "Every meeting with sectional data: date, track, file",
+    "meetings[]: {date, track, trackKey, country, source, races, times[], file}. ~1,000 meetings."],
+  "sectional-ratings": ["/data/rtv/ratings.json", "The sectional ratings board, by cohort and 7/30/90-day window",
+    "windows.w7 / windows.w30 / windows.w90 each hold the last 7/30/90 days as an object of cohort arrays " +
+    "(ukire-2yo-2026, ukire-3yo-2026, ukire-4yo+-2026, fr-2yo-2026, fr-3yo-2026, fr-4yo+-2026). " +
+    "cohorts.<cohort> holds the season's top 300 for every cohort back to 2024. " +
+    "A row is one run: {horse, horseKey, region, age, rating, form, timeRtg, secRtg, zT, zS, zStr, sfUp, sfLate, d (date), c (course), t (time), pos, rnrs, fsp, src}. " +
+    "zT/zS are the time and sectional figures in standard deviations against the course-and-distance par; " +
+    "a notable sectional run is zS >= 2 or sfUp/sfLate well above 0, and the page's time-disagrees flag is zT <= -2 with zS <= 0. " +
+    "For every cohort at once use path \"windows.w7\" with a select; the rows come back flattened with _group naming the cohort."],
+  "course-distance-pars": ["/data/rtv/pars.json", "Course-and-distance pars: winning time, finishing speed, stride",
+    "cells is an object keyed \"<trackKey>|<distance furlongs>\" (647 cells); each has all {n, win, fsp, sl, ft, freq, furl[], ...}, byGoing, byAge, byHcp."],
+  "cd-pars": ["/data/rtv/cd-pars.json", "Course-and-distance pars, per-furlong detail",
+    "rows[] (680): one per source|course|raceType|distance, 38 fields; measures explains each field."],
+  "pars-history": ["/data/rtv/pars-history.json", "How pars have moved over time",
+    "cells keyed \"<source>|<trackKey>|<raceType>|<distance>\" (948) with n, from, to and metrics.{start,mid,fin,fsp,sl,cad...}."],
+  "tfr-equivalent": ["/data/rtv/tfr-equivalent.json", "Timeform-equivalent conversion for sectional ratings",
+    "A small fitted model: level, catOffsets, ageOffsets, posCurve, validation. No rows."],
+  "horse-sectional-runs": ["/data/rtv/horses.json", "Which meetings each horse has sectional data in",
+    "An object keyed by horse name in capitals (19,000+), each an array of runs {d, c, k, t, p}. Use path \"<HORSE NAME>\" for one horse; never fetch the top."],
 
   // Stallions
-  "stallions": ["/data/stallions/index.json", "The stallion roster with progeny statistics, fees, crop and stage"],
-  "precocity": ["/data/stallions/precocity.json", "Sire Precocity Index, category, par and judgement window"],
-  "early-indicators": ["/data/stallions/early.json", "Young-sire first and second season figures"],
-  "fee-model": ["/data/stallions/fee-model.json", "Stud fee history and the fee-change model"],
-  "stallion-population": ["/data/stallions/population.json", "The stallion population by year and market"],
+  "stallions": ["/data/stallions/index.json", "The stallion roster with progeny statistics, fees, crop and stage",
+    "stallions[] (1,895) with ~49 fields: id, n (name), cc, yob, stud, regions, fee, feeGbp, stage, cropsRacing, progeny counts. Select on it with fields."],
+  "precocity": ["/data/stallions/precocity.json", "Sire Precocity Index, category, par and judgement window",
+    "rules explain the index; stallions[] (1,895) with spi, rpp, band, stage; bands[] and drivers[] summarise."],
+  "early-indicators": ["/data/stallions/early.json", "Young-sire first and second season figures",
+    "framework[] names the 35 measures (k, label, weight); pars by country; stallions[] (1,391) with stage, cc, eis, eisAdj, reliability and each measure. Select on stallions."],
+  "fee-model": ["/data/stallions/fee-model.json", "Stud fee history and the fee-change model",
+    "rules, coverage, drivers[], coef[], validation, and sires[] with this season's fee, the projected change and its class (cut/hold/small/large)."],
+  "stallion-population": ["/data/stallions/population.json", "The stallion population by year and market",
+    "cohorts by crops racing ({n, metrics}) and bands by distance; distributions, not rows per sire."],
 
   // APEX. Two editions side by side, plus the movement between them, so
   // "which sires are improving" is one call rather than a diff the model has
   // to do in its head. `sires` is an array of ~750 entries, each with `by`
   // (the row per edition) and `move` (the change) - select on it.
-  "apex": ["/data/apex/index.json", "APEX ratings, Year-End 2025 and Mid-Year 2026: index by progeny age group (2YO-5YO+) and by grade (A/B/C, ABCI), runners, and for 2026 earnings, winners, wins and the NA/EU/JP splits. Each sire carries `move` with its ABCI/AI/BI/CI change between editions and a status of both/new/gone. There is no 3YO figure for 2025 - that column was destroyed in storage."],
+  "apex": ["/data/apex/index.json", "APEX ratings, Year-End 2025 and Mid-Year 2026: index by progeny age group (2YO-5YO+) and by grade (A/B/C, ABCI), runners, and for 2026 earnings, winners, wins and the NA/EU/JP splits. Each sire carries `move` with its ABCI/AI/BI/CI change between editions and a status of both/new/gone. There is no 3YO figure for 2025 - that column was destroyed in storage.",
+    "editions[] (2); sires[] (747): {key, sire, yob, siresSire, st, by.<edition>{...24 fields}, move{status, abci, ai, bi, ci, runners}}. Sort on move.abci or by.<edition>.abci."],
 
   // Horses in Training sales. One set per sale: the catalogue with every lot's
   // rating and rank, what the desk has listed and enquired on, and the digest
   // that goes out each morning.
-  "hit-sale-tatts-july": ["/data/hitsales/tatts-july-2026/index.json", "Tattersalls July 2026 HIT catalogue: every lot with its rating, rank against the sale and against the GB/IRE/FRA population, pedigree, form and sectionals"],
-  "hit-sale-tatts-july-tracking": ["/data/hitsales/tatts-july-2026/tracking.json", "Tattersalls July 2026: the desk's lists, categories and enquiries"],
-  "hit-sale-arc": ["/data/hitsales/arc-sale-2026/index.json", "Arqana Arc 2026 HIT catalogue: every lot with its rating and rank"],
-  "hit-sale-arc-tracking": ["/data/hitsales/arc-sale-2026/tracking.json", "Arqana Arc 2026: the desk's lists, categories and enquiries"],
+  "hit-sale-tatts-july": ["/data/hitsales/tatts-july-2026/index.json", "Tattersalls July 2026 HIT catalogue: every lot with its rating, rank against the sale and against the GB/IRE/FRA population, pedigree, form and sectionals",
+    "sale, counts, rows[] (816 lots, ~200 fields each: lot, name, age, sex, sire, dam, trainer, rating, rank, officialRating, price...). Always name fields."],
+  "hit-sale-tatts-july-tracking": ["/data/hitsales/tatts-july-2026/tracking.json", "Tattersalls July 2026: the desk's lists, categories and enquiries",
+    "lots[] (one per lot: name, horseCode, trainer, rating, priceGns, purchaser, sold, runs, wins, lastRun, nextRun) and runs[] (every run since the sale)."],
+  "hit-sale-arc": ["/data/hitsales/arc-sale-2026/index.json", "Arqana Arc 2026 HIT catalogue: every lot with its rating and rank",
+    "sale, counts, rows[] (51 lots, ~200 fields each). Always name fields."],
+  "hit-sale-arc-tracking": ["/data/hitsales/arc-sale-2026/tracking.json", "Arqana Arc 2026: the desk's lists, categories and enquiries",
+    "lots[] and runs[] as for the Tattersalls tracking file."],
 
   // Prospects
-  "prospects": ["/data/prospects/index.json", "The prospects index"],
-  "prospect-sires": ["/data/prospects/sires.json", "Sire-level summary across the prospects index"],
-  "royal-ascot": ["/data/prospects/royal-ascot.json", "Royal Ascot profiles and pipeline"],
+  "prospects": ["/data/prospects/index.json", "The prospects index",
+    "horses[] (35,000+, 10 MB): {n (name), code, a (age), x (sex), t (trainer), cc, r (runs), w (wins), lr (last run), pk (peak), ms, dmin, dmax, db}. Never fetch whole: select with where/sort/limit/fields."],
+  "prospect-sires": ["/data/prospects/sires.json", "Sire-level summary across the prospects index",
+    "sires[] (1,106): {sire, n, top, pk}."],
+  "royal-ascot": ["/data/prospects/royal-ascot.json", "Royal Ascot profiles and pipeline",
+    "races keyed by race name (33): {title, dist, ageRange, filliesOnly, windows.{5,10,15,20}, winners[], pipeline[]}."],
 };
 
 /* ------------------------------------------------------------------ tools */
@@ -157,11 +204,26 @@ export const TOOLS = [
     },
   },
   {
+    name: "describe_dataset",
+    description:
+      "The layout of one published dataset: its keys, where the rows are and what fields a row has, " +
+      "read from the file itself. Call this before the first get_dataset on a file you have not read " +
+      "in this conversation - the paths are not guessable, and a wrong one costs a step.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", enum: Object.keys(DATASETS), description: "Which dataset." },
+      },
+      required: ["name"],
+    },
+  },
+  {
     name: "get_dataset",
     description:
       "Fetch one of the site's published JSON datasets - the sectional, pars, stallion and prospects " +
       "data that the pages themselves draw. Use this for anything sectional, stride, par, precocity or " +
-      "stallion-roster related; that data is built by the scheduled jobs and does not live in the database.",
+      "stallion-roster related; that data is built by the scheduled jobs and does not live in the database. " +
+      "Read describe_dataset first for the layout. Each dataset's note says where its rows are.",
     input_schema: {
       type: "object",
       properties: {
@@ -181,7 +243,9 @@ export const TOOLS = [
             "rows in the order the page wanted, so the head of one answers nothing. " +
             'Example: path "stallions" with select ' +
             '{"where":{"stage":"first"},"sort":"eisAdj desc","limit":20,' +
-            '"fields":["n","cc","eis","eisAdj","reliability"]}.',
+            '"fields":["n","cc","eis","eisAdj","reliability"]}. ' +
+            "If the path points at an object of arrays (one per cohort, say), select runs over " +
+            "all of them at once and each row carries _group naming the array it came from.",
           properties: {
             where: {
               type: "object",
@@ -426,20 +490,35 @@ function summariseValue(value, limit = 60_000) {
   return json.slice(0, limit);
 }
 
-async function fetchDataset(name, path, select) {
+async function datasetJson(name) {
   const entry = DATASETS[name];
   if (!entry) throw new Error(`Unknown dataset "${name}".`);
-  const res = await fetch(`${SITE_ORIGIN}${entry[0]}`, { signal: AbortSignal.timeout(30_000) });
-  if (!res.ok) throw new Error(`Dataset "${name}" returned HTTP ${res.status}.`);
-  const json = await res.json();
-  const picked = applySelect(pick(json, path), select);
-  if (picked === undefined) {
+  try {
+    const { json } = await loadDataset(`${SITE_ORIGIN}${entry[0]}`);
+    return json;
+  } catch (err) {
+    throw new Error(`Dataset "${name}" could not be read: ${err.message}.`);
+  }
+}
+
+async function fetchDataset(name, path, select) {
+  const json = await datasetJson(name);
+  const at = pick(json, path);
+  if (at === undefined) {
     throw new Error(
       `Path "${path}" is not present in "${name}". ` +
-      `The top-level keys are: ${Object.keys(json || {}).join(", ") || "(an array)"}.`,
+      `The top-level keys are: ${Object.keys(json || {}).join(", ") || "(an array)"}. ` +
+      `Layout: ${DATASETS[name][2] || "call describe_dataset."}`,
     );
   }
-  return picked;
+  // With a select, an object of arrays is one array to select over.
+  return applySelect(select ? flattenGroups(at) : at, select);
+}
+
+async function describeDataset(name) {
+  const json = await datasetJson(name);
+  const [path, about, layout] = DATASETS[name];
+  return { name, path, about, layout, shape: describeShapeText(json) };
 }
 
 /**
@@ -498,9 +577,15 @@ export async function runTool({ name, input }, { db, allowedTables, userId }) {
       };
     }
 
+    if (name === "describe_dataset") {
+      const described = await describeDataset(input?.name);
+      return { content: JSON.stringify(described) };
+    }
+
     if (name === "get_dataset") {
       const value = await fetchDataset(input?.name, input?.path, input?.select);
-      return { content: summariseValue(value) };
+      const rowCount = Array.isArray(value) ? value.length : value?.items?.length;
+      return { content: summariseValue(value), meta: { rowCount } };
     }
 
     if (name === "team_activity") {
@@ -631,7 +716,11 @@ Get to the answer in few steps. list_tables gives you every table with a one-lin
 
 Then describe_table it, because the column names and date formats here are genuinely not guessable - dates appear both as "2026-09-08" and as "Tuesday 8  September 2026" (with a double space), horse names carry country suffixes, and several tables hold the same concept under different column names. Look at the example rows.
 
+The published datasets are laid out for pages, not for questions. Before the first get_dataset on a file in this conversation, describe_dataset it: the result says where the rows are and what a row holds. Then take what you need in one call - a path to the array, a select to filter and sort it, and the fields you will use. The sectional board, for instance, is windows.w7 for the last seven days across every cohort at once; never read it one cohort at a time.
+
 Aggregate in SQL. You get ${ROW_CAP} rows back at most, so COUNT, SUM, AVG and GROUP BY belong in the query, not in your head.
+
+You have ${MAX_STEPS} tool steps for a question, and a step that runs several tools at once counts as one. When the budget is spent - or the user asks for the answer now - you are called once more with no tools and must answer from what you have, saying plainly what you did not get to check.
 
 Bound every query on a large table. list_tables marks which they are. A GROUP BY across the whole of one of them is a full scan and will hit the ${QUERY_TIMEOUT_MS / 1000}s timeout - the query is abandoned and you have spent a step for nothing. Put a date range in the WHERE clause, and filter on the column as it is stored rather than wrapping it in a function, which stops an index being used.
 
@@ -741,7 +830,42 @@ export function resetAnthropicClient() {
  * `cite` naming them, sent once its words are out, so the page can mark the
  * claim where it ends.
  */
-async function streamOnce({ anthropic, web, userId, today, working, emit, signal, open }) {
+/**
+ * The conversation with a cache breakpoint on its last block. The system
+ * prompt and tools are cached already; with this, each step also reads the
+ * steps before it from cache - a turn's twelfth call carries eleven tool
+ * results, and without a breakpoint every one of them is read afresh.
+ */
+function withCacheBreakpoint(messages) {
+  if (!messages.length) return messages;
+  const last = messages[messages.length - 1];
+  const content = typeof last.content === "string" ? [{ type: "text", text: last.content }] : [...last.content];
+  if (!content.length) return messages;
+  const tail = content[content.length - 1];
+  // Thinking blocks cannot carry cache_control; everything else here can.
+  if (tail.type === "thinking" || tail.type === "redacted_thinking") return messages;
+  content[content.length - 1] = { ...tail, cache_control: { type: "ephemeral" } };
+  return [...messages.slice(0, -1), { ...last, content }];
+}
+
+/**
+ * What the model is told when it must answer now: appended to the last user
+ * message, which is a set of tool results, or the question itself.
+ */
+const ANSWER_NOW = (why) =>
+  (why === "answer_now"
+    ? "The user has asked for the answer now."
+    : "You have used every tool step for this question.") +
+  " There are no tools on this call. Answer from what you have found so far, lead with the finding, and say in one line what you did not get to check.";
+
+function withAnswerNow(messages, why) {
+  const last = messages[messages.length - 1];
+  const nudge = { type: "text", text: ANSWER_NOW(why) };
+  const content = typeof last.content === "string" ? [{ type: "text", text: last.content }] : [...last.content];
+  return [...messages.slice(0, -1), { ...last, content: [...content, nudge] }];
+}
+
+async function streamOnce({ anthropic, web, userId, today, working, emit, signal, open, final }) {
   const system = [
     {
       type: "text",
@@ -760,9 +884,12 @@ async function streamOnce({ anthropic, web, userId, today, working, emit, signal
       // The platform's tools first and the web after them: the order the
       // brief asks for them to be reached for.
       tools: [...TOOLS, ...web],
-      messages: working,
+      messages: withCacheBreakpoint(final ? withAnswerNow(working, final) : working),
       thinking: { type: "adaptive" },
-      output_config: { effort: "high" },
+      output_config: { effort: EFFORT },
+      // The closing call answers; it may not ask for anything more. The tool
+      // list stays, because the conversation's earlier tool blocks refer to it.
+      ...(final ? { tool_choice: { type: "none" } } : {}),
     },
     { signal },
   );
@@ -812,9 +939,15 @@ async function callModel(args) {
  */
 export async function runTurn({
   messages, userId, db, allowedTables, emit, signal, anthropic = anthropicClient(),
+  // Asked for the answer now? Read before each step; the page's "Answer now"
+  // button sets it through the route.
+  answerNow = () => false,
+  maxSteps = MAX_STEPS,
 }) {
   const today = new Date().toISOString().slice(0, 10);
   const working = [...messages];
+  // Why the closing call was made without tools, when it was.
+  let limit;
 
   // Web calls announced and not yet answered. One made alongside a database
   // query is answered at the start of the next response rather than in this
@@ -828,10 +961,21 @@ export async function runTurn({
     return result;
   };
 
-  for (let step = 0; step < MAX_STEPS; step++) {
+  for (let step = 0; step < maxSteps; step++) {
     if (signal?.aborted) return { stopped: "aborted" };
 
-    const response = await callModel({ anthropic, userId, today, working, emit, signal, open });
+    // The last step, or an interrupted one, answers rather than asks. A step
+    // before any tool has run has nothing to answer from, so the first call is
+    // never the closing one unless it is the only one.
+    let final;
+    if (step === maxSteps - 1) final = "max_steps";
+    else if (step > 0 && answerNow()) final = "answer_now";
+    if (final) {
+      limit = final;
+      emit("phase", { phase: "answering", why: final });
+    }
+
+    const response = await callModel({ anthropic, userId, today, working, emit, signal, open, final });
     working.push({ role: "assistant", content: response.content });
 
     // The API runs web searches in a loop of its own and may pause that loop
@@ -840,7 +984,7 @@ export async function runTurn({
     if (response.stop_reason === "pause_turn") continue;
 
     if (response.stop_reason !== "tool_use") {
-      return finish({ stopped: response.stop_reason, usage: response.usage, messages: working });
+      return finish({ stopped: response.stop_reason, limit, usage: response.usage, messages: working });
     }
 
     const calls = response.content.filter((b) => b.type === "tool_use");
@@ -853,12 +997,14 @@ export async function runTurn({
     const results = await Promise.all(
       calls.map(async (call) => {
         emit("tool", { id: call.id, name: call.name, input: call.input });
+        const started = Date.now();
         const out = await runTool(call, { db, allowedTables, userId });
         emit("tool_done", {
           id: call.id,
           name: call.name,
           ok: !out.is_error,
           rowCount: out.meta?.rowCount,
+          ms: Date.now() - started,
           error: out.is_error ? out.content : undefined,
         });
         return {
@@ -873,10 +1019,13 @@ export async function runTurn({
     working.push({ role: "user", content: results });
   }
 
-  return finish({ stopped: "max_steps", messages: working });
+  // Only reachable if the closing call asked for a tool regardless, which
+  // tool_choice "none" forbids; kept so the loop always ends.
+  return finish({ stopped: "max_steps", limit, messages: working });
 }
 
 export { webStatus } from "./web.mjs";
+export { resetDatasetCache, datasetCacheStatus } from "./datasets.mjs";
 export const AI_LIMITS = { MAX_STEPS, ROW_CAP, QUERY_TIMEOUT_MS, WEB_SEARCH_MAX_USES, WEB_FETCH_MAX_USES };
 export const AI_SITE_PAGES = SITE_PAGES;
 export const AI_DATASETS = DATASETS;
