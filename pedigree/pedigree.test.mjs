@@ -238,3 +238,21 @@ test("one failure does not wedge the queue behind it", async () => {
   });
   assert.equal(after.horse.name, "Frankel (GB)");
 });
+
+test("a key the source rejects is a configuration fault, named as such, not a failed lookup", async () => {
+  fast();
+  // parse.bot's own answer to a wrong key, as seen on 22 October 2026
+  const fetchImpl = async () => jsonResponse({ error: "Invalid API key", status_code: 401 }, 401);
+  await assert.rejects(
+    () => getPedigree({ name: "Prudenzia", year: 2005 }, { fetchImpl }),
+    (err) => {
+      assert.equal(err.unconfigured, true);
+      assert.equal(err.rejectedKey, true);
+      assert.match(err.message, /PARSE_API_KEY/);
+      assert.match(err.message, /Invalid API key/);
+      assert.equal(err.blocked, undefined, "a rejected key is not a block: no backoff");
+      return true;
+    },
+  );
+  assert.equal(throttle.isBlocked, false);
+});

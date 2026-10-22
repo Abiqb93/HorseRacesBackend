@@ -5908,7 +5908,11 @@ app.get("/api/pedigree", async (req, res) => {
     });
   } catch (err) {
     if (err?.unconfigured) {
-      return res.status(501).json({ error: "pedigree lookup is not configured on this server" });
+      // A key the source rejects is said by name: until PARSE_API_KEY is
+      // replaced on this server, nothing will work, and "lookup failed" for
+      // every horse hid that for a day.
+      if (err.rejectedKey) console.error("pedigree source:", err.message);
+      return res.status(501).json({ error: err.rejectedKey ? err.message : "pedigree lookup is not configured on this server", rejectedKey: Boolean(err.rejectedKey) });
     }
     if (err?.blocked) {
       return res.status(503).json({ error: err.message, blocked: true });
@@ -6001,6 +6005,29 @@ db.query(
 );
 
 const loadMares = () => import("./breeding/mares.mjs");
+
+// A mare's pedigree, fetched in the background the moment she is added, for
+// every way she can be added. See breeding/pedigreeFetch.mjs.
+let mareFetcher = null;
+async function pedigreeFetcher() {
+  if (!mareFetcher) {
+    const { createMareFetcher } = await import("./breeding/pedigreeFetch.mjs");
+    mareFetcher = createMareFetcher({ runQuery, queryOne, loadClient: loadPedigreeClient, loadStore: loadPedigreeStore });
+  }
+  return mareFetcher;
+}
+/** Start her fetch, and say "held" or "pending"; an add is never failed by it. */
+async function fetchPedigreeFor(mareId, { ref = null, again = false } = {}) {
+  try {
+    const mare = await queryOne("SELECT id, horse_name, foaling_year, country_code, sire_name, pedigree_reference FROM my_mares WHERE id = ? LIMIT 1", [mareId]);
+    if (!mare) return null;
+    return await (await pedigreeFetcher()).queue(mare, { ref, again });
+  } catch (err) {
+    console.error("mares: pedigree fetch not started:", err.message);
+    return "failed";
+  }
+}
+const pedigreeFetchStatus = (id) => mareFetcher?.statusOf(id) ?? null;
 
 /** The same reduction the pedigree cache uses, so the two can be joined. */
 const mareNameKey = (raw) =>
@@ -6148,7 +6175,9 @@ app.get("/api/mares/:userId", async (req, res) => {
       `SELECT * FROM my_mares WHERE ${where.join(" AND ")} ORDER BY horse_name ASC`,
       args,
     );
-    if (!season || !mares.length) return res.json({ count: mares.length, mares });
+    if (!season || !mares.length) {
+      return res.json({ count: mares.length, mares: mares.map((m) => ({ ...m, pedigreeFetch: pedigreeFetchStatus(m.id) })) });
+    }
 
     const ids = mares.map((m) => m.id);
     const holes = ids.map(() => "?").join(", ");
@@ -6248,6 +6277,7 @@ app.get("/api/mares/:userId", async (req, res) => {
         plan: planOf.get(m.id) ?? null,
         pedigreeReference: m.pedigree_reference ?? chartFor(m),
         pedigreeHeld: Boolean(chartFor(m)),
+        pedigreeFetch: pedigreeFetchStatus(m.id),
       })),
     });
   } catch (err) {
@@ -6337,7 +6367,7 @@ app.post("/api/mares", express.json(), async (req, res) => {
       if (year !== null) { sets.push("foaling_year = ?"); args.push(year); }
       if (role) { sets.push("role = ?"); args.push(role); }
       await runQuery(`UPDATE my_mares SET ${sets.join(", ")} WHERE id = ?`, [...args, mine.id]);
-      return res.json({ ok: true, id: mine.id, updated: true });
+      return res.json({ ok: true, id: mine.id, updated: true, pedigree: await fetchPedigreeFor(mine.id) });
     }
 
     const result = await runQuery(
@@ -6353,7 +6383,8 @@ app.post("/api/mares", express.json(), async (req, res) => {
         fields.pedigree_reference, fields.note,
       ],
     );
-    res.status(201).json({ ok: true, id: result?.insertId ?? null, created: true });
+    const id = result?.insertId ?? null;
+    res.status(201).json({ ok: true, id, created: true, pedigree: id ? await fetchPedigreeFor(id) : null });
   } catch (err) {
     console.error("my_mares insert failed:", err.message);
     res.status(500).json({ error: "database error", detail: err.message });
@@ -6780,6 +6811,21 @@ app.post("/api/sires/distance-profiles", (req, res) => {
   });
 });
 
+// Fetch her pedigree again — after a failure, or with the reference of the
+// horse the desk picked when the source could not tell namesakes apart.
+app.post("/api/mares/:userId/:id/pedigree", express.json(), async (req, res) => {
+  try {
+    const mine = await queryOne("SELECT id FROM my_mares WHERE user_id = ? AND id = ? LIMIT 1", [req.params.userId, req.params.id]);
+    if (!mine) return res.status(404).json({ error: "no such mare on your list" });
+    const ref = req.body?.ref ? String(req.body.ref).trim() : null;
+    const pedigree = await fetchPedigreeFor(mine.id, { ref, again: true });
+    res.json({ ok: true, id: mine.id, pedigree, status: pedigreeFetchStatus(mine.id) });
+  } catch (err) {
+    console.error("mares: pedigree fetch failed to start:", err.message);
+    res.status(500).json({ error: "database error" });
+  }
+});
+
 app.delete("/api/mares/:userId/:id", (req, res) => {
   db.query(
     "DELETE FROM my_mares WHERE user_id = ? AND id = ?",
@@ -6902,7 +6948,11 @@ app.get("/api/pedigree/search", async (req, res) => {
     res.json({ matches: data?.matches ?? [], count: data?.count ?? 0 });
   } catch (err) {
     if (err?.unconfigured) {
-      return res.status(501).json({ error: "pedigree lookup is not configured on this server" });
+      // A key the source rejects is said by name: until PARSE_API_KEY is
+      // replaced on this server, nothing will work, and "lookup failed" for
+      // every horse hid that for a day.
+      if (err.rejectedKey) console.error("pedigree source:", err.message);
+      return res.status(501).json({ error: err.rejectedKey ? err.message : "pedigree lookup is not configured on this server", rejectedKey: Boolean(err.rejectedKey) });
     }
     if (err?.blocked) return res.status(503).json({ error: err.message, blocked: true });
     console.error("pedigree search failed:", err.message);

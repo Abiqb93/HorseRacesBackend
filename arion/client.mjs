@@ -475,14 +475,22 @@ export function decodeHtml(buf, contentType = "") {
   const head = bytes.subarray(0, 4096).toString("latin1");
   const label = String(contentType ?? "").match(/charset\s*=\s*["']?([\w-]+)/i)?.[1] ?? head.match(/<meta[^>]+charset\s*=\s*["']?([\w-]+)/i)?.[1] ?? null;
   const read = (as, fatal = false) => {
+    // Latin-1 and Windows-1252 are read by hand: a Node built without full
+    // ICU has no TextDecoder for them, and these are the encodings Arion's
+    // pages actually declare. The WHATWG rule treats ISO-8859-1 as 1252.
+    if (/^(iso[-_]?8859[-_]?1|latin[-_]?1|windows[-_]?1252|cp1252|ansi)$/i.test(as)) return latin1(bytes);
     try {
       return new TextDecoder(as, { fatal }).decode(bytes);
     } catch {
       return null;
     }
   };
-  return (label && read(label)) ?? read("utf-8", true) ?? read("windows-1252");
+  return (label && read(label)) ?? read("utf-8", true) ?? latin1(bytes);
 }
+
+// The 32 code points Windows-1252 puts where ISO-8859-1 has control characters.
+const CP1252 = "\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178";
+const latin1 = (bytes) => bytes.toString("latin1").replace(/[\u0080-\u009f]/g, (c) => CP1252[c.charCodeAt(0) - 0x80]);
 
 /**
  * A relayed HTML report: its own addresses kept pointing at Arion (a <base>),
