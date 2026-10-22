@@ -268,6 +268,23 @@ db.query(
   )`,
   (err) => { if (err) console.error("hit_sale_note_history table check failed:", err.message); }
 );
+// Earlier copies of each list, kept before a save replaces one: every ten
+// minutes of work, and always before a save that moves five lots or more
+// (hitsales/listVersions.mjs). The last hundred of each list are kept, for
+// a list to be put back as it was.
+db.query(
+  `CREATE TABLE IF NOT EXISTS hit_sale_list_versions (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    sale_id VARCHAR(64) NOT NULL,
+    list JSON,
+    lots INT NULL,
+    summary VARCHAR(255) NULL,
+    saved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_hslv_user_sale (user_id, sale_id, id)
+  )`,
+  (err) => { if (err) console.error("hit_sale_list_versions table check failed:", err.message); }
+);
 // A user's saved categories: every free-text category they have made on any
 // sale's list, kept so the next catalogue offers them again instead of
 // starting from the four defaults. Per user and not per sale, like briefs;
@@ -346,6 +363,7 @@ app.get("/api/hitsales/lists/:userId/:saleId", (req, res) => {
 });
 
 const loadListNotes = () => import("./hitsales/listNotes.mjs");
+const loadListVersions = () => import("./hitsales/listVersions.mjs");
 
 /**
  * Save a user's list for a sale. The lots and categories are the save's; the
@@ -391,6 +409,25 @@ app.put("/api/hitsales/lists/:userId/:saleId", express.json({ limit: "2mb" }), a
     }
 
     const { list, changes } = mergeListNotes(stored, incoming, { now: new Date().toISOString(), pastTexts });
+
+    // The copy this save replaces, kept as a version when it is due one.
+    // Never in the way of the save: a version not kept is logged, not refused.
+    try {
+      const { keepVersion, versionSummary, KEEP_VERSIONS } = await loadListVersions();
+      const [last] = await q("SELECT saved_at FROM hit_sale_list_versions WHERE user_id = ? AND sale_id = ? ORDER BY id DESC LIMIT 1", [userId, saleId]);
+      if (keepVersion(last ? last.saved_at : null, stored, list)) {
+        await q("INSERT INTO hit_sale_list_versions (user_id, sale_id, list, lots, summary) VALUES (?, ?, ?, ?, ?)",
+          [userId, saleId, JSON.stringify(stored), Array.isArray(stored.entries) ? stored.entries.length : 0, versionSummary(stored)]);
+        await q(
+          `DELETE FROM hit_sale_list_versions WHERE user_id = ? AND sale_id = ? AND id < (
+             SELECT id FROM (SELECT id FROM hit_sale_list_versions WHERE user_id = ? AND sale_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?) t)`,
+          [userId, saleId, userId, saleId, KEEP_VERSIONS - 1],
+        );
+      }
+    } catch (err) {
+      console.error("[hitsales] list version not kept:", err.message);
+    }
+
     await q(
       `INSERT INTO hit_sale_lists (user_id, sale_id, list) VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE list = VALUES(list)`,
@@ -434,6 +471,35 @@ app.get("/api/hitsales/note-history/:userId/:saleId", (req, res) => {
     (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ data: rows.map((r) => ({ lot: r.lot, note: r.note, notedAt: r.noted_at, savedAt: r.saved_at })) });
+    }
+  );
+});
+
+// The versions kept of a user's list for a sale, newest first: when, and
+// what was on it, without the lists themselves.
+app.get("/api/hitsales/list-versions/:userId/:saleId", (req, res) => {
+  db.query(
+    `SELECT id, lots, summary, saved_at FROM hit_sale_list_versions
+      WHERE user_id = ? AND sale_id = ? ORDER BY id DESC LIMIT 100`,
+    [String(req.params.userId), String(req.params.saleId)],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ data: rows.map((r) => ({ id: r.id, lots: r.lots, summary: r.summary, savedAt: r.saved_at })) });
+    }
+  );
+});
+
+// One version, the list as it was, for the site to put back (by saving it).
+app.get("/api/hitsales/list-versions/:userId/:saleId/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "A version id is required." });
+  db.query(
+    "SELECT id, list, saved_at FROM hit_sale_list_versions WHERE user_id = ? AND sale_id = ? AND id = ?",
+    [String(req.params.userId), String(req.params.saleId), id],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!rows.length) return res.status(404).json({ error: "No such version." });
+      res.json({ data: parseJsonCol(rows[0].list), id: rows[0].id, savedAt: rows[0].saved_at });
     }
   );
 });
