@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { describe, pickOwnRow, quantile, studBookName, summariseHorse } from "./mating.mjs";
+import { FLAT_RUN, HORSE_SUMMARY_SELECT, describe, pickOwnRow, quantile, studBookName, summariseHorse } from "./mating.mjs";
 
 test("a name is written the way the results table writes it", () => {
   assert.equal(studBookName("=Frankel (GB)"), "FRANKEL");
@@ -19,6 +19,32 @@ test("a horse's best figure is the higher of its two scales, and 999 never reach
   assert.equal(h.foalingYear, 2019);
   const unrated = summariseHorse({ horseName: "Y", bestMaster: null, bestPerformance: null });
   assert.equal(unrated.best, null);
+});
+
+test("a figure earned over jumps is kept apart from the flat one, never mixed into it", () => {
+  // Kala Conti: one chase at Sandown, performance 136. On the flat she is
+  // unrated, and the summary says so rather than calling her a champion.
+  const chaser = summariseHorse({ horseName: "KALA CONTI", bestMaster: null, bestPerformance: null, bestJumps: 136, runs: 1, flatRuns: 0 });
+  assert.equal(chaser.best, null);
+  assert.equal(chaser.bestJumps, 136);
+  assert.equal(chaser.flatRuns, 0);
+  const both = summariseHorse({ horseName: "Z", bestMaster: 98, bestPerformance: 95, bestJumps: 140, runs: 9, flatRuns: 6 });
+  assert.equal(both.best, 98);
+  assert.equal(both.bestJumps, 140);
+  // A row from a select without the column (older callers) leaves it unknown.
+  assert.equal(summariseHorse({ horseName: "W", bestMaster: 80 }).flatRuns, null);
+});
+
+test("the summary reads its flat figures from flat runs only, and the jumps figure from the rest", () => {
+  assert.match(FLAT_RUN, /raceType = 'Flat'/);
+  assert.match(FLAT_RUN, /raceType IS NULL/);
+  const master = /MAX\(CASE WHEN \(raceType IS NULL OR raceType = '' OR raceType = 'Flat'\) AND preRaceMasterRating BETWEEN 1 AND 140 THEN preRaceMasterRating END\) AS bestMaster/;
+  const perf = /MAX\(CASE WHEN \(raceType IS NULL OR raceType = '' OR raceType = 'Flat'\) AND performanceRating\s+BETWEEN 1 AND 140 THEN performanceRating\s+END\) AS bestPerformance/;
+  assert.match(HORSE_SUMMARY_SELECT, master);
+  assert.match(HORSE_SUMMARY_SELECT, perf);
+  assert.match(HORSE_SUMMARY_SELECT, /MAX\(CASE WHEN NOT \(raceType IS NULL OR raceType = '' OR raceType = 'Flat'\) THEN GREATEST\(/);
+  assert.match(HORSE_SUMMARY_SELECT, /AS bestJumps/);
+  assert.match(HORSE_SUMMARY_SELECT, /SUM\(CASE WHEN \(raceType IS NULL OR raceType = '' OR raceType = 'Flat'\) THEN 1 ELSE 0 END\) AS flatRuns/);
 });
 
 test("quantiles interpolate and an empty group has none", () => {
