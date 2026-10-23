@@ -8636,6 +8636,15 @@ app.get("/api/breeding/family", async (req, res) => {
       secondDam ? horsesWhere("damName = ?", [secondDam], 80).catch(() => empty) : Promise.resolve(empty),
       secondDam ? horsesWhere("horseName = ?", [secondDam], 5).catch(() => empty) : Promise.resolve(empty),
     ]);
+    // The desk's own ratings over her produce, as every other read of it:
+    // the report's family panel showed Sumaco unrated beside a mare reading
+    // that counted his 96.
+    try {
+      const { applyDeskRatings } = await loadFoals();
+      applyDeskRatings(produce.horses, await deskRatingsFor(dam), studBookName);
+    } catch (err) {
+      console.warn("family: desk ratings not read:", err.message);
+    }
     const secondDamRow = pickOwnRow(secondDamRows.horses, {});
     const thirdDam = secondDamRow?.dam ? studBookName(secondDamRow.dam) : null;
     const [auntsUncles, thirdDamRows] = await Promise.all([
