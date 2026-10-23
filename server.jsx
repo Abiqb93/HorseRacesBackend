@@ -7354,12 +7354,9 @@ function measureBaseline({ hint = "/*+ MAX_EXECUTION_TIME(120000) */" } = {}) {
   return breedingBaselineInFlight;
 }
 
-// A server with nothing kept measures once, a few minutes after it starts.
-setTimeout(() => {
-  populationBaseline()
-    .then((p) => (p?.measured ? null : loadSummaries().then(({ BASELINE_HINT }) => measureBaseline({ hint: BASELINE_HINT }))))
-    .catch((err) => console.warn("breeding baseline at start:", err.message));
-}, 3 * 60 * 1000).unref?.();
+// Never at a start either: the pass measured after a daytime redeploy
+// starved every other read for a quarter of an hour — a mare's plan timed
+// out, the held charts took a minute to list. The night has it.
 
 let storedBaselineRead = false;
 async function populationBaseline() {
@@ -7511,10 +7508,16 @@ async function readGroupLive(kind, key, hint) {
  */
 const backgroundBuilds = new Set();
 let backgroundChain = Promise.resolve();
+// A pool of a hundred and twenty sires asked for while the database is slow
+// is a hundred and twenty timeouts, and a queue that re-read them all at
+// once would keep it slow; so the queue is short (the night has the rest)
+// and rests a minute after a read of its own runs out of time.
+const BACKGROUND_QUEUE_MAX = 25;
+const BACKGROUND_REST_MS = 60 * 1000;
 function buildInBackground(kind, keys) {
   for (const key of keys) {
     const id = `${kind}|${key}`;
-    if (!key || backgroundBuilds.has(id)) continue;
+    if (!key || backgroundBuilds.has(id) || backgroundBuilds.size >= BACKGROUND_QUEUE_MAX) continue;
     backgroundBuilds.add(id);
     backgroundChain = backgroundChain
       .then(async () => {
@@ -7524,6 +7527,7 @@ function buildInBackground(kind, keys) {
         const got = await readGroupLive(kind, key, BACKGROUND_HINT);
         keepGroup(kind, key, got);
         if (!got.timedOut && kind === "sire") sireRatingsCache.delete(key);
+        if (got.timedOut) await new Promise((r) => setTimeout(r, BACKGROUND_REST_MS));
       })
       .catch((err) => console.warn(`summaries: background ${kind} ${key} failed:`, err.message))
       .finally(() => backgroundBuilds.delete(id));
