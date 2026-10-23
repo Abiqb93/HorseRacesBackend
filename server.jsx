@@ -7282,6 +7282,11 @@ async function worldwideWhere(where, params, limit = 5000) {
     );
     return rows.map(summariseWorldwide).sort((a, b) => classScore(b) - classScore(a));
   } catch (err) {
+    // A read that ran out of time is not an empty group: Frankel's runners
+    // read as none on 23 October and his black-type chance as 1.7%, below
+    // the population, on a page that had every other figure. The section
+    // is left out instead (the caller says so), never faked from nothing.
+    if (isQueryTimeout(err)) throw err;
     // Before the first fill the table may not exist; the response then
     // carries no worldwide section rather than failing the request.
     console.warn("breeding worldwide read failed:", err.message);
@@ -7541,12 +7546,22 @@ async function populationBaseline() {
   // a few minutes after it starts.
   if (breedingBaseline) return breedingBaseline.value;
   // A fallback that says it is one. `measured: false` tells the page to say
-  // so, and the figures are the last measurement rather than a guess: on 12
-  // September 2026 the query counted 38,596 horses that had run in the two
-  // seasons before, mean 85.3, standard deviation 23.6. The first version
-  // guessed 68, which was fifteen points low and would have flattered every
-  // sire effect until the measurement replaced it.
-  return { n: 0, mean: 85.3, sd: 23.6, since: null, measured: false, pending: true };
+  // so, and the figures are the last measurement rather than a guess: on 23
+  // October 2026 the flat-only pass counted 28,455 horses that had run in
+  // the two seasons before, mean 80.0, standard deviation 21.9, median 80,
+  // the top 3% from 117, the top 10% from 109, the top 20% from 101, the
+  // top half from 81. (September's 85.3 was measured before ratings were
+  // restricted to the flat, with jumps figures in it.)
+  return {
+    n: 0,
+    mean: 80.0,
+    sd: 21.9,
+    median: 80,
+    grades: { "A+": 117, A: 109, B: 101, C: 81 },
+    since: null,
+    measured: false,
+    pending: true,
+  };
 }
 
 /**

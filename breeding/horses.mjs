@@ -156,10 +156,45 @@ export async function* readCrop(file) {
  * summary; never throws on a bad row — one unreadable line is one horse
  * missing, not a boot failure.
  */
+/**
+ * The indexes every read of the file uses: a stallion's runners by
+ * `sire_key`, a mare's produce and a damsire's daughters' produce by
+ * `dam_key`, a horse by `horse_name`. Without them each read was a walk of
+ * 463,000 rows under a nine-second cap, which on a busy database ran out
+ * of time and came back as "no runners" — Frankel's black-type chance read
+ * 1.7% for a minute on 23 October. Added once, where missing, after the
+ * table is full; a few seconds each.
+ */
+export const INDEXES = [
+  ["idx_bh_sire", "sire_key"],
+  ["idx_bh_dam", "dam_key"],
+  ["idx_bh_name", "horse_name"],
+];
+
+export async function ensureWorldwideIndexes(runQuery, { log = console } = {}) {
+  const rows = await runQuery(
+    `SELECT DISTINCT INDEX_NAME AS name FROM INFORMATION_SCHEMA.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+    [TABLE],
+  );
+  const have = new Set((rows ?? []).map((r) => String(r.name)));
+  const added = [];
+  for (const [name, column] of INDEXES) {
+    if (have.has(name)) continue;
+    await runQuery(`ALTER TABLE ${TABLE} ADD INDEX ${name} (${column})`, []);
+    added.push(name);
+    log.log(`breeding horses: index ${name} on ${column} added`);
+  }
+  return { added, have: [...have] };
+}
+
 export async function ensureWorldwideHorses(runQuery, { log = console, batch = 500 } = {}) {
   await runQuery(CREATE_TABLE_SQL, []);
   const [{ n }] = await runQuery(`SELECT COUNT(*) AS n FROM ${TABLE}`, []);
-  if (Number(n) >= EXPECTED_ROWS) return { filled: false, rows: Number(n) };
+  if (Number(n) >= EXPECTED_ROWS) {
+    await ensureWorldwideIndexes(runQuery, { log }).catch((err) => log.warn(`breeding horses: indexes not ensured: ${err.message}`));
+    return { filled: false, rows: Number(n) };
+  }
 
   log.log(`breeding horses: table holds ${n}, filling from ${DATA_DIR}`);
   const files = (await readdir(DATA_DIR)).filter((f) => /^horses-\d{4}\.csv\.gz$/.test(f)).sort();
@@ -189,6 +224,7 @@ export async function ensureWorldwideHorses(runQuery, { log = console, batch = 5
     log.log(`breeding horses: ${f} done, ${inserted} rows sent`);
   }
   const [{ n: after }] = await runQuery(`SELECT COUNT(*) AS n FROM ${TABLE}`, []);
+  await ensureWorldwideIndexes(runQuery, { log }).catch((err) => log.warn(`breeding horses: indexes not ensured: ${err.message}`));
   log.log(`breeding horses: table holds ${after}`);
   return { filled: true, rows: Number(after), sent: inserted };
 }
