@@ -5,7 +5,7 @@
  * The cache was filled from Equineline, through a scraper whose key the
  * source now rejects; until it is replaced nothing new can be fetched that
  * way. Arion holds the same five generations — the 5x5 grid is one HTML
- * table with all 62 ancestors — and the desk's subscription is not metered,
+ * table with all 62 ancestors — and the user's subscription is not metered,
  * so a mare's chart can come from there instead, in about ten seconds.
  *
  * What the grid has that Equineline's record has not: nothing. What it

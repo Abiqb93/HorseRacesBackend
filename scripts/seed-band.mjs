@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Put a bloodstock desk's own mating pack into a user's band.
+ * Put a bloodstock team's own mating pack into a user's band.
  *
- * A mating pack is a client's whole broodmare band as the desk works it: an
+ * A mating pack is a client's whole broodmare band as the user works it: an
  * index of who is in foal to what and when she was last served, a two-page
  * report per mare, and a list of which stallions were considered and ruled
  * out. This reads one of those, transcribed to JSON, and writes it through
@@ -100,7 +100,7 @@ async function api(method, route, body) {
  * pack, so the script accepts either rather than making a transcriber conform
  * to a shape they cannot see the reason for.
  *
- * Where a pack carries more than one plan for the season, the desk's own
+ * Where a pack carries more than one plan for the season, the user's own
  * report wins: it is the document the client was sent.
  */
 export function normaliseMare(raw = {}) {
@@ -281,7 +281,7 @@ async function main() {
         );
       }
       if (prefs.length || entry.analysis) {
-        // A plan already written is not overwritten: the desk may have edited
+        // A plan already written is not overwritten: the user may have edited
         // it, and this script cannot tell its own last run from their work.
         const already = await api("GET", `/api/mares/${encodeURIComponent(userId)}/${id}/plans/${season}`).catch(() => null);
         if (already?.plan) {

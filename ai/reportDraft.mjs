@@ -1,7 +1,7 @@
 /**
  * A first draft of a mating report's four paragraphs.
  *
- * The desk writes these and will go on writing them. What this does is turn
+ * The user writes these and will go on writing them. What this does is turn
  * the figures already assembled for the report, plus whatever the agent has
  * jotted down, into prose in the house idiom — so the box opens with
  * something to argue with rather than a cursor.
@@ -40,7 +40,7 @@ const text = (v) => String(v ?? "").trim();
 /**
  * The house style, taught by example rather than description.
  *
- * The examples are real paragraphs from the desk's own reports, which is the
+ * The examples are real paragraphs from the user's own reports, which is the
  * only way to convey "i/f", "lsd", "SWs to foals", "the cross", and the habit
  * of naming the horse behind every statistic.
  */
@@ -56,7 +56,7 @@ Every number you write must appear in the STATS or NOTES you are given. You may 
   - name a horse as a stakes winner, a Group winner or a relative unless it is named as one in what you were given.
 Where a figure would help and is not there, say what is not on file — "there is nothing on the cross in our data" — and move on. A short paragraph resting on what is known beats a long one that reads well and cannot be checked.
 
-Our own cross figures count RUNNERS, not foals. Write "4 SWs from 40 runners", never "from 40 foals". Where a figure is labelled as coming from the desk's own notes rather than our data, you may quote it as the notes have it.
+Our own cross figures count RUNNERS, not foals. Write "4 SWs from 40 runners", never "from 40 foals". Where a figure is labelled as coming from your own notes rather than our data, you may quote it as the notes have it.
 
 ## The four sections
 

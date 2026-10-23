@@ -19,7 +19,7 @@
  * The same pass measures the population — every horse that ran in the last
  * two seasons, by its best flat figure — as a histogram, so the grades can
  * be set at the population's own percentiles (an A+ is the top 3% of rated
- * horses, as the desk defines it) rather than at fixed figures, and keeps
+ * horses, as the user defines it) rather than at fixed figures, and keeps
  * the result in a table so a redeploy does not lose it.
  *
  * Pure where it can be: the SQL, the freshness rule, the histogram
@@ -212,7 +212,7 @@ export const baselineHistogramSql = (flatRun, hint = "") => `
    ORDER BY best`;
 
 /**
- * The grades' lines on the population, as the desk defines them: an A+ is
+ * The grades' lines on the population, as the user defines them: an A+ is
  * the top 3% of rated horses, an A the top 10%, a B the top 20%, a C the
  * top half; the rest is a D. Each is the lowest figure whose share from the
  * top is still inside the band.

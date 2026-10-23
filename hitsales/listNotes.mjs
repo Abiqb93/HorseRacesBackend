@@ -11,7 +11,7 @@
  * running the build from before notes were kept apart from the list — where
  * taking a horse off the list also deleted its note.
  *
- * The desk's rule: a note a user has saved is never lost unless that user
+ * The user's rule: a note a user has saved is never lost unless that user
  * deletes or edits it — and taking a horse off the list is neither.
  *
  * So the notes in a save are merged into the stored ones, lot by lot:
@@ -157,7 +157,7 @@ export function mergeListNotes(stored, incoming, { now = new Date().toISOString(
   else delete list.lotClientNotes;
   if (Object.keys(client.times).length) list.lotClientNotesAt = client.times;
   else delete list.lotClientNotesAt;
-  // The desk's hand-set checks, by the notes' rule: the later setting of each
+  // The user's hand-set checks, by the notes' rule: the later setting of each
   // wins, and one the save does not mention is kept.
   const lotFlags = mergeLotFlags(stored?.lotFlags, incoming?.lotFlags);
   if (Object.keys(lotFlags).length) list.lotFlags = lotFlags;
@@ -208,9 +208,9 @@ export function mergeClientNotes(stored, incoming, { timed = isObject(incoming?.
 }
 
 /**
- * The checks the desk sets by hand on a lot (the site's src/utils/hitChecks.js
+ * The checks the user sets by hand on a lot (the site's src/utils/hitChecks.js
  * and hitLists.lotFlags): lot -> check -> { v, at }, where `v` is one of the
- * five values the desk's sheets use or "" for a check cleared back to its
+ * five values the user's sheets use or "" for a check cleared back to its
  * rule. Merged like the notes: for each check the later `at` wins, and a
  * check one copy does not mention is kept from the other. A page from before
  * checks existed sends none, and so removes none.
@@ -284,7 +284,7 @@ export function mergeClientStates(stored, incoming) {
 
 /**
  * The lots on a list and its categories, merged lot by lot and category by
- * category (the desk, 21 October 2026: selections made offline on the sales
+ * category (21 October 2026: selections made offline on the sales
  * ground, synced when the iPad finds wifi; the site's hitLists.mergeNotes).
  * A save from the current site carries `entryEdits` (lot -> when its entry
  * was last added, changed or taken off) and `categoryEdits` (category id ->

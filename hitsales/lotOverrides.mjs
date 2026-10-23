@@ -1,10 +1,10 @@
 /**
- * The desk's own data on a lot: figures it has checked by hand and links it
- * wants to hand (the desk, 16 October 2026: "German and French horses…
+ * The user's own data on a lot: figures it has checked by hand and links it
+ * wants to hand (16 October 2026: "German and French horses…
  * can I add in a link… manually update data on these horses so that it's
  * done once and then it overrides whatever else is there").
  *
- * One record per (sale, lot), shared by the whole desk — a correction is
+ * One record per (sale, lot), shared by everyone — a correction is
  * a fact about the horse, not one user's view — shaped
  *
  *   { fields: { <key>: <value> }, links: [{ label, url }], by, at }
@@ -25,7 +25,7 @@ const cleanUrl = (u) => {
   return s;
 };
 
-/** The links as the desk typed them, kept only where the url is a web address. */
+/** The links as the user typed them, kept only where the url is a web address. */
 export function cleanLinks(links) {
   if (!Array.isArray(links)) return [];
   const out = [];

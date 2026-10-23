@@ -208,7 +208,7 @@ test("a subject too short to mean anything is refused rather than matching every
   assert.equal(db.calls.length, 0, "it should not have queried at all");
 });
 
-test("no subject asks what the desk has been asking generally", async () => {
+test("no subject asks what the user has been asking generally", async () => {
   const db = paramDb();
   await teamCall({}, db, "Richard");
   assert.ok(!db.calls[0].sql.includes("LIKE"));
@@ -319,7 +319,7 @@ test("every dataset path is one that exists on the site", async () => {
   assert.equal(AI_DATASETS["hit-sale-arc"][0], "/data/hitsales/arc-sale-2026/index.json");
 });
 
-test("the assistant can reach the desk's own working lists", async () => {
+test("the assistant can reach the user's own working lists", async () => {
   // The Review List, the Client List and the notification history are what the
   // product is for, and none of them were reachable: they route through
   // hand-written endpoints, so they were absent from the generic /api/:table

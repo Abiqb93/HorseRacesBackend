@@ -34,7 +34,7 @@ test("the country and the sire tell namesakes of a year apart, and a colt is nev
   assert.equal(pickHers([{ name: "X", foaling_year: 2022, sex: "Mare" }], { horse_name: "X", foaling_year: 2022 }), null);
 });
 
-test("a failure is described in the desk's words, and the rejected key by name", () => {
+test("a failure is described in the user's words, and the rejected key by name", () => {
   assert.match(describeFailure({ rejectedKey: true, unconfigured: true, message: "x" }), /PARSE_API_KEY/);
   assert.equal(describeFailure(new Error("get_pedigree: No horse matched")), "No horse matched");
   assert.match(describeFailure({ blocked: true, message: "upstream returned HTTP 429" }), /throttling/);
@@ -116,7 +116,7 @@ test("a name the source cannot settle is settled by her year, and fetched by tha
   assert.deepEqual(asks[1], { name: "Antisana", year: 2015, ref: "9924938" });
 });
 
-test("a name the source cannot settle and her year cannot either is left for the desk, with the choices", async () => {
+test("a name the source cannot settle and her year cannot either is left for the user, with the choices", async () => {
   const amb = Object.assign(new Error("2 horses matched; disambiguate with reference_number"), { ambiguous: true, count: 2, matches: ANTISANA });
   const { fake, calls } = harness({ answers: { "name:Antisana": amb } });
   const f = createMareFetcher(fake);
@@ -126,7 +126,7 @@ test("a name the source cannot settle and her year cannot either is left for the
   assert.equal(s.state, "ambiguous");
   assert.equal(s.matches.length, 2);
   assert.equal(calls.filter((c) => c.getPedigree).length, 1, "nothing is guessed at");
-  // the desk picks one, and the fetch runs with it
+  // the user picks one, and the fetch runs with it
   Object.assign(fake, { loadClient: async () => ({ getPedigree: async (ask) => (calls.push({ getPedigree: ask }), payload(15240, "Antisana", "May 1,1933")) }) });
   const g = createMareFetcher(fake);
   assert.equal(await g.queue({ id: 7, horse_name: "Antisana", foaling_year: null }, { ref: "15240" }), "pending");
@@ -135,7 +135,7 @@ test("a name the source cannot settle and her year cannot either is left for the
   assert.equal(g.statusOf(7).reference, "15240");
 });
 
-test("a failure is kept, in the desk's words, and the add is never failed by it", async () => {
+test("a failure is kept, in the user's words, and the add is never failed by it", async () => {
   const { fake } = harness({ answers: {} }); // the source matches nothing
   const f = createMareFetcher(fake);
   assert.equal(await f.queue({ id: 9, horse_name: "Nobody", foaling_year: 2010 }), "pending");
@@ -259,7 +259,7 @@ test("without Arion wired, a server behaves as before: the scraper's failure is 
   assert.equal(f.statusOf(45).rejectedKey, true);
 });
 
-test("a name neither source can settle is left for the desk with Equineline's choices, which carry references", async () => {
+test("a name neither source can settle is left for the user with Equineline's choices, which carry references", async () => {
   const amb = Object.assign(new Error("2 horses matched; disambiguate with reference_number"), { ambiguous: true, count: 2, matches: ANTISANA });
   const arionAmb = Object.assign(new Error("Arion lists 2 horses called Antisana"), { ambiguous: true, count: 2, matches: [{ name: "Antisana (GB)", reference_number: null }] });
   const { fake } = harness({ answers: { "name:Antisana": amb } });

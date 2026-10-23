@@ -1,7 +1,7 @@
 /**
  * The sale catalogue's pedigree pages, relayed so they open in a browser.
  *
- * The desk, 1 October 2026 (a screen recording): clicking a lot's "Pedigree
+ * 1 October 2026 (a screen recording): clicking a lot's "Pedigree
  * page" downloaded 379.pdf instead of showing it. Tattersalls serves its
  * catalogue pages with `Content-Disposition: attachment`, so a browser saves
  * them rather than opening them; and neither Tattersalls nor Arqana sends CORS

@@ -35,7 +35,7 @@ export const WEB_FETCH_MAX_CONTENT_TOKENS = 20_000;
  * here. Direct calls keep every result in front of the model and every claim
  * citable.
  *
- * Results are localised to Britain: the desk works the British, Irish and
+ * Results are localised to Britain: the user works the British, Irish and
  * French markets, and "Kodiac fee" should find Tally-Ho before a namesake.
  */
 const DEFINITIONS = {

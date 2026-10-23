@@ -1,7 +1,7 @@
 /**
  * Arion's pedigree reports, searched and bought from inside the site.
  *
- * The desk holds an annual Arion subscription (arion.co.nz): catalogue-style
+ * The user holds an annual Arion subscription (arion.co.nz): catalogue-style
  * pedigree pages, standard pedigrees, pedigree grids and the rest, each
  * priced in credits (1 credit = NZ$1). Until now a report meant leaving the
  * site, logging in to Arion and searching for the horse again. This drives
@@ -45,7 +45,7 @@
  *
  * ## What a report costs
  *
- * Nothing. The desk's Arion subscription is not metered, so neither searching
+ * Nothing. The user's Arion subscription is not metered, so neither searching
  * nor making a report is charged, and there is no price to confirm. Arion's
  * own list price is still read from the General tab of the same page (REPORTS
  * below until then) because it is real and worth knowing, but nothing in this
@@ -552,7 +552,7 @@ export function createClient({
   const files = new Map(); // id -> { url, label, at, type, body }: body when the session fetched it
   let listed = null; // { got, at }: Arion's own list, as last walked whole
   const day = { date: today(), count: 0 };
-  // Not a credit cap: the desk's Arion subscription is not metered, so a
+  // Not a credit cap: the user's Arion subscription is not metered, so a
   // report costs nothing to make. This is the stop on a runaway loop — a
   // retry that never gives up, a page that re-requests on every render —
   // hammering someone else's site. Set well above any real day's work.
@@ -574,9 +574,9 @@ export function createClient({
   };
 
   /**
-   * How many reports the desk has bought today, and the spending of one more.
+   * How many reports the user has bought today, and the spending of one more.
    *
-   * `day` lives in this process alone, so a restart used to hand the desk a
+   * `day` lives in this process alone, so a restart used to hand the user a
    * fresh allowance however much it had spent. `store`, when the server passes
    * one, keeps the count somewhere a restart cannot reach.
    *
@@ -778,7 +778,7 @@ export function createClient({
   /**
    * Put a report, and the files the session fetched for it, where a restart
    * cannot reach them. `report` is null for a file opened from Arion's own
-   * list. It never fails what it records: the desk has its report either way,
+   * list. It never fails what it records: the user has its report either way,
    * and the log says what was not kept.
    */
   async function keep(report, got, handed) {
@@ -877,7 +877,7 @@ export function createClient({
           };
         }
         // If the page knew a year or a country, say which one it means; the
-        // desk still gets the whole list to choose from.
+        // user still gets the whole list to choose from.
         //
         // On a mating Arion has already been through the sire, so this list
         // is the dams and the year and country — the mare's — are exactly
@@ -907,7 +907,7 @@ export function createClient({
     /**
      * Make one report for one horse Arion listed.
      *
-     * The desk's subscription is not metered, so there is no price to confirm
+     * The user's subscription is not metered, so there is no price to confirm
      * and nothing to spend. What is still refused: a token Arion never
      * confirmed a horse for, a token from My Reports (already made), and a
      * day that has run past LIMIT, which stops a loop rather than a bill.
@@ -942,7 +942,7 @@ export function createClient({
 
         await spend();
         picks.delete(String(t));
-        // A mating is named by both its parents. The file is what the desk
+        // A mating is named by both its parents. The file is what the user
         // keeps and sends on, so its name has to say which foal it describes
         // — "Lady Vivian (IRE) 2022" alone names the mare, not the mating.
         const subject = pick.sire ? `${pick.sire.label} × ${horse.label}` : horse.label;
@@ -1081,7 +1081,7 @@ export function createClient({
     },
 
     /**
-     * Launch and sign in ahead of the desk's first search, so it happens while
+     * Launch and sign in ahead of the user's first search, so it happens while
      * they type. Nothing is searched or made; a browser already kept is left
      * as it is.
      */

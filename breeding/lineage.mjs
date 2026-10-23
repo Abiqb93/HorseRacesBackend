@@ -3,7 +3,7 @@
  *
  * `nick_stats` answers one question — how a sire's runners have gone out of a
  * damsire's daughters — and it answers it from a single generation on each
- * side. Two of the things the desk asks for need more than that: which stakes
+ * side. Two of the things the user asks for need more than that: which stakes
  * winners share a theoretical foal's pedigree, and how the twenty
  * four-generation crosses behind that foal have actually performed. Both need
  * a pedigree, and for most horses we hold no chart.

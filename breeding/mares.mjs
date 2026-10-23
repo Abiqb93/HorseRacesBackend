@@ -3,7 +3,7 @@
  *
  * `my_mares` already held a mare's identity — who she is, who her parents
  * are, and the stud book reference that lets a pedigree be fetched for her.
- * What a bloodstock desk actually works from is three things that identity
+ * What a bloodstock team actually works from is three things that identity
  * cannot carry:
  *
  *   the band     whose mares these are, and where each one stands
@@ -21,7 +21,7 @@
  *
  * `mare_seasons.season = 2026` is the year she was covered in, so her foal
  * arrives in 2027. `foaled_date` on that same row is the foal born in 2026 —
- * the produce of the *previous* year's cover. This is how the desk's own
+ * the produce of the *previous* year's cover. This is how the user's own
  * index reads ("Foaled 2026" beside "2026 MATING PLAN") and getting it
  * backwards would silently misdate every mare in the band.
  *
@@ -45,7 +45,7 @@
 export const MARE_COLUMNS = {
   damsire_name: "VARCHAR(191) NULL",
   // The band. A client's mares are grouped by this and nothing else; the name
-  // matches bloodstock_clients.name where the desk keeps a client there.
+  // matches bloodstock_clients.name where the user keeps a client there.
   client_name: "VARCHAR(255) NULL",
   client_id: "INT NULL",
   // Where she stands — a stud farm, not a country. country_code already holds
@@ -200,7 +200,7 @@ const MONTHS = {
  * Four forms appear in one document: "24 Feb 26", "25 Mar 2026", "07.02.26"
  * and "2026-02-24". A two-digit year is this century — these are service and
  * foaling dates for a season in hand, never 1926 — and a day-first reading is
- * forced, because "07.02.26" is the seventh of February to a British desk and
+ * forced, because "07.02.26" is the seventh of February to a British reader and
  * nothing in the string says so.
  */
 export function parseDate(raw) {
@@ -229,7 +229,7 @@ function isoOf(day, month, year) {
   return `${y}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-/** The short form the desk writes a service date in: 24/02/26. */
+/** The short form the user writes a service date in: 24/02/26. */
 export const shortDate = (iso) => {
   const m = String(iso ?? "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
   return m ? `${m[3]}/${m[2]}/${m[1].slice(2)}` : null;
@@ -249,7 +249,7 @@ export const STATUSES = ["in_foal", "not_in_foal", "maiden", "barren", "slipped"
  *   "In foal" + a separate LSD column     the index's form
  *
  * "Barren" and "not in foal" are the same fact from two documents and are
- * kept apart deliberately: the desk writes BARREN when she was covered and
+ * kept apart deliberately: the user writes BARREN when she was covered and
  * failed, and the index writes "Not in foal" for the same mare. Both map to
  * `barren` when a covering sire is named, because that is the fact — she went
  * to a stallion and is empty.
@@ -298,7 +298,7 @@ export function parseStatus(raw) {
   return out.status || out.lastServiceDate ? out : null;
 }
 
-/** The inverse: how the desk writes a season back out. */
+/** The inverse: how the user writes a season back out. */
 export function statusLine({ status, coveringSire, lastServiceDate } = {}) {
   if (status === "maiden") return "MAIDEN";
   if (status === "barren") return coveringSire ? `BARREN (to ${titleCase(coveringSire)})` : "BARREN";
@@ -369,7 +369,7 @@ export function parseSuggestion(raw, { rank = 1, region = null, sameRank = false
  *
  * `1st preference USA: Not This Time` and `1st preference EU: Frankel` are
  * the same rank in two jurisdictions — a mare standing in Kentucky and one
- * coming home are different matings, and the desk writes both.
+ * coming home are different matings, and the user writes both.
  */
 export function parsePreferenceLines(lines = []) {
   const out = [];
@@ -424,7 +424,7 @@ export function seasonRowFrom(body = {}) {
 /**
  * A fixture row merged onto what the database already holds.
  *
- * The fixture wins, because it is the desk's own index and the database's
+ * The fixture wins, because it is the user's own index and the database's
  * copy came from a results feed that does not know a mare's parents when she
  * raced abroad. What the database holds and the fixture leaves blank is kept.
  */

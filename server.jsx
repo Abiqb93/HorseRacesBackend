@@ -300,7 +300,7 @@ db.query(
   (err) => { if (err) console.error("hit_sale_categories table check failed:", err.message); }
 );
 // A user's saved filters for the HIT catalogue: named sets of the filter
-// panel's filters, put back on with a click on any sale (the desk, 21 October
+// panel's filters, put back on with a click on any sale (21 October
 // 2026: "save that and say, right, that's Bahrain now"). Per user and not per
 // sale, like briefs; the frontend owns the shape (src/utils/hitSavedFilters.js).
 db.query(
@@ -313,7 +313,7 @@ db.query(
   )`,
   (err) => { if (err) console.error("hit_sale_filters table check failed:", err.message); }
 );
-// The desk's own data on a lot, shared by everyone: figures checked by hand
+// The user's own data on a lot, shared by everyone: figures checked by hand
 // and links to hand (a French or German horse's France Galop or
 // galopp-sieger page), one record per (sale, lot). The site and the nightly
 // build lay it over what the warehouse says (hitsales/lotOverrides.mjs).
@@ -516,7 +516,7 @@ app.delete("/api/hitsales/lists/:userId/:saleId", (req, res) => {
 });
 
 // Every user's list for one sale. Read by the daily sale mail, which sends
-// each user the horses on THEIR list — the desk-level read the client list
+// each user the horses on THEIR list — the user-level read the client list
 // and the review list already allow.
 app.get("/api/hitsales/sale-lists/:saleId", (req, res) => {
   db.query(
@@ -572,7 +572,7 @@ app.get("/api/hitsales/overrides/:saleId", (req, res) => {
 
 // One lot's override, laid over what is stored: fields given are set (null
 // clears one), fields not given stand, links given replace the links. Done
-// once, by anyone on the desk, it holds for everyone until changed again.
+// once, by anyone on the user, it holds for everyone until changed again.
 app.put("/api/hitsales/overrides/:saleId/:lot", express.json({ limit: "256kb" }), async (req, res) => {
   const body = req.body && typeof req.body === "object" ? req.body : {};
   const saleId = String(req.params.saleId);
@@ -5949,7 +5949,7 @@ app.get("/api/pedigree", async (req, res) => {
     // Arion's 5x5 grid, when Equineline will not answer for a named horse:
     // a rejected key, a throttle, or a horse the scraper does not find. Not
     // for a name the scraper could not settle (409): that choice is the
-    // desk's, and Arion would face the same namesakes.
+    // user's, and Arion would face the same namesakes.
     const country = (req.query.country ?? "").toString().trim() || null;
     const askedBy = (req.query.userId ?? "").toString().trim() || null;
     const viaArion = async (why) => {
@@ -6249,7 +6249,7 @@ app.get("/api/mares/search", (req, res) => {
  * One user's mares.
  *
  * Bare, this is the list the My Mares page has always read and the shape must
- * not change. With `?season=` it becomes the band index a bloodstock desk
+ * not change. With `?season=` it becomes the band index a bloodstock team
  * works from, and each mare carries three more things:
  *
  *   season     what happened in that covering year - who she went to,
@@ -6305,7 +6305,7 @@ app.get("/api/mares/:userId", async (req, res) => {
       // index has no reference at all, and the warming script that later
       // fetches her chart writes it into the cache under her name and year
       // without ever coming back to her row. So a band read on the reference
-      // alone reports "no chart" for every mare the desk has just spent a
+      // alone reports "no chart" for every mare the user has just spent a
       // night warming — which is the one moment the answer matters, because
       // it is what decides whether a report can draw a grid.
       //
@@ -6356,7 +6356,7 @@ app.get("/api/mares/:userId", async (req, res) => {
     // Adopt the reference onto the mare, once, so the link is exact from here
     // on and the next read does not have to match on a name at all. After the
     // response: the answer does not depend on the write, and a write that
-    // fails must not cost the desk its band.
+    // fails must not cost the user its band.
     const adopt = mares
       .filter((m) => !m.pedigree_reference && chartFor(m))
       .map((m) => [chartFor(m), m.id]);
@@ -6404,7 +6404,7 @@ app.get("/api/mares/:userId", async (req, res) => {
  * id; when it gives one and a yearless row exists, that row is adopted rather
  * than duplicated.
  *
- * **A seeded field must never blank a typed one.** Every column the desk can
+ * **A seeded field must never blank a typed one.** Every column the user can
  * edit is written with COALESCE(VALUES(x), x), so re-running an import fills
  * gaps and overwrites nothing with null.
  */
@@ -6437,7 +6437,7 @@ app.post("/api/mares", express.json(), async (req, res) => {
       (year === null ? existing[0] : null) ??
       null;
 
-    // The band's client id, where the desk keeps that client on the Client
+    // The band's client id, where the user keeps that client on the Client
     // List. Absent is fine: the name is what groups a band.
     let clientId = Number.isFinite(Number(b.clientId)) ? Number(b.clientId) : null;
     const clientName = str(b.clientName);
@@ -6762,7 +6762,7 @@ const planBody = (b = {}) => {
  * Write a new version of a plan.
  *
  * Always a new version, never an overwrite: version 1 is what was sent to the
- * client, and the desk changing its mind in March must not rewrite what they
+ * client, and the user changing its mind in March must not rewrite what they
  * read in January.
  */
 app.post("/api/mares/:userId/:id/plans/:season", express.json({ limit: "4mb" }), async (req, res) => {
@@ -6984,7 +6984,7 @@ app.post("/api/sires/distance-profiles", async (req, res) => {
 });
 
 // Fetch her pedigree again — after a failure, or with the reference of the
-// horse the desk picked when the source could not tell namesakes apart.
+// horse the user picked when the source could not tell namesakes apart.
 app.post("/api/mares/:userId/:id/pedigree", express.json(), async (req, res) => {
   try {
     const mine = await queryOne("SELECT id FROM my_mares WHERE user_id = ? AND id = ? LIMIT 1", [req.params.userId, req.params.id]);
@@ -7622,8 +7622,8 @@ function buildInBackground(kind, keys) {
 }
 
 /**
- * The desk's ratings for a mare's foals, by her name, from any list that
- * holds her: a figure the desk recorded for a foal our feed holds none for
+ * The user's ratings for a mare's foals, by her name, from any list that
+ * holds her: a figure the user recorded for a foal our feed holds none for
  * counts in her produce wherever her produce is read.
  */
 async function deskRatingsFor(dam) {
@@ -7970,7 +7970,7 @@ app.get("/api/breeding/report-data", async (req, res) => {
       out.push(block);
     }
 
-    // The desk's own ratings for her foals, where our feed holds none.
+    // The user's own ratings for her foals, where our feed holds none.
     if (mare) {
       try {
         const { applyDeskRatings, ensureFoalRating } = await loadFoals();
@@ -8015,12 +8015,12 @@ app.get("/api/breeding/report-data", async (req, res) => {
  * one more stallion adds one row to it. So mares come first, and among them
  * the ones with a plan already written, because those are the reports someone
  * is waiting to print. The warming script reads this rather than deciding for
- * itself, so the queue follows the desk's work.
+ * itself, so the queue follows the user's work.
  */
 app.get("/api/breeding/warm-targets", async (req, res) => {
   const userId = (req.query.userId ?? "").toString().trim();
   try {
-    // Every mare on the desk's list, not only the ones filed under a band.
+    // Every mare on the user's list, not only the ones filed under a band.
     // A mare with no client is still a mare whose report cannot be written,
     // and filtering her out here meant she was never once attempted — the
     // queue simply did not know she existed. Banded mares still come first,
@@ -8095,7 +8095,7 @@ app.get("/api/breeding/warm-targets", async (req, res) => {
 /**
  * A first draft of the four paragraphs, from the figures already on the page.
  *
- * The desk writes these, and will go on writing them: what this does is turn
+ * The user writes these, and will go on writing them: what this does is turn
  * a stats payload and a handful of the agent's own notes into prose in the
  * house idiom so there is something to edit rather than a blank box. It never
  * persists — the page saves the result through the plan routes, so an
@@ -8150,7 +8150,7 @@ async function sonsOf(key) {
 /**
  * What our data says about a cross.
  *
- * Three widths, because the desk's own reports quote three:
+ * Three widths, because the user's own reports quote three:
  *
  *   direct        Frankel over Kingman mares
  *   sireLine      Frankel over mares from Kingman's sire line
@@ -9213,7 +9213,7 @@ app.get("/api/breeding/impact-profile", async (req, res) => {
       // other's name is wrong. `direct` is those two horses exactly — Frankel
       // over Kingman's daughters — and is usually a handful of runners.
       // `line` widens both sides to the sons who stand as sires, which is the
-      // "more generally" figure the desk's own reports quote and the only one
+      // "more generally" figure the user's own reports quote and the only one
       // of the two with a sample worth an index.
       const direct = tally([crossBy.get(`${cell.sire}|${cell.damsire}`)]);
       const line = tally(sireLine.flatMap((a) => damLine.map((b) => crossBy.get(`${a}|${b}`))));
@@ -9261,7 +9261,7 @@ app.get("/api/breeding/impact-profile", async (req, res) => {
  * A pedigree typed in by hand.
  *
  * The upstream is the bottleneck and a mare it does not know is a mare no
- * report can be written for. The desk usually has her chart on paper; this
+ * report can be written for. The user usually has her chart on paper; this
  * takes it.
  *
  * Nothing is written until the caller has seen what was read — `dryRun`
@@ -15921,11 +15921,11 @@ const loadAiAgent = () => import("./ai/agent.mjs");
  * They get their own list rather than being appended to `validTables`, because
  * those two lists answer different questions. `validTables` is "what may anyone
  * fetch wholesale over REST"; this is "what may the assistant read on behalf of
- * a signed-in member of the desk". Widening the first to fix the second would
+ * a signed-in member of the user". Widening the first to fix the second would
  * have opened a public, unauthenticated route onto every user's client list.
  *
  * Note what this does and does not scope. The assistant reads these tables as
- * the desk, not as one user: it can see any user's tracker, review list or
+ * the user, not as one user: it can see any user's tracker, review list or
  * clients, in the same way that the sharing features already let colleagues see
  * each other's. It cannot write to any of them - `sqlGuard` allows SELECT and
  * nothing else.
@@ -15935,7 +15935,7 @@ const AI_EXTRA_TABLES = [
   "review_horses", "review_horse_actions", "review_conditions", "review_rule_preferences",
   // Client List
   "bloodstock_clients",
-  // What the desk has been told, and when
+  // What the user has been told, and when
   "notifications", "daily_notifications_all_users",
   // Entry feeds the generic route does not carry
   "DeclarationsTracking", "EntriesTracking",
@@ -15974,7 +15974,7 @@ app.get("/api/ai/status", async (req, res) => {
 
 /**
  * Every question put to BlandfordAI is written down, so the assistant can tell
- * one member of the desk that another has been asking about the same horse.
+ * one member of the user that another has been asking about the same horse.
  * That connection is the one thing it knows that the warehouse does not.
  */
 loadAiAgent()
@@ -16025,7 +16025,7 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
   }
 
   // Recorded before the turn runs, not after: a question that made the
-  // assistant fall over is still a question the desk asked, and losing it
+  // assistant fall over is still a question the user asked, and losing it
   // would leave a hole in exactly the conversations worth connecting.
   // Fire-and-forget - nobody's answer waits on the write, and a failure here
   // must never cost them the reply.
@@ -16121,12 +16121,12 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
 // ---------------------------------------------------------------------------
 // Arion - pedigree reports searched and bought without leaving the site.
 //
-// The desk's Arion subscription, driven from here with the company login
+// The user's Arion subscription, driven from here with the company login
 // (arion/client.mjs). The login lives only in this service's environment,
 // ARION_USERNAME and ARION_PASSWORD; without them /api/arion/status says so and
 // the site offers Arion's own page in a new tab instead.
 //
-// Nothing here is metered: the desk's Arion subscription covers searches and
+// Nothing here is metered: the user's Arion subscription covers searches and
 // reports alike, so there is no price to confirm. A report still needs a
 // registered platform user (or one of ARION_USERS, when that is set) and room
 // under ARION_DAILY_LIMIT (200), which stops something retrying in a loop
@@ -16138,7 +16138,7 @@ const loadArion = () => import("./arion/client.mjs");
 let arionClient = null;
 
 // The day's spend, kept out of process memory. The client used to count the
-// day's reports in a variable, so a Railway restart handed the desk a fresh
+// day's reports in a variable, so a Railway restart handed the user a fresh
 // 25 however much it had already spent. One row per day, written after each
 // report goes through.
 db.query(
@@ -16174,7 +16174,7 @@ const arionDayStore = {
 
 // Every report made through the site, and the files the browser fetched for
 // it. Arion's own My Reports barely keeps a Standard pedigree — one row in
-// 427 — so without this a report the desk made was gone the moment the page
+// 427 — so without this a report the user made was gone the moment the page
 // was reloaded, and its file with the next deploy.
 db.query(
   `CREATE TABLE IF NOT EXISTS arion_reports (
@@ -16304,7 +16304,7 @@ app.post("/api/arion/search", async (req, res) => {
   const { client } = await arion();
   // year and country come from whichever page linked here. A name is not a
   // horse — Arion holds two Starspangledbanners — so they say which one is
-  // meant; the whole list still comes back for the desk to choose from.
+  // meant; the whole list still comes back for the user to choose from.
   const { kind, name, sire, dam, year, country } = req.body ?? {};
   try {
     return res.json(await client.search({ kind, name, sire, dam, year: Number(year) || null, country: String(country ?? "").slice(0, 8) }));
@@ -16318,7 +16318,7 @@ app.post("/api/arion/report", async (req, res) => {
   // confirm and credits may still arrive from a site deployed before this
   // build; there is no price to confirm, so they are read and ignored
   const { token, reportId, userId } = req.body ?? {};
-  if (!(await arionBuyer(userId))) return res.status(403).json({ error: "Only a signed-in member of the desk can make Arion reports.", code: "buyer" });
+  if (!(await arionBuyer(userId))) return res.status(403).json({ error: "Only a signed-in member of you can make Arion reports.", code: "buyer" });
   try {
     const out = await client.report({ token, reportId, userId });
     console.log(`[arion] ${userId} made ${out.report.label} for ${out.horse}`);
@@ -16341,11 +16341,11 @@ app.get("/api/arion/my-reports", async (req, res) => {
   }
 });
 
-// The reports made through the site, from the record. A desk member's list,
+// The reports made through the site, from the record. A team member's list,
 // so it asks what making one asks: who is looking.
 app.get("/api/arion/my-reports/made", async (req, res) => {
   const { client } = await arion();
-  if (!(await arionBuyer(req.query.userId))) return res.status(403).json({ error: "Only a signed-in member of the desk can see the desk's Arion reports.", code: "buyer" });
+  if (!(await arionBuyer(req.query.userId))) return res.status(403).json({ error: "Only a signed-in member of you can see your Arion reports.", code: "buyer" });
   try {
     return res.json(await client.made({ limit: req.query.limit }));
   } catch (err) {
@@ -16354,11 +16354,11 @@ app.get("/api/arion/my-reports/made", async (req, res) => {
 });
 
 // Take a report off the list of those made here, with its files. Only the
-// desk member who made it can, and they are asked who they are the same way.
+// team member who made it can, and they are asked who they are the same way.
 app.delete("/api/arion/my-reports/made/:id", async (req, res) => {
   const { client } = await arion();
   const userId = req.query.userId ?? req.body?.userId;
-  if (!(await arionBuyer(userId))) return res.status(403).json({ error: "Only a signed-in member of the desk can remove the desk's Arion reports.", code: "buyer" });
+  if (!(await arionBuyer(userId))) return res.status(403).json({ error: "Only a signed-in member of you can remove your Arion reports.", code: "buyer" });
   try {
     return res.json(await client.forget({ id: req.params.id, userId }));
   } catch (err) {
@@ -16367,7 +16367,7 @@ app.delete("/api/arion/my-reports/made/:id", async (req, res) => {
 });
 
 // Launch and sign in to Arion ahead of the first search: the page asks as it
-// opens, so the ~8s this takes passes while the desk is still typing. It is
+// opens, so the ~8s this takes passes while the user is still typing. It is
 // answered at once and done in the background.
 app.post("/api/arion/warm", async (req, res) => {
   const { client } = await arion();

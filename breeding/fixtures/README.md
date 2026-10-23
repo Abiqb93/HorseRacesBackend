@@ -1,6 +1,6 @@
 # Band fixtures
 
-One file per client band, transcribed from the desk's own mating pack. The
+One file per client band, transcribed from your own mating pack. The
 pack is the source of record for identity — our results feed knows a mare's
 rating and the country she ran in, and is wrong or silent about her parents
 often enough that it cannot be trusted to name her.
@@ -24,7 +24,7 @@ often enough that it cannot be trusted to name her.
       "location": "Newsells",           // where she stands
       "physical": "Not very big, a good-looking filly, quite Kingman.",
 
-      // Last season, either as the desk's own line or as the index's columns.
+      // Last season, either as your own line or as the index's columns.
       "statusLine": "i/f FRANKEL lsd 24/02/26",
       "coveringSire": "FRANKEL",        // optional, overrides the line
       "lsd": "24 Feb 26",

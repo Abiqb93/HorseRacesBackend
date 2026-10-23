@@ -15,7 +15,7 @@ test("a rating is a whole figure on the scale, or nothing, and reads back", () =
   assert.match(foalLine({ name: "Sumaco", sex: "c", sire: "Frankel", rating: 96 }), /rated 96$/);
 });
 
-test("the desk's rating is laid over a horse the feed holds no figure for, never over the feed's own", () => {
+test("the user's rating is laid over a horse the feed holds no figure for, never over the feed's own", () => {
   const horses = [
     { name: "SUMACO", foalingYear: null, best: null, runs: 4 },
     { name: "DANCING COLOURS", foalingYear: 2022, best: 73, runs: 4 },
@@ -44,7 +44,7 @@ test("a foal is filed under the season his dam was covered, not the year he was 
 
 test("a record with a date files itself", () => {
   assert.equal(foalColumns({ foaledDate: "2026-02-07" }).season, 2025);
-  // Unless the season is stated, in which case the desk is right.
+  // Unless the season is stated, in which case the user is right.
   assert.equal(foalColumns({ foaledDate: "2026-02-07", season: 2024 }).season, 2024);
 });
 

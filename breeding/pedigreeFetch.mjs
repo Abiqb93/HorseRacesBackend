@@ -21,7 +21,7 @@
  * Two sources. Equineline first, through the scraper, because its record is
  * the richer (reference numbers, dosage, nicking); then Arion's 5x5 grid
  * (`arion/pedigreeGrid.mjs`), which holds the same five generations and
- * answers in seconds on the desk's unmetered subscription. A key the
+ * answers in seconds on the user's unmetered subscription. A key the
  * scraper rejects is remembered for a while, so the mares added after it
  * go straight to Arion rather than each waiting a turn in the scraper's
  * queue to be told the same thing. A fetch can also be asked of one source
@@ -76,7 +76,7 @@ export function pickHers(matches = [], mare = {}) {
   return fits.length === 1 ? fits[0] : null;
 }
 
-/** What a failure is called on the mare's row, in the desk's words. */
+/** What a failure is called on the mare's row, in the user's words. */
 export function describeFailure(err) {
   if (err?.rejectedKey) return "the pedigree source is rejecting the server's API key (PARSE_API_KEY needs replacing)";
   if (err?.unconfigured) return String(err.message ?? "pedigree lookup is not configured on this server");
@@ -95,7 +95,7 @@ export const SKIP_EQUINELINE_MS = 15 * 60 * 1000;
  *
  * `queue(mare)` says at once whether her chart is held, and if not starts the
  * fetch and answers "pending". `statusOf(id)` is what the list shows beside
- * her. `retry(mare, { ref })` runs it again, with the horse the desk picked
+ * her. `retry(mare, { ref })` runs it again, with the horse the user picked
  * when the source could not tell.
  */
 export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, loadGrid = null, log = console, now = () => Date.now(), keep = KEEP_MS }) {
@@ -137,7 +137,7 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
   /**
    * Her chart from Equineline. A name the source cannot settle is settled
    * by her year, country and sire; when they cannot either, the error is
-   * thrown on with `undecided` and the source's matches, for the desk.
+   * thrown on with `undecided` and the source's matches, for the user.
    */
   async function fromEquineline(mare, ref) {
     const client = await loadClient();
@@ -212,7 +212,7 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
       if (!payload) {
         if (undecided) {
           set(id, { state: "ambiguous", message: failures.length > 1 ? failures.map((f) => `${f.via}: ${said(f)}`).join("; ") : String(undecided.message ?? ""), matches: undecided.matches ?? [], source: null });
-          log.log(`mares: ${mare.horse_name} (${y ?? "?"}) is ${undecided.count ?? "several"} horses to the source; the desk must choose`);
+          log.log(`mares: ${mare.horse_name} (${y ?? "?"}) is ${undecided.count ?? "several"} horses to the source; you must choose`);
           return statusOf(id);
         }
         if (failures.length === 1) throw failures[0].err;
