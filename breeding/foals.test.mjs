@@ -1,7 +1,39 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { foalColumns, foalOut, foalLine, parseSex, seasonOfFoaling, cleanMedia, dateOnly } from "./foals.mjs";
+import { applyDeskRatings, foalColumns, foalOut, foalLine, parseSex, seasonOfFoaling, cleanMedia, dateOnly } from "./foals.mjs";
+
+test("a rating is a whole figure on the scale, or nothing, and reads back", () => {
+  assert.equal(foalColumns({ rating: "96" }).rating, 96);
+  assert.equal(foalColumns({ rating: 95.6 }).rating, 96);
+  assert.equal(foalColumns({ rating: "" }).rating, null);
+  assert.equal(foalColumns({ rating: 0 }).rating, null);
+  assert.equal(foalColumns({ rating: 300 }).rating, null);
+  assert.equal("rating" in foalColumns({ name: "X" }), false, "not mentioned, left alone");
+  assert.equal(foalOut({ id: 1, mare_id: 2, season: 2022, rating: 96 }).rating, 96);
+  assert.equal(foalOut({ id: 1, mare_id: 2, season: 2022, rating: null }).rating, null);
+  assert.match(foalLine({ name: "Sumaco", sex: "c", sire: "Frankel", rating: 96 }), /rated 96$/);
+});
+
+test("the desk's rating is laid over a horse the feed holds no figure for, never over the feed's own", () => {
+  const horses = [
+    { name: "SUMACO", foalingYear: null, best: null, runs: 4 },
+    { name: "DANCING COLOURS", foalingYear: 2022, best: 73, runs: 4 },
+    { name: "SUMACO", foalingYear: 2019, best: null, runs: 1 }, // a namesake of another year
+  ];
+  const touched = applyDeskRatings(horses, [
+    { name: "Sumaco", season: 2022, rating: 96 },
+    { name: "Dancing Colours", foaled_date: "2022-03-01", rating: 90 },
+    { name: "Nobody", season: 2020, rating: null },
+  ]);
+  assert.equal(touched, 1);
+  assert.equal(horses[0].best, 96);
+  assert.equal(horses[0].ratingSource, "desk");
+  assert.equal(horses[1].best, 73);
+  assert.equal(horses[1].ratingSource, undefined);
+  assert.equal(horses[2].best, null, "the 2019 namesake is not the 2023 colt");
+  assert.equal(applyDeskRatings([], []), 0);
+});
 
 test("a foal is filed under the season his dam was covered, not the year he was born", () => {
   // Foaled February 2026, so she was covered in 2025 and this foal belongs

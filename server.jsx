@@ -7534,6 +7534,28 @@ function buildInBackground(kind, keys) {
   }
 }
 
+/**
+ * The desk's ratings for a mare's foals, by her name, from any list that
+ * holds her: a figure the desk recorded for a foal our feed holds none for
+ * counts in her produce wherever her produce is read.
+ */
+async function deskRatingsFor(dam) {
+  if (!dam) return [];
+  try {
+    const { ensureFoalRating } = await loadFoals();
+    await ensureFoalRating(runQuery);
+    return await runQuery(
+      `SELECT f.name, f.foaled_date, f.season, f.rating
+         FROM mare_foals f JOIN my_mares m ON m.id = f.mare_id
+        WHERE f.rating IS NOT NULL AND UPPER(TRIM(m.horse_name)) = ?`,
+      [String(dam).toUpperCase()],
+    );
+  } catch (err) {
+    console.warn("desk ratings not read:", err.message);
+    return [];
+  }
+}
+
 async function matingOutlook({ sire, dam, damsire: askedDamsire = null, damYear = null }) {
   const { studBookName, describe, pickOwnRow } = await loadMating();
   let damsire = askedDamsire ? studBookName(askedDamsire) : null;
@@ -7544,6 +7566,10 @@ async function matingOutlook({ sire, dam, damsire: askedDamsire = null, damYear 
     horsesWhere("damName = ?", [dam], 200),
     horsesWhere("horseName = ?", [dam], 5),
   ]);
+  {
+    const { applyDeskRatings } = await loadFoals();
+    applyDeskRatings(outOfDam.horses, await deskRatingsFor(dam), studBookName);
+  }
   // Her own row, among any namesakes: by year, then by sire, then by career.
   const damOwn = { horses: [pickOwnRow(damRows.horses, { year: damYear, sire: damsire })].filter(Boolean) };
 
@@ -7638,6 +7664,10 @@ app.get("/api/breeding/mare-side", async (req, res) => {
       horsesWhere("damName = ?", [dam], 200),
       horsesWhere("horseName = ?", [dam], 5),
     ]);
+    {
+      const { applyDeskRatings } = await loadFoals();
+      applyDeskRatings(outOfDam.horses, await deskRatingsFor(dam), studBookName);
+    }
     const own = pickOwnRow(damRows.horses, { year: damYear, sire: damsire });
     if (!damsire && own?.sire) damsire = studBookName(own.sire);
     const byDamsire = await damsireProgeny(damsire);
@@ -7851,6 +7881,21 @@ app.get("/api/breeding/report-data", async (req, res) => {
         missing.push(`pedigree:${stallion}`);
       }
       out.push(block);
+    }
+
+    // The desk's own ratings for her foals, where our feed holds none.
+    if (mare) {
+      try {
+        const { applyDeskRatings, ensureFoalRating } = await loadFoals();
+        await ensureFoalRating(runQuery);
+        const deskFoals = await runQuery(
+          "SELECT name, foaled_date, season, rating FROM mare_foals WHERE mare_id = ? AND user_id = ? AND rating IS NOT NULL",
+          [mare.id, userId],
+        );
+        applyDeskRatings(produce.horses, deskFoals, studBookName);
+      } catch (err) {
+        console.warn("report-data: desk ratings not read:", err.message);
+      }
     }
 
     res.json({
@@ -9251,9 +9296,10 @@ app.post("/api/pedigree/upload", express.json({ limit: "1mb" }), async (req, res
  * from here.
  */
 app.get("/api/mares/:userId/:id/foals", async (req, res) => {
-  const { CREATE_FOALS, foalOut } = await loadFoals();
+  const { CREATE_FOALS, ensureFoalRating, foalOut } = await loadFoals();
   try {
     await runQuery(CREATE_FOALS, []);
+    await ensureFoalRating(runQuery);
     const rows = await runQuery(
       "SELECT * FROM mare_foals WHERE user_id = ? AND mare_id = ? ORDER BY season DESC, foaled_date DESC",
       [req.params.userId, Number(req.params.id)],
@@ -9266,13 +9312,14 @@ app.get("/api/mares/:userId/:id/foals", async (req, res) => {
 });
 
 app.post("/api/mares/:userId/:id/foals", express.json({ limit: "512kb" }), async (req, res) => {
-  const { CREATE_FOALS, foalColumns, foalOut } = await loadFoals();
+  const { CREATE_FOALS, ensureFoalRating, foalColumns, foalOut } = await loadFoals();
   const userId = String(req.params.userId ?? "").trim();
   const mareId = Number(req.params.id);
   if (!userId || !Number.isFinite(mareId)) return res.status(400).json({ error: "userId and mare id are required" });
 
   try {
     await runQuery(CREATE_FOALS, []);
+    await ensureFoalRating(runQuery);
     const owns = await queryOne("SELECT id FROM my_mares WHERE id = ? AND user_id = ?", [mareId, userId]);
     if (!owns) return res.status(404).json({ error: "no such mare on your list" });
 
@@ -9295,9 +9342,10 @@ app.post("/api/mares/:userId/:id/foals", express.json({ limit: "512kb" }), async
 });
 
 app.patch("/api/mares/:userId/:id/foals/:foalId", express.json({ limit: "512kb" }), async (req, res) => {
-  const { CREATE_FOALS, foalColumns, foalOut } = await loadFoals();
+  const { CREATE_FOALS, ensureFoalRating, foalColumns, foalOut } = await loadFoals();
   try {
     await runQuery(CREATE_FOALS, []);
+    await ensureFoalRating(runQuery);
     const cols = foalColumns(req.body ?? {});
     const names = Object.keys(cols);
     if (!names.length) return res.status(400).json({ error: "nothing to change" });
@@ -9316,9 +9364,10 @@ app.patch("/api/mares/:userId/:id/foals/:foalId", express.json({ limit: "512kb" 
 });
 
 app.delete("/api/mares/:userId/:id/foals/:foalId", async (req, res) => {
-  const { CREATE_FOALS } = await loadFoals();
+  const { CREATE_FOALS, ensureFoalRating } = await loadFoals();
   try {
     await runQuery(CREATE_FOALS, []);
+    await ensureFoalRating(runQuery);
     const done = await runQuery(
       "DELETE FROM mare_foals WHERE id = ? AND mare_id = ? AND user_id = ?",
       [Number(req.params.foalId), Number(req.params.id), req.params.userId],

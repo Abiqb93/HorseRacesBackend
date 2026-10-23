@@ -34,6 +34,7 @@ export const CREATE_FOALS = `
     markings TEXT NULL,
     physical TEXT NULL,
     notes TEXT NULL,
+    rating SMALLINT NULL,
     media JSON NULL,
     recorded_by VARCHAR(64) NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -41,6 +42,54 @@ export const CREATE_FOALS = `
     KEY idx_mf_mare (mare_id, season),
     KEY idx_mf_user (user_id, season)
   )`;
+
+/**
+ * The rating column arrived after the table: `CREATE TABLE IF NOT EXISTS`
+ * leaves an existing table as it is, so a server adds the column once where
+ * it is missing. Asked once per process; the answer is remembered.
+ */
+let ratingColumnEnsured = false;
+export async function ensureFoalRating(runQuery) {
+  if (ratingColumnEnsured) return true;
+  const rows = await runQuery(
+    `SELECT COUNT(*) AS n FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = 'rating'`,
+    [FOALS_TABLE],
+  );
+  if (!Number(rows?.[0]?.n)) await runQuery(`ALTER TABLE ${FOALS_TABLE} ADD COLUMN rating SMALLINT NULL`, []);
+  ratingColumnEnsured = true;
+  return true;
+}
+
+/**
+ * A rating the desk knows for a foal, laid over the horses our feed
+ * returned where the feed holds no figure for him — Sumaco's four French
+ * runs came through without a Timeform figure, and the desk knows him as a
+ * 96. By name (as the stud book writes it), and by foaling year where both
+ * sides know it. A figure from the feed is never overwritten; one laid on is
+ * marked `ratingSource: "desk"` so a page can say whose it is. Returns how
+ * many horses it touched.
+ */
+export function applyDeskRatings(horses = [], foals = [], nameOf = (s) => String(s ?? "").trim().toUpperCase()) {
+  const known = new Map();
+  for (const f of foals ?? []) {
+    const rating = Number(f?.rating);
+    const name = nameOf(f?.name);
+    if (!name || !Number.isFinite(rating) || rating <= 0) continue;
+    const year = Number(String(f?.foaled_date ?? f?.foaledDate ?? "").slice(0, 4)) || (Number(f?.season) ? Number(f.season) + 1 : null);
+    known.set(name, { rating, year });
+  }
+  let touched = 0;
+  for (const h of horses ?? []) {
+    if (!h || Number.isFinite(h.best)) continue;
+    const k = known.get(nameOf(h.name));
+    if (!k) continue;
+    if (k.year && h.foalingYear && Number(h.foalingYear) !== k.year) continue;
+    h.best = k.rating;
+    h.ratingSource = "desk";
+    touched += 1;
+  }
+  return touched;
+}
 
 /**
  * The season a foal belongs to is the season his dam was covered.
@@ -120,6 +169,7 @@ export const FOAL_FIELDS = {
   markings: "markings",
   physical: "physical",
   notes: "notes",
+  rating: "rating",
   recordedBy: "recorded_by",
 };
 
@@ -142,6 +192,11 @@ export function foalColumns(body = {}) {
       value = Number.isFinite(n) && n > 1900 && n < 2200 ? n : null;
     }
     if (column === "foaled_date" && value) value = dateOnly(value);
+    // A rating is a whole figure on the scale, or nothing.
+    if (column === "rating" && value !== null) {
+      const n = Math.round(Number(value));
+      value = Number.isFinite(n) && n >= 1 && n <= 140 ? n : null;
+    }
     cols[column] = value;
   }
   if ("media" in body) cols.media = JSON.stringify(cleanMedia(body.media));
@@ -172,6 +227,7 @@ export function foalOut(row) {
     markings: row.markings ?? null,
     physical: row.physical ?? null,
     notes: row.notes ?? null,
+    rating: row.rating === null || row.rating === undefined ? null : Number(row.rating),
     media: Array.isArray(media) ? media : [],
     recordedBy: row.recorded_by ?? null,
     updatedAt: row.updated_at ?? null,
@@ -183,6 +239,7 @@ export function foalLine(foal) {
   if (!foal) return "";
   const sex = { c: "colt", f: "filly", g: "gelding" }[foal.sex] ?? "foal";
   const bits = [foal.name ? `${foal.name},` : null, sex, foal.sire ? `by ${foal.sire}` : null];
+  if (Number.isFinite(Number(foal.rating)) && Number(foal.rating) > 0) bits.push(`rated ${Number(foal.rating)}`);
   if (foal.foaledDate) {
     const d = new Date(`${foal.foaledDate}T00:00:00Z`);
     if (!Number.isNaN(d.getTime())) {
