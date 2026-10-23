@@ -3,7 +3,7 @@
  *
  * `my_mares` already held a mare's identity — who she is, who her parents
  * are, and the stud book reference that lets a pedigree be fetched for her.
- * What a bloodstock team actually works from is three things that identity
+ * What the user actually works from is three things that identity
  * cannot carry:
  *
  *   the band     whose mares these are, and where each one stands

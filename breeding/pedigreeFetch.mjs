@@ -212,7 +212,7 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
       if (!payload) {
         if (undecided) {
           set(id, { state: "ambiguous", message: failures.length > 1 ? failures.map((f) => `${f.via}: ${said(f)}`).join("; ") : String(undecided.message ?? ""), matches: undecided.matches ?? [], source: null });
-          log.log(`mares: ${mare.horse_name} (${y ?? "?"}) is ${undecided.count ?? "several"} horses to the source; you must choose`);
+          log.log(`mares: ${mare.horse_name} (${y ?? "?"}) is ${undecided.count ?? "several"} horses to the source; the user must choose`);
           return statusOf(id);
         }
         if (failures.length === 1) throw failures[0].err;
