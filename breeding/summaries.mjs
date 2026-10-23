@@ -261,19 +261,20 @@ export function histogramStats(rows = []) {
   return { n, mean: Number(mean.toFixed(2)), sd: sd === null ? null : Number(sd.toFixed(2)), median, grades: lines };
 }
 
-export async function readBaseline(runQuery) {
-  const rows = await runQuery(`SELECT body, built_at FROM ${BASELINE_TABLE} WHERE id = 'flat-2y'`, []);
+/** The flat population is 'flat-2y'; the worldwide file's black-type count is 'worldwide'. */
+export async function readBaseline(runQuery, id = "flat-2y") {
+  const rows = await runQuery(`SELECT body, built_at FROM ${BASELINE_TABLE} WHERE id = ?`, [id]);
   const row = rows?.[0];
   if (!row) return null;
   const body = parseBody(row.body);
   return body ? { ...body, builtAt: toMs(row.built_at) } : null;
 }
 
-export async function writeBaseline(runQuery, body) {
+export async function writeBaseline(runQuery, body, id = "flat-2y") {
   await runQuery(
-    `INSERT INTO ${BASELINE_TABLE} (id, body, built_at) VALUES ('flat-2y', ?, NOW())
+    `INSERT INTO ${BASELINE_TABLE} (id, body, built_at) VALUES (?, ?, NOW())
      ON DUPLICATE KEY UPDATE body = VALUES(body), built_at = VALUES(built_at)`,
-    [JSON.stringify(body)],
+    [id, JSON.stringify(body)],
   );
 }
 
