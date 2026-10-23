@@ -5989,6 +5989,7 @@ app.get("/api/pedigree", async (req, res) => {
     const row = store.rowFor(payload);
     if (row) {
       await runQuery(store.UPSERT, store.upsertArgs(row));
+      forgetGrids();
     } else {
       // Returned but not cached: without a reference number there is no key to
       // file it under, and inventing one would collide two horses.
@@ -6863,7 +6864,78 @@ app.patch("/api/mares/:userId/:id/plans/:season", express.json({ limit: "4mb" })
  */
 const DISTANCE_PROFILE_LIMIT = 2000;
 
-app.post("/api/sires/distance-profiles", (req, res) => {
+/**
+ * Every sire's distance profile, held in memory.
+ *
+ * The table has no index a request can use: the route matched
+ * `LOWER(TRIM(Sire))` against the names asked, which is a walk of the whole
+ * table per request, and the Matings tab asks ten times on every load (the
+ * roster, in pages of two hundred). Ten walks at once, beside the charts
+ * and the ratings, and the database queued them into each other: 30 s a
+ * page on 23 October, a quarter of them cut off, one name alone 6 s. One
+ * walk grouped by sire is the same work once; its answer is a map of every
+ * sire on the table, kept for twelve hours, rebuilt in the night, and
+ * rebuilt behind a stale answer rather than in front of a waiting page.
+ * Should the one walk fail, the request falls back to the walk for its own
+ * names, as before.
+ */
+const DISTANCE_INDEX_TTL_MS = 12 * 60 * 60 * 1000;
+const DISTANCE_INDEX_HINT = "/*+ MAX_EXECUTION_TIME(180000) */";
+const distanceProfileSql = (where, hint = "") => `
+    SELECT ${hint} LOWER(TRIM(Sire)) AS sireKey,
+           Distancecategory,
+           SUM(Runners) AS Runners,
+           SUM(Winners) AS Winners,
+           SUM(Wins)    AS Wins,
+           COUNT(*)     AS sourceRows
+      FROM sire_distance_reports
+     ${where}
+     GROUP BY sireKey, Distancecategory`;
+const distanceProfileRow = (r) => ({
+  Distancecategory: r.Distancecategory,
+  // SUM() comes back as a string from the driver for DECIMAL columns, and a
+  // string here would reach the client and be summed as text.
+  Runners: Number(r.Runners) || 0,
+  Winners: Number(r.Winners) || 0,
+  Wins: Number(r.Wins) || 0,
+  sourceRows: Number(r.sourceRows) || 1,
+});
+let distanceIndex = null;
+let distanceIndexInFlight = null;
+
+function buildDistanceIndex() {
+  if (distanceIndexInFlight) return distanceIndexInFlight;
+  const started = Date.now();
+  distanceIndexInFlight = runQuery(distanceProfileSql("", DISTANCE_INDEX_HINT), [])
+    .then((rows) => {
+      const bySire = new Map();
+      for (const r of rows) {
+        const key = String(r.sireKey ?? "").trim();
+        if (!key) continue;
+        if (!bySire.has(key)) bySire.set(key, []);
+        bySire.get(key).push(distanceProfileRow(r));
+      }
+      distanceIndex = { at: Date.now(), sires: bySire.size, rows: rows.length, tookMs: Date.now() - started, bySire };
+      console.log(`distance profiles indexed: ${bySire.size} sires, ${rows.length} rows, ${distanceIndex.tookMs} ms`);
+      return distanceIndex;
+    })
+    .finally(() => {
+      distanceIndexInFlight = null;
+    });
+  return distanceIndexInFlight;
+}
+
+/** The index: built on first use, a stale one answered from while it rebuilds behind. */
+async function distanceProfileIndex() {
+  if (distanceIndex && Date.now() - distanceIndex.at < DISTANCE_INDEX_TTL_MS) return distanceIndex;
+  if (distanceIndex) {
+    buildDistanceIndex().catch((err) => console.warn("distance profiles not re-indexed:", err.message));
+    return distanceIndex;
+  }
+  return buildDistanceIndex();
+}
+
+app.post("/api/sires/distance-profiles", async (req, res) => {
   const names = Array.isArray(req.body?.names) ? req.body.names : [];
   const all = names.map((n) => String(n ?? "").trim()).filter(Boolean);
   // De-duplicated before the cap, so a caller sending the same name twice does
@@ -6874,19 +6946,29 @@ app.post("/api/sires/distance-profiles", (req, res) => {
   );
   if (!cleaned.length) return res.status(400).json({ error: "names[] is required" });
 
-  const placeholders = cleaned.map(() => "?").join(", ");
-  const sql = `
-    SELECT LOWER(TRIM(Sire)) AS sireKey,
-           Distancecategory,
-           SUM(Runners) AS Runners,
-           SUM(Winners) AS Winners,
-           SUM(Wins)    AS Wins,
-           COUNT(*)     AS sourceRows
-      FROM sire_distance_reports
-     WHERE LOWER(TRIM(Sire)) IN (${placeholders})
-     GROUP BY sireKey, Distancecategory`;
+  const answer = (bySire, served) =>
+    res.json({
+      asked: cleaned.length,
+      found: Object.keys(bySire).length,
+      truncated: all.length > cleaned.length ? all.length - cleaned.length : 0,
+      profiles: bySire,
+      served,
+    });
 
-  db.query(sql, cleaned, (err, rows) => {
+  try {
+    const index = await distanceProfileIndex();
+    const bySire = {};
+    for (const key of cleaned) {
+      const rows = index.bySire.get(key);
+      if (rows) bySire[key] = rows;
+    }
+    return answer(bySire, { from: "index", indexedAt: new Date(index.at).toISOString() });
+  } catch (err) {
+    console.warn("distance profiles: index not built, reading the names asked:", err.message);
+  }
+
+  const placeholders = cleaned.map(() => "?").join(", ");
+  db.query(distanceProfileSql(`WHERE LOWER(TRIM(Sire)) IN (${placeholders})`), cleaned, (err, rows) => {
     if (err) {
       console.error("distance profiles failed:", err.message);
       return res.status(500).json({ error: "database error" });
@@ -6895,22 +6977,9 @@ app.post("/api/sires/distance-profiles", (req, res) => {
     for (const r of rows) {
       const key = String(r.sireKey ?? "").trim();
       if (!key) continue;
-      (bySire[key] = bySire[key] || []).push({
-        Distancecategory: r.Distancecategory,
-        // SUM() comes back as a string from the driver for DECIMAL columns,
-        // and a string here would reach the client and be summed as text.
-        Runners: Number(r.Runners) || 0,
-        Winners: Number(r.Winners) || 0,
-        Wins: Number(r.Wins) || 0,
-        sourceRows: Number(r.sourceRows) || 1,
-      });
+      (bySire[key] = bySire[key] || []).push(distanceProfileRow(r));
     }
-    res.json({
-      asked: cleaned.length,
-      found: Object.keys(bySire).length,
-      truncated: all.length > cleaned.length ? all.length - cleaned.length : 0,
-      profiles: bySire,
-    });
+    answer(bySire, { from: "live" });
   });
 });
 
@@ -6994,7 +7063,23 @@ app.get("/api/pedigree/held", async (req, res) => {
  * Roughly 1.2 kB per horse before gzip, and these payloads are mostly the same
  * few hundred ancestor names over and over, so they compress hard.
  */
+/**
+ * The list is every chart on file parsed on every request — six hundred
+ * payloads, 600 kB — and the Matings tab asks for it on every load beside
+ * everything else: 8 s alone on 23 October, a minute under the rest. Kept
+ * for an hour, and forgotten the moment a chart is written, so a mare
+ * fetched this minute is on the next list.
+ */
+const GRIDS_TTL_MS = 60 * 60 * 1000;
+let gridsCache = null;
+const forgetGrids = () => {
+  gridsCache = null;
+};
+
 app.get("/api/pedigree/grids", async (req, res) => {
+  if (gridsCache && Date.now() - gridsCache.at < GRIDS_TTL_MS) {
+    return res.json({ ...gridsCache.body, cached: true });
+  }
   const { gridFromPayload } = await loadPedigreeGrid();
   try {
     const rows = await runQuery(
@@ -7022,7 +7107,9 @@ app.get("/api/pedigree/grids", async (req, res) => {
       };
     }
 
-    res.json({ count: Object.keys(horses).length, horses });
+    const body = { count: Object.keys(horses).length, horses, listedAt: new Date().toISOString() };
+    gridsCache = { at: Date.now(), body };
+    res.json(body);
   } catch (err) {
     console.error("pedigree grids failed:", err.message);
     res.status(500).json({ error: "database error" });
@@ -7534,6 +7621,28 @@ function buildInBackground(kind, keys) {
   }
 }
 
+/**
+ * The desk's ratings for a mare's foals, by her name, from any list that
+ * holds her: a figure the desk recorded for a foal our feed holds none for
+ * counts in her produce wherever her produce is read.
+ */
+async function deskRatingsFor(dam) {
+  if (!dam) return [];
+  try {
+    const { ensureFoalRating } = await loadFoals();
+    await ensureFoalRating(runQuery);
+    return await runQuery(
+      `SELECT f.name, f.foaled_date, f.season, f.rating
+         FROM mare_foals f JOIN my_mares m ON m.id = f.mare_id
+        WHERE f.rating IS NOT NULL AND UPPER(TRIM(m.horse_name)) = ?`,
+      [String(dam).toUpperCase()],
+    );
+  } catch (err) {
+    console.warn("desk ratings not read:", err.message);
+    return [];
+  }
+}
+
 async function matingOutlook({ sire, dam, damsire: askedDamsire = null, damYear = null }) {
   const { studBookName, describe, pickOwnRow } = await loadMating();
   let damsire = askedDamsire ? studBookName(askedDamsire) : null;
@@ -7544,6 +7653,10 @@ async function matingOutlook({ sire, dam, damsire: askedDamsire = null, damYear 
     horsesWhere("damName = ?", [dam], 200),
     horsesWhere("horseName = ?", [dam], 5),
   ]);
+  {
+    const { applyDeskRatings } = await loadFoals();
+    applyDeskRatings(outOfDam.horses, await deskRatingsFor(dam), studBookName);
+  }
   // Her own row, among any namesakes: by year, then by sire, then by career.
   const damOwn = { horses: [pickOwnRow(damRows.horses, { year: damYear, sire: damsire })].filter(Boolean) };
 
@@ -7638,6 +7751,10 @@ app.get("/api/breeding/mare-side", async (req, res) => {
       horsesWhere("damName = ?", [dam], 200),
       horsesWhere("horseName = ?", [dam], 5),
     ]);
+    {
+      const { applyDeskRatings } = await loadFoals();
+      applyDeskRatings(outOfDam.horses, await deskRatingsFor(dam), studBookName);
+    }
     const own = pickOwnRow(damRows.horses, { year: damYear, sire: damsire });
     if (!damsire && own?.sire) damsire = studBookName(own.sire);
     const byDamsire = await damsireProgeny(damsire);
@@ -7851,6 +7968,21 @@ app.get("/api/breeding/report-data", async (req, res) => {
         missing.push(`pedigree:${stallion}`);
       }
       out.push(block);
+    }
+
+    // The desk's own ratings for her foals, where our feed holds none.
+    if (mare) {
+      try {
+        const { applyDeskRatings, ensureFoalRating } = await loadFoals();
+        await ensureFoalRating(runQuery);
+        const deskFoals = await runQuery(
+          "SELECT name, foaled_date, season, rating FROM mare_foals WHERE mare_id = ? AND user_id = ? AND rating IS NOT NULL",
+          [mare.id, userId],
+        );
+        applyDeskRatings(produce.horses, deskFoals, studBookName);
+      } catch (err) {
+        console.warn("report-data: desk ratings not read:", err.message);
+      }
     }
 
     res.json({
@@ -8215,12 +8347,21 @@ app.get("/api/breeding/nicks/by-sire", async (req, res) => {
  * nicks` answers only the twenty-five best of those. `nick_stats` is indexed
  * on damsire_key, so the whole list is one indexed read.
  */
+// Indexed, and still 11 s cold on 23 October for Dansili's six hundred
+// crosses, 1 s warm: the table only changes in the night, so a damsire's
+// list is kept for the day and the cache is emptied when the nicks rebuild.
+const damsireCrossCache = new Map();
+const DAMSIRE_CROSS_TTL_MS = 12 * 60 * 60 * 1000;
+
 app.get("/api/breeding/nicks/by-damsire", async (req, res) => {
   const { studKey } = await loadNicks();
   const damsire = studKey(req.query.damsire);
   if (!damsire) return res.status(400).json({ error: "damsire is required" });
   const min = Math.min(50, Math.max(1, Number(req.query.min) || 1));
   const limit = Math.min(5000, Math.max(1, Number(req.query.limit) || 3000));
+  const cacheKey = `${damsire}|${min}|${limit}`;
+  const hit = damsireCrossCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < DAMSIRE_CROSS_TTL_MS) return res.json({ ...hit.body, cached: true });
 
   try {
     const built = await queryOne(
@@ -8250,7 +8391,10 @@ app.get("/api/breeding/nicks/by-damsire", async (req, res) => {
       cropFrom: r.crop_from ?? null,
       cropTo: r.crop_to ?? null,
     }));
-    res.json({ asked: { damsire, min, limit }, sires, total: sires.length, builtTo: built.cropTo ?? null });
+    const body = { asked: { damsire, min, limit }, sires, total: sires.length, builtTo: built.cropTo ?? null };
+    damsireCrossCache.set(cacheKey, { at: Date.now(), body });
+    if (damsireCrossCache.size > 300) damsireCrossCache.delete(damsireCrossCache.keys().next().value);
+    res.json(body);
   } catch (err) {
     console.error("nicks by damsire failed:", err.message);
     res.status(500).json({ error: "database error", detail: err.message });
@@ -9216,6 +9360,7 @@ app.post("/api/pedigree/upload", express.json({ limit: "1mb" }), async (req, res
     await upload.ensureUploadSchema(runQuery).catch(() => null);
     const row = upload.rowFrom(payload, { source: "manual", enteredBy: userId });
     await runQuery(upload.UPSERT, upload.upsertArgs(row));
+    forgetGrids();
 
     // A chart typed against a mare is her chart from now on, so the report
     // and the inbreeding screen find it without being told where to look.
@@ -9251,9 +9396,10 @@ app.post("/api/pedigree/upload", express.json({ limit: "1mb" }), async (req, res
  * from here.
  */
 app.get("/api/mares/:userId/:id/foals", async (req, res) => {
-  const { CREATE_FOALS, foalOut } = await loadFoals();
+  const { CREATE_FOALS, ensureFoalRating, foalOut } = await loadFoals();
   try {
     await runQuery(CREATE_FOALS, []);
+    await ensureFoalRating(runQuery);
     const rows = await runQuery(
       "SELECT * FROM mare_foals WHERE user_id = ? AND mare_id = ? ORDER BY season DESC, foaled_date DESC",
       [req.params.userId, Number(req.params.id)],
@@ -9266,13 +9412,14 @@ app.get("/api/mares/:userId/:id/foals", async (req, res) => {
 });
 
 app.post("/api/mares/:userId/:id/foals", express.json({ limit: "512kb" }), async (req, res) => {
-  const { CREATE_FOALS, foalColumns, foalOut } = await loadFoals();
+  const { CREATE_FOALS, ensureFoalRating, foalColumns, foalOut } = await loadFoals();
   const userId = String(req.params.userId ?? "").trim();
   const mareId = Number(req.params.id);
   if (!userId || !Number.isFinite(mareId)) return res.status(400).json({ error: "userId and mare id are required" });
 
   try {
     await runQuery(CREATE_FOALS, []);
+    await ensureFoalRating(runQuery);
     const owns = await queryOne("SELECT id FROM my_mares WHERE id = ? AND user_id = ?", [mareId, userId]);
     if (!owns) return res.status(404).json({ error: "no such mare on your list" });
 
@@ -9295,9 +9442,10 @@ app.post("/api/mares/:userId/:id/foals", express.json({ limit: "512kb" }), async
 });
 
 app.patch("/api/mares/:userId/:id/foals/:foalId", express.json({ limit: "512kb" }), async (req, res) => {
-  const { CREATE_FOALS, foalColumns, foalOut } = await loadFoals();
+  const { CREATE_FOALS, ensureFoalRating, foalColumns, foalOut } = await loadFoals();
   try {
     await runQuery(CREATE_FOALS, []);
+    await ensureFoalRating(runQuery);
     const cols = foalColumns(req.body ?? {});
     const names = Object.keys(cols);
     if (!names.length) return res.status(400).json({ error: "nothing to change" });
@@ -9316,9 +9464,10 @@ app.patch("/api/mares/:userId/:id/foals/:foalId", express.json({ limit: "512kb" 
 });
 
 app.delete("/api/mares/:userId/:id/foals/:foalId", async (req, res) => {
-  const { CREATE_FOALS } = await loadFoals();
+  const { CREATE_FOALS, ensureFoalRating } = await loadFoals();
   try {
     await runQuery(CREATE_FOALS, []);
+    await ensureFoalRating(runQuery);
     const done = await runQuery(
       "DELETE FROM mare_foals WHERE id = ? AND mare_id = ? AND user_id = ?",
       [Number(req.params.foalId), Number(req.params.id), req.params.userId],
@@ -15481,22 +15630,76 @@ app.get('/api/france/racecards', (req, res) => {
 // nightly: the reads the expected rating needs, done once with the time
 // they take instead of on a request that cannot wait for them. The names
 // are the ones the routes were asked for (breeding/summaries.mjs).
+let lastNightly = null;
 {
   const cron = require("node-cron");
   const run = async (why) => {
+    lastNightly = { why, startedAt: new Date().toISOString() };
     try {
       const { rebuildSummaries, NIGHTLY_HINT, BASELINE_HINT } = await loadSummaries();
-      await measureBaseline({ hint: BASELINE_HINT });
+      const baseline = await measureBaseline({ hint: BASELINE_HINT });
+      lastNightly.baseline = baseline ? { n: baseline.n, mean: baseline.mean, grades: baseline.grades } : null;
       const out = await rebuildSummaries(runQuery, (kind, key) => readGroupLive(kind, key, NIGHTLY_HINT), {
         log: { log: (m) => console.log("[summaries]", m), warn: (m) => console.warn("[summaries]", m) },
       });
       console.log(`[summaries] ${why}:`, JSON.stringify(out));
+      lastNightly.summaries = out;
+      // The distance index last: the one walk of its table, in the night
+      // rather than in front of the first page of the morning.
+      await buildDistanceIndex().catch((err) => console.warn("[summaries] distance index not rebuilt:", err.message));
     } catch (err) {
       console.error(`[summaries] ${why} failed:`, err.message);
+      lastNightly.error = err.message;
     }
+    lastNightly.finishedAt = new Date().toISOString();
   };
   cron.schedule("50 2 * * *", () => run("nightly"), { timezone: "Europe/London" });
 }
+
+/**
+ * What the night left, for checking a morning's grades and timings without
+ * the logs: the population's lines and when they were measured, the stored
+ * summaries by kind, the distance index and the charts list, and how the
+ * last nightly run went on this process.
+ */
+app.get("/api/breeding/nightly", async (req, res) => {
+  try {
+    const { readBaseline, SUMMARY_TABLE } = await loadSummaries();
+    const [baseline, kinds] = await Promise.all([
+      readBaseline(runQuery).catch(() => null),
+      runQuery(
+        `SELECT kind, COUNT(*) AS asked, SUM(body IS NOT NULL) AS built, SUM(timed_out = 1) AS timedOut,
+                MAX(built_at) AS lastBuilt, MAX(asked_at) AS lastAsked
+           FROM ${SUMMARY_TABLE} GROUP BY kind`,
+        [],
+      ).catch(() => []),
+    ]);
+    res.json({
+      now: new Date().toISOString(),
+      baseline: baseline
+        ? { n: baseline.n, mean: baseline.mean, sd: baseline.sd, median: baseline.median, grades: baseline.grades, since: baseline.since, builtAt: baseline.builtAt ? new Date(baseline.builtAt).toISOString() : null }
+        : null,
+      inMemory: await populationBaseline(),
+      summaries: kinds.map((k) => ({
+        kind: k.kind,
+        asked: Number(k.asked) || 0,
+        built: Number(k.built) || 0,
+        timedOut: Number(k.timedOut) || 0,
+        lastBuilt: k.lastBuilt ?? null,
+        lastAsked: k.lastAsked ?? null,
+      })),
+      distanceIndex: distanceIndex
+        ? { sires: distanceIndex.sires, rows: distanceIndex.rows, tookMs: distanceIndex.tookMs, at: new Date(distanceIndex.at).toISOString() }
+        : { building: Boolean(distanceIndexInFlight) },
+      grids: gridsCache ? { count: gridsCache.body.count, at: new Date(gridsCache.at).toISOString() } : null,
+      damsireCrosses: damsireCrossCache.size,
+      lastNightly,
+    });
+  } catch (err) {
+    console.error("breeding nightly status failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
 
 // Trainer uplift moves, weekly on Monday morning -- a full walk of the
 // results table, so not worth running daily.
@@ -15552,6 +15755,7 @@ app.get('/api/france/racecards', (req, res) => {
         log: { log: (m) => console.log("[nicks]", m), warn: (m) => console.warn("[nicks]", m) },
       });
       console.log(`[nicks] ${why} rebuild:`, JSON.stringify(out));
+      damsireCrossCache.clear();
 
       // The parent map is now as complete as it is going to get tonight, so
       // this is the moment to fill the second side of it and re-index the
