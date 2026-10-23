@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Put a bloodstock team's own mating pack into a user's band.
+ * Put a user's own mating pack into their band.
  *
  * A mating pack is a client's whole broodmare band as the user works it: an
  * index of who is in foal to what and when she was last served, a two-page

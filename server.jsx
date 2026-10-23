@@ -516,7 +516,7 @@ app.delete("/api/hitsales/lists/:userId/:saleId", (req, res) => {
 });
 
 // Every user's list for one sale. Read by the daily sale mail, which sends
-// each user the horses on THEIR list — the user-level read the client list
+// each user the horses on THEIR list — the team-level read the client list
 // and the review list already allow.
 app.get("/api/hitsales/sale-lists/:saleId", (req, res) => {
   db.query(
@@ -572,7 +572,7 @@ app.get("/api/hitsales/overrides/:saleId", (req, res) => {
 
 // One lot's override, laid over what is stored: fields given are set (null
 // clears one), fields not given stand, links given replace the links. Done
-// once, by anyone on the user, it holds for everyone until changed again.
+// once, by anyone on the team, it holds for everyone until changed again.
 app.put("/api/hitsales/overrides/:saleId/:lot", express.json({ limit: "256kb" }), async (req, res) => {
   const body = req.body && typeof req.body === "object" ? req.body : {};
   const saleId = String(req.params.saleId);
@@ -5873,6 +5873,7 @@ const loadPedigreeGrid = () => import("./pedigree/grid.mjs");
 const loadLineage = () => import("./breeding/lineage.mjs");
 const loadUpload = () => import("./pedigree/upload.mjs");
 const loadFoals = () => import("./breeding/foals.mjs");
+const loadBookings = () => import("./breeding/bookings.mjs");
 
 loadPedigreeStore().then(({ CREATE_TABLE }) => {
   db.query(CREATE_TABLE, (err) => {
@@ -6096,6 +6097,10 @@ db.query(
     loadFoals()
       .then(({ CREATE_FOALS }) => runQuery(CREATE_FOALS, []))
       .catch((e) => console.error("mare_foals table check failed:", e.message));
+    // The season's book: rights and bookings, keyed by user like the mares.
+    loadBookings()
+      .then(({ ensureBookingsSchema }) => ensureBookingsSchema(runQuery))
+      .catch((e) => console.error("bookings schema check failed:", e.message));
   },
 );
 
@@ -6249,7 +6254,7 @@ app.get("/api/mares/search", (req, res) => {
  * One user's mares.
  *
  * Bare, this is the list the My Mares page has always read and the shape must
- * not change. With `?season=` it becomes the band index a bloodstock team
+ * not change. With `?season=` it becomes the band index the user
  * works from, and each mare carries three more things:
  *
  *   season     what happened in that covering year - who she went to,
@@ -6356,7 +6361,7 @@ app.get("/api/mares/:userId", async (req, res) => {
     // Adopt the reference onto the mare, once, so the link is exact from here
     // on and the next read does not have to match on a name at all. After the
     // response: the answer does not depend on the write, and a write that
-    // fails must not cost the user its band.
+    // fails must not cost the user their band.
     const adopt = mares
       .filter((m) => !m.pedigree_reference && chartFor(m))
       .map((m) => [chartFor(m), m.id]);
@@ -6762,7 +6767,7 @@ const planBody = (b = {}) => {
  * Write a new version of a plan.
  *
  * Always a new version, never an overwrite: version 1 is what was sent to the
- * client, and the user changing its mind in March must not rewrite what they
+ * client, and the user changing their mind in March must not rewrite what they
  * read in January.
  */
 app.post("/api/mares/:userId/:id/plans/:season", express.json({ limit: "4mb" }), async (req, res) => {
@@ -8683,7 +8688,7 @@ app.get("/api/breeding/family", async (req, res) => {
       secondDam ? horsesWhere("damName = ?", [secondDam], 80).catch(() => empty) : Promise.resolve(empty),
       secondDam ? horsesWhere("horseName = ?", [secondDam], 5).catch(() => empty) : Promise.resolve(empty),
     ]);
-    // The desk's own ratings over her produce, as every other read of it:
+    // The user's own ratings over her produce, as every other read of it:
     // the report's family panel showed Sumaco unrated beside a mare reading
     // that counted his 96.
     try {
@@ -9569,6 +9574,302 @@ app.delete("/api/mares/:userId/:id/foals/:foalId", async (req, res) => {
   } catch (err) {
     console.error("foal delete failed:", err.message);
     res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Bookings: the season's book. Nominations, breeding rights and every mare's
+// booking for a season, with the money and the paperwork, kept in the two
+// tables breeding/bookings.mjs defines. The workbook is read in through the
+// import route; the page writes the rest.
+// ---------------------------------------------------------------------------
+
+/** The user's mares by name, so a booking can open her profile. */
+async function bookingMareLinks(userId) {
+  const rows = await runQuery("SELECT id, horse_name FROM my_mares WHERE user_id = ?", [userId]).catch(() => []);
+  const byKey = new Map();
+  for (const r of rows) byKey.set(mareNameKey(r.horse_name), { id: r.id, horse_name: r.horse_name });
+  return byKey;
+}
+
+const bookingSeason = (raw) => {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 1900 && n < 2200 ? n : null;
+};
+
+const insertRow = async (table, userId, cols) => {
+  const keys = Object.keys(cols);
+  const done = await runQuery(
+    `INSERT INTO ${table} (user_id, ${keys.join(", ")}) VALUES (?${", ?".repeat(keys.length)})`,
+    [userId, ...keys.map((k) => cols[k])],
+  );
+  return done.insertId;
+};
+
+const bookingsError = (res, what, err) => {
+  console.error(`${what} failed:`, err.message);
+  res.status(500).json({ error: "database error", detail: err.message });
+};
+
+app.get("/api/bookings/:userId", async (req, res) => {
+  const userId = String(req.params.userId);
+  const asked = bookingSeason(req.query.season);
+  try {
+    const { ensureBookingsSchema, rowOut, summarise, BOOKINGS_TABLE, RIGHTS_TABLE } = await loadBookings();
+    await ensureBookingsSchema(runQuery);
+    const seasons = (
+      await runQuery(`SELECT season, COUNT(*) AS n FROM ${BOOKINGS_TABLE} WHERE user_id = ? GROUP BY season ORDER BY season DESC`, [userId])
+    ).map((r) => ({ season: Number(r.season), count: Number(r.n) }));
+    const season = asked ?? seasons[0]?.season ?? new Date().getFullYear() + 1;
+    const [bookings, rights, links] = await Promise.all([
+      runQuery(`SELECT * FROM ${BOOKINGS_TABLE} WHERE user_id = ? AND season = ? ORDER BY id ASC`, [userId, season]),
+      runQuery(
+        `SELECT * FROM ${RIGHTS_TABLE} WHERE user_id = ? AND (season = ? OR season IS NULL) ORDER BY stallion ASC, number ASC, id ASC`,
+        [userId, season],
+      ),
+      bookingMareLinks(userId),
+    ]);
+    const out = bookings.map(rowOut).map((b) => {
+      const link = links.get(mareNameKey(b.mare_name)) ?? null;
+      return { ...b, mare_id: b.mare_id ?? link?.id ?? null };
+    });
+    const rightsOut = rights.map(rowOut);
+    res.json({ season, seasons, bookings: out, rights: rightsOut, summary: summarise(out, rightsOut) });
+  } catch (err) {
+    bookingsError(res, "bookings read", err);
+  }
+});
+
+app.post("/api/bookings/:userId", express.json({ limit: "1mb" }), async (req, res) => {
+  const userId = String(req.params.userId);
+  const body = req.body ?? {};
+  try {
+    const { ensureBookingsSchema, bookingColumns, readTyped, stageFromRow, rowOut, BOOKINGS_TABLE } = await loadBookings();
+    await ensureBookingsSchema(runQuery);
+    const cols = bookingColumns({ ...body, ...readTyped(body, { season: bookingSeason(body.season) }) });
+    if (!cols.season || !cols.mare_name) return res.status(400).json({ error: "season and mare_name are required" });
+    if (!cols.source) cols.source = "page";
+    if (!cols.stage) cols.stage = stageFromRow(cols);
+    const id = await insertRow(BOOKINGS_TABLE, userId, cols);
+    const row = await queryOne(`SELECT * FROM ${BOOKINGS_TABLE} WHERE id = ?`, [id]);
+    res.status(201).json({ booking: rowOut(row) });
+  } catch (err) {
+    bookingsError(res, "booking add", err);
+  }
+});
+
+app.patch("/api/bookings/:userId/:id", express.json({ limit: "1mb" }), async (req, res) => {
+  const userId = String(req.params.userId);
+  const id = Number(req.params.id);
+  const body = req.body ?? {};
+  try {
+    const { ensureBookingsSchema, bookingColumns, readTyped, stageFromRow, DERIVED_STAGES, rowOut, BOOKINGS_TABLE } = await loadBookings();
+    await ensureBookingsSchema(runQuery);
+    const current = await queryOne(`SELECT * FROM ${BOOKINGS_TABLE} WHERE id = ? AND user_id = ?`, [id, userId]);
+    if (!current) return res.status(404).json({ error: "no such booking on your book" });
+    const cols = bookingColumns({ ...body, ...readTyped(body, { season: bookingSeason(body.season) ?? Number(current.season) }) });
+    delete cols.source;
+    const keys = Object.keys(cols);
+    if (!keys.length) return res.status(400).json({ error: "nothing to change" });
+    await runQuery(
+      `UPDATE ${BOOKINGS_TABLE} SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ? AND user_id = ?`,
+      [...keys.map((k) => cols[k]), id, userId],
+    );
+    let row = await queryOne(`SELECT * FROM ${BOOKINGS_TABLE} WHERE id = ?`, [id]);
+    // The stage follows the paperwork unless it was set by hand.
+    if (!("stage" in body) && DERIVED_STAGES.has(row.stage)) {
+      const stage = stageFromRow(row);
+      if (stage !== row.stage) {
+        await runQuery(`UPDATE ${BOOKINGS_TABLE} SET stage = ? WHERE id = ?`, [stage, id]);
+        row = { ...row, stage };
+      }
+    }
+    res.json({ booking: rowOut(row) });
+  } catch (err) {
+    bookingsError(res, "booking change", err);
+  }
+});
+
+app.delete("/api/bookings/:userId/:id", async (req, res) => {
+  try {
+    const { ensureBookingsSchema, BOOKINGS_TABLE } = await loadBookings();
+    await ensureBookingsSchema(runQuery);
+    const done = await runQuery(`DELETE FROM ${BOOKINGS_TABLE} WHERE id = ? AND user_id = ?`, [Number(req.params.id), req.params.userId]);
+    if (!done.affectedRows) return res.status(404).json({ error: "no such booking on your book" });
+    res.json({ ok: true });
+  } catch (err) {
+    bookingsError(res, "booking delete", err);
+  }
+});
+
+app.get("/api/bookings/:userId/rights", async (req, res) => {
+  const userId = String(req.params.userId);
+  const season = bookingSeason(req.query.season);
+  try {
+    const { ensureBookingsSchema, rowOut, RIGHTS_TABLE } = await loadBookings();
+    await ensureBookingsSchema(runQuery);
+    const rows = season
+      ? await runQuery(`SELECT * FROM ${RIGHTS_TABLE} WHERE user_id = ? AND (season = ? OR season IS NULL) ORDER BY stallion, number, id`, [userId, season])
+      : await runQuery(`SELECT * FROM ${RIGHTS_TABLE} WHERE user_id = ? ORDER BY season DESC, stallion, number, id`, [userId]);
+    res.json({ rights: rows.map(rowOut) });
+  } catch (err) {
+    bookingsError(res, "rights read", err);
+  }
+});
+
+/**
+ * A right, typed as the sheet writes it (`line`: "Zarak (20% Thurso 20%
+ * Whatton 60% H Bozo)") or as its fields.
+ */
+app.post("/api/bookings/:userId/rights", express.json(), async (req, res) => {
+  const userId = String(req.params.userId);
+  const body = req.body ?? {};
+  try {
+    const { ensureBookingsSchema, parseRightLine, rightColumns, rowOut, RIGHTS_TABLE } = await loadBookings();
+    await ensureBookingsSchema(runQuery);
+    const parsed = body.line ? parseRightLine(body.line, { holder: body.holder ?? null }) : null;
+    const cols = rightColumns({
+      ...(parsed ? { stallion: parsed.stallion, number: parsed.number, partners: parsed.partners, bonus: parsed.bonus, free_return: parsed.freeReturn, return_pct: parsed.returnPct, own_share: parsed.ownShare, notes: parsed.note, label: parsed.raw } : {}),
+      ...body,
+    });
+    if (!cols.stallion) return res.status(400).json({ error: "a stallion is required" });
+    if (!cols.label) cols.label = cols.stallion;
+    if (!cols.source) cols.source = "page";
+    const id = await insertRow(RIGHTS_TABLE, userId, cols);
+    const row = await queryOne(`SELECT * FROM ${RIGHTS_TABLE} WHERE id = ?`, [id]);
+    res.status(201).json({ right: rowOut(row) });
+  } catch (err) {
+    bookingsError(res, "right add", err);
+  }
+});
+
+app.patch("/api/bookings/:userId/rights/:id", express.json(), async (req, res) => {
+  const userId = String(req.params.userId);
+  const id = Number(req.params.id);
+  try {
+    const { ensureBookingsSchema, rightColumns, rowOut, RIGHTS_TABLE } = await loadBookings();
+    await ensureBookingsSchema(runQuery);
+    const cols = rightColumns(req.body ?? {});
+    delete cols.source;
+    const keys = Object.keys(cols);
+    if (!keys.length) return res.status(400).json({ error: "nothing to change" });
+    const done = await runQuery(
+      `UPDATE ${RIGHTS_TABLE} SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ? AND user_id = ?`,
+      [...keys.map((k) => cols[k]), id, userId],
+    );
+    if (!done.affectedRows) return res.status(404).json({ error: "no such right on your ledger" });
+    const row = await queryOne(`SELECT * FROM ${RIGHTS_TABLE} WHERE id = ?`, [id]);
+    res.json({ right: rowOut(row) });
+  } catch (err) {
+    bookingsError(res, "right change", err);
+  }
+});
+
+app.delete("/api/bookings/:userId/rights/:id", async (req, res) => {
+  const userId = String(req.params.userId);
+  const id = Number(req.params.id);
+  try {
+    const { ensureBookingsSchema, RIGHTS_TABLE, BOOKINGS_TABLE } = await loadBookings();
+    await ensureBookingsSchema(runQuery);
+    const done = await runQuery(`DELETE FROM ${RIGHTS_TABLE} WHERE id = ? AND user_id = ?`, [id, userId]);
+    if (!done.affectedRows) return res.status(404).json({ error: "no such right on your ledger" });
+    await runQuery(`UPDATE ${BOOKINGS_TABLE} SET right_id = NULL WHERE right_id = ? AND user_id = ?`, [id, userId]);
+    res.json({ ok: true });
+  } catch (err) {
+    bookingsError(res, "right delete", err);
+  }
+});
+
+/**
+ * The workbook, read in. `rows` is the Bookings Sheet as a matrix of cells
+ * in the sheet's column order; `rightsRows` the Breeding Rights sheet, whose
+ * stallions tell a nomination line from a client's. Rows that came from a
+ * sheet before are replaced; rows typed on the page are kept.
+ */
+app.post("/api/bookings/:userId/import", express.json({ limit: "8mb" }), async (req, res) => {
+  const userId = String(req.params.userId);
+  const body = req.body ?? {};
+  const season = bookingSeason(body.season);
+  const rows = Array.isArray(body.rows) ? body.rows : null;
+  if (!season || !rows) return res.status(400).json({ error: "season and rows are required" });
+  const rightsRows = Array.isArray(body.rightsRows) ? body.rightsRows : [];
+  const replace = body.replace !== false;
+  try {
+    const mod = await loadBookings();
+    await mod.ensureBookingsSchema(runQuery);
+    const sheet = mod.parseRightsSheet(rightsRows, { season, holder: body.holder ?? null });
+    const stallions = new Set(sheet.rights.map((r) => mod.nameKey(r.stallion)).filter(Boolean));
+    const book = mod.parseBook(rows, { season, stallions: stallions.size ? stallions : null, holder: body.holder ?? sheet.holder ?? null });
+    const have = new Set(book.rights.map((r) => `${mod.nameKey(r.stallion)}#${r.number ?? ""}`));
+    const extra = sheet.rights.filter((r) => !have.has(`${mod.nameKey(r.stallion)}#${r.number ?? ""}`));
+    const rights = [...book.rights, ...extra];
+    if (body.preview) {
+      return res.json({ season, holder: book.holder ?? sheet.holder ?? null, preview: true, rights, bookings: book.bookings, skipped: book.skipped, notes: book.notes, summary: mod.summarise(book.bookings, rights) });
+    }
+    if (replace) {
+      await runQuery(`DELETE FROM ${mod.BOOKINGS_TABLE} WHERE user_id = ? AND season = ? AND source = 'workbook'`, [userId, season]);
+      await runQuery(`DELETE FROM ${mod.RIGHTS_TABLE} WHERE user_id = ? AND season = ? AND source = 'workbook'`, [userId, season]);
+    }
+    const links = await bookingMareLinks(userId);
+    const rightIds = new Map();
+    for (const r of rights) {
+      const cols = mod.rightColumns({ ...r, free_return: r.freeReturn, return_pct: r.returnPct, own_share: r.ownShare, source: "workbook", season });
+      rightIds.set(r.label, await insertRow(mod.RIGHTS_TABLE, userId, cols));
+    }
+    let n = 0;
+    for (const bk of book.bookings) {
+      const cols = mod.bookingColumns({
+        ...bk,
+        right_id: rightIds.get(bk.right_label) ?? null,
+        mare_id: links.get(mareNameKey(bk.mare_name))?.id ?? null,
+      });
+      await insertRow(mod.BOOKINGS_TABLE, userId, cols);
+      n += 1;
+    }
+    res.json({ season, holder: book.holder ?? sheet.holder ?? null, imported: { rights: rights.length, bookings: n }, skipped: book.skipped, notes: book.notes, summary: mod.summarise(book.bookings, rights) });
+  } catch (err) {
+    bookingsError(res, "bookings import", err);
+  }
+});
+
+/**
+ * Next season's book, started from this one: every mare carried over with
+ * this season's stallion as her last cover and nothing else filled, except
+ * a mare who already has a row there.
+ */
+app.post("/api/bookings/:userId/roll", express.json(), async (req, res) => {
+  const userId = String(req.params.userId);
+  const body = req.body ?? {};
+  const from = bookingSeason(body.from);
+  const to = bookingSeason(body.to);
+  if (!from || !to || to <= from) return res.status(400).json({ error: "from and to seasons are required, to after from" });
+  try {
+    const mod = await loadBookings();
+    await mod.ensureBookingsSchema(runQuery);
+    const prev = await runQuery(`SELECT * FROM ${mod.BOOKINGS_TABLE} WHERE user_id = ? AND season = ? ORDER BY id`, [userId, from]);
+    const have = new Set((await runQuery(`SELECT mare_key FROM ${mod.BOOKINGS_TABLE} WHERE user_id = ? AND season = ?`, [userId, to])).map((r) => r.mare_key));
+    let n = 0;
+    for (const p of prev) {
+      if (have.has(p.mare_key)) continue;
+      have.add(p.mare_key);
+      const cols = mod.bookingColumns({
+        season: to,
+        mare_id: p.mare_id,
+        mare_name: p.mare_name,
+        owner: p.owner,
+        ownership: p.ownership,
+        section: p.right_label ? null : p.section,
+        last_cover: p.stallion ?? p.last_cover,
+        stage: "planned",
+        source: "rolled",
+        added_to_description: Number(p.added_to_description) ? 1 : 0,
+      });
+      await insertRow(mod.BOOKINGS_TABLE, userId, cols);
+      n += 1;
+    }
+    res.json({ from, to, rolled: n });
+  } catch (err) {
+    bookingsError(res, "bookings roll", err);
   }
 });
 
@@ -15760,13 +16061,13 @@ function forgetPopulationBodies() {
 }
 
 /**
- * The population measured now, on the desk's say-so.
+ * The population measured now, on the user's say-so.
  *
  * The nightly pass is the rule: the walk of two seasons of the results
  * table slows every other read while it runs. But the September figure the
  * pages fell back on (85.3) was measured before ratings were restricted to
  * the flat, with jumps figures in it, and every outlook was read against
- * it; Tom asked for it re-done on the flat today rather than tonight. The
+ * it; it was re-done on the flat today rather than tonight (23 October 2026: "re-do this, restricted to the flat."). The
  * caller says `confirm=flat` to show they know the cost; one measurement
  * at a time, and not within six hours of the last unless forced.
  */
@@ -16077,11 +16378,11 @@ const loadAiAgent = () => import("./ai/agent.mjs");
  * They get their own list rather than being appended to `validTables`, because
  * those two lists answer different questions. `validTables` is "what may anyone
  * fetch wholesale over REST"; this is "what may the assistant read on behalf of
- * a signed-in member of the user". Widening the first to fix the second would
+ * a signed-in member of the team". Widening the first to fix the second would
  * have opened a public, unauthenticated route onto every user's client list.
  *
  * Note what this does and does not scope. The assistant reads these tables as
- * the user, not as one user: it can see any user's tracker, review list or
+ * the team, not as one user: it can see any user's tracker, review list or
  * clients, in the same way that the sharing features already let colleagues see
  * each other's. It cannot write to any of them - `sqlGuard` allows SELECT and
  * nothing else.
@@ -16130,7 +16431,7 @@ app.get("/api/ai/status", async (req, res) => {
 
 /**
  * Every question put to BlandfordAI is written down, so the assistant can tell
- * one member of the user that another has been asking about the same horse.
+ * one member of the team that another has been asking about the same horse.
  * That connection is the one thing it knows that the warehouse does not.
  */
 loadAiAgent()
@@ -16474,7 +16775,7 @@ app.post("/api/arion/report", async (req, res) => {
   // confirm and credits may still arrive from a site deployed before this
   // build; there is no price to confirm, so they are read and ignored
   const { token, reportId, userId } = req.body ?? {};
-  if (!(await arionBuyer(userId))) return res.status(403).json({ error: "Only a signed-in member of you can make Arion reports.", code: "buyer" });
+  if (!(await arionBuyer(userId))) return res.status(403).json({ error: "Only a signed-in member of the team can make Arion reports.", code: "buyer" });
   try {
     const out = await client.report({ token, reportId, userId });
     console.log(`[arion] ${userId} made ${out.report.label} for ${out.horse}`);
@@ -16501,7 +16802,7 @@ app.get("/api/arion/my-reports", async (req, res) => {
 // so it asks what making one asks: who is looking.
 app.get("/api/arion/my-reports/made", async (req, res) => {
   const { client } = await arion();
-  if (!(await arionBuyer(req.query.userId))) return res.status(403).json({ error: "Only a signed-in member of you can see your Arion reports.", code: "buyer" });
+  if (!(await arionBuyer(req.query.userId))) return res.status(403).json({ error: "Only a signed-in member of the team can see the team's Arion reports.", code: "buyer" });
   try {
     return res.json(await client.made({ limit: req.query.limit }));
   } catch (err) {
@@ -16514,7 +16815,7 @@ app.get("/api/arion/my-reports/made", async (req, res) => {
 app.delete("/api/arion/my-reports/made/:id", async (req, res) => {
   const { client } = await arion();
   const userId = req.query.userId ?? req.body?.userId;
-  if (!(await arionBuyer(userId))) return res.status(403).json({ error: "Only a signed-in member of you can remove your Arion reports.", code: "buyer" });
+  if (!(await arionBuyer(userId))) return res.status(403).json({ error: "Only a signed-in member of the team can remove the team's Arion reports.", code: "buyer" });
   try {
     return res.json(await client.forget({ id: req.params.id, userId }));
   } catch (err) {
