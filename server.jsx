@@ -15684,6 +15684,7 @@ let lastNightly = null;
       const { rebuildSummaries, NIGHTLY_HINT, BASELINE_HINT } = await loadSummaries();
       const baseline = await measureBaseline({ hint: BASELINE_HINT });
       lastNightly.baseline = baseline ? { n: baseline.n, mean: baseline.mean, grades: baseline.grades } : null;
+      if (baseline) forgetPopulationBodies();
       const out = await rebuildSummaries(runQuery, (kind, key) => readGroupLive(kind, key, NIGHTLY_HINT), {
         log: { log: (m) => console.log("[summaries]", m), warn: (m) => console.warn("[summaries]", m) },
       });
@@ -15700,6 +15701,47 @@ let lastNightly = null;
   };
   cron.schedule("50 2 * * *", () => run("nightly"), { timezone: "Europe/London" });
 }
+
+/** Every cached body that carries the population: emptied when it is re-measured. */
+function forgetPopulationBodies() {
+  mareSideCache.clear();
+}
+
+/**
+ * The population measured now, on the desk's say-so.
+ *
+ * The nightly pass is the rule: the walk of two seasons of the results
+ * table slows every other read while it runs. But the September figure the
+ * pages fell back on (85.3) was measured before ratings were restricted to
+ * the flat, with jumps figures in it, and every outlook was read against
+ * it; Tom asked for it re-done on the flat today rather than tonight. The
+ * caller says `confirm=flat` to show they know the cost; one measurement
+ * at a time, and not within six hours of the last unless forced.
+ */
+let lastMeasure = null;
+const MEASURE_AGAIN_MS = 6 * 60 * 60 * 1000;
+app.post("/api/breeding/population/measure", async (req, res) => {
+  if (req.query.confirm !== "flat") {
+    return res.status(400).json({ error: "add ?confirm=flat: this walks two seasons of the results table and slows the site while it runs" });
+  }
+  if (breedingBaselineInFlight) return res.status(202).json({ measuring: true, startedAt: lastMeasure?.startedAt ?? null });
+  if (breedingBaseline?.value?.measured && Date.now() - breedingBaseline.createdAt < MEASURE_AGAIN_MS && !req.query.force) {
+    return res.json({ measured: breedingBaseline.value, at: new Date(breedingBaseline.createdAt).toISOString(), note: "measured within the last six hours; add &force=1 to measure again" });
+  }
+  const { BASELINE_HINT } = await loadSummaries();
+  lastMeasure = { startedAt: new Date().toISOString(), by: "request" };
+  measureBaseline({ hint: BASELINE_HINT })
+    .then((value) => {
+      lastMeasure.finishedAt = new Date().toISOString();
+      lastMeasure.value = value ? { n: value.n, mean: value.mean, sd: value.sd, median: value.median, grades: value.grades, since: value.since } : null;
+      if (value) forgetPopulationBodies();
+    })
+    .catch((err) => {
+      lastMeasure.finishedAt = new Date().toISOString();
+      lastMeasure.error = err.message;
+    });
+  res.status(202).json({ measuring: true, startedAt: lastMeasure.startedAt });
+});
 
 /**
  * What the night left, for checking a morning's grades and timings without
@@ -15740,6 +15782,8 @@ app.get("/api/breeding/nightly", async (req, res) => {
       damsireCrosses: damsireCrossCache.size,
       runnerReads: runnerReads.state(),
       lastNightly,
+      lastMeasure,
+      measuring: Boolean(breedingBaselineInFlight),
     });
   } catch (err) {
     console.error("breeding nightly status failed:", err.message);
