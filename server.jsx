@@ -7211,14 +7211,41 @@ setTimeout(() => {
     .catch((err) => console.warn("breeding horses: not loaded:", err.message));
 }, 5000);
 
-/** Worldwide population black-type rates: one scan, cached for a day. */
+/**
+ * Worldwide population black-type rates: one scan, kept in memory for a day
+ * and in the baseline table for good.
+ *
+ * The scan is a walk of the worldwide file under a 20 s cap. On the cold
+ * database after a redeploy it ran out of time on every request, which left
+ * every mating report without a black-type reading and cost each one twenty
+ * seconds, until a request happened to finish it. The last complete count is
+ * now read from the table once after a start, whatever its age (the file
+ * moves by a few hundred horses a week), and the night recounts it with a
+ * longer cap.
+ */
 let worldwideBaseline = null;
-async function worldwidePopulation() {
-  if (worldwideBaseline && Date.now() - worldwideBaseline.createdAt < BREEDING_BASELINE_TTL_MS) {
+let storedWorldwideRead = false;
+async function worldwidePopulation({ fresh = false, hint = "/*+ MAX_EXECUTION_TIME(20000) */" } = {}) {
+  if (!fresh && worldwideBaseline && Date.now() - worldwideBaseline.createdAt < BREEDING_BASELINE_TTL_MS) {
     return worldwideBaseline.value;
   }
+  if (!fresh && !storedWorldwideRead) {
+    storedWorldwideRead = true;
+    try {
+      const { readBaseline } = await loadSummaries();
+      const kept = await readBaseline(runQuery, "worldwide");
+      if (kept?.complete) {
+        const { builtAt, ...value } = kept;
+        worldwideBaseline = { createdAt: builtAt ?? Date.now(), value };
+        return value;
+      }
+    } catch (err) {
+      console.warn("worldwide population not read from the table:", err.message);
+    }
+  }
+  if (!fresh && worldwideBaseline) return worldwideBaseline.value;
   const [row] = await runQuery(
-    `SELECT /*+ MAX_EXECUTION_TIME(20000) */ COUNT(*) AS n,
+    `SELECT ${hint} COUNT(*) AS n,
             SUM(s_wins > 0) AS stakesWinners, SUM(g_wins > 0) AS groupWinners, SUM(g1_wins > 0) AS group1Winners
        FROM breeding_horses`,
     [],
@@ -7236,7 +7263,12 @@ async function worldwidePopulation() {
   // file, which is sorted by class — and cached a 15% stakes-winner rate
   // for a day against a true 2.6%. A partial count is read fresh every time
   // and never served as the baseline.
-  if (value.complete) worldwideBaseline = { createdAt: Date.now(), value };
+  if (value.complete) {
+    worldwideBaseline = { createdAt: Date.now(), value };
+    loadSummaries()
+      .then(({ writeBaseline }) => writeBaseline(runQuery, value, "worldwide"))
+      .catch((err) => console.warn("worldwide population not kept:", err.message));
+  }
   return value;
 }
 
@@ -15685,6 +15717,11 @@ let lastNightly = null;
       const baseline = await measureBaseline({ hint: BASELINE_HINT });
       lastNightly.baseline = baseline ? { n: baseline.n, mean: baseline.mean, grades: baseline.grades } : null;
       if (baseline) forgetPopulationBodies();
+      const worldwide = await worldwidePopulation({ fresh: true, hint: "/*+ MAX_EXECUTION_TIME(180000) */" }).catch((err) => {
+        console.warn("[summaries] worldwide population not recounted:", err.message);
+        return null;
+      });
+      lastNightly.worldwide = worldwide ? { n: worldwide.n, stakesWinners: worldwide.stakesWinners, complete: worldwide.complete } : null;
       const out = await rebuildSummaries(runQuery, (kind, key) => readGroupLive(kind, key, NIGHTLY_HINT), {
         log: { log: (m) => console.log("[summaries]", m), warn: (m) => console.warn("[summaries]", m) },
       });
@@ -15723,6 +15760,19 @@ const MEASURE_AGAIN_MS = 6 * 60 * 60 * 1000;
 app.post("/api/breeding/population/measure", async (req, res) => {
   if (req.query.confirm !== "flat") {
     return res.status(400).json({ error: "add ?confirm=flat: this walks two seasons of the results table and slows the site while it runs" });
+  }
+  // The worldwide file's count alone, with the night's cap, when a request
+  // cannot finish it: a minute rather than a six-minute walk.
+  if (req.query.what === "worldwide") {
+    const startedAt = new Date().toISOString();
+    worldwidePopulation({ fresh: true, hint: "/*+ MAX_EXECUTION_TIME(180000) */" })
+      .then((value) => {
+        lastMeasure = { ...(lastMeasure ?? {}), worldwide: { startedAt, finishedAt: new Date().toISOString(), n: value?.n, stakesWinners: value?.stakesWinners, complete: value?.complete } };
+      })
+      .catch((err) => {
+        lastMeasure = { ...(lastMeasure ?? {}), worldwide: { startedAt, finishedAt: new Date().toISOString(), error: err.message } };
+      });
+    return res.status(202).json({ counting: "worldwide", startedAt });
   }
   if (breedingBaselineInFlight) return res.status(202).json({ measuring: true, startedAt: lastMeasure?.startedAt ?? null });
   if (breedingBaseline?.value?.measured && Date.now() - breedingBaseline.createdAt < MEASURE_AGAIN_MS && !req.query.force) {
@@ -15784,6 +15834,7 @@ app.get("/api/breeding/nightly", async (req, res) => {
       lastNightly,
       lastMeasure,
       measuring: Boolean(breedingBaselineInFlight),
+      worldwide: worldwideBaseline ? { ...worldwideBaseline.value, at: new Date(worldwideBaseline.createdAt).toISOString() } : null,
     });
   } catch (err) {
     console.error("breeding nightly status failed:", err.message);
