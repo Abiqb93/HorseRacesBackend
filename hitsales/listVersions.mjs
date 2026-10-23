@@ -1,5 +1,5 @@
 /**
- * Earlier versions of a user's list for a sale (the desk, 22 October 2026:
+ * Earlier versions of a user's list for a sale (22 October 2026:
  * "restore the previous version of a list", the day a brief run into a
  * category put 148 lots in it at once). hit_sale_lists holds the latest copy
  * only; before a save replaces it, the copy it replaces is kept in
@@ -39,7 +39,7 @@ export function lotsMoved(before, after) {
   let n = 0;
   for (const lot of new Set([...a.keys(), ...b.keys()])) if (a.get(lot) !== b.get(lot)) n += 1;
   const names = (l) => JSON.stringify((isObject(l) && Array.isArray(l.categories) ? l.categories : []).map((c) => [c?.id, c?.name]).sort());
-  // a category made, renamed or deleted counts as a big change too: it is the desk's structure
+  // a category made, renamed or deleted counts as a big change too: it is the user's structure
   return n + (names(before) === names(after) ? 0 : BIG_CHANGE);
 }
 

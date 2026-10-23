@@ -1,7 +1,7 @@
 /**
  * The foal on the ground.
  *
- * A mating plan ends at a covering. What the desk actually wants to know a
+ * A mating plan ends at a covering. What the user actually wants to know a
  * year later is what turned up: the date, the sex, the markings, how it walks,
  * and whether it is worth repeating the dose. That is a record that gets made
  * standing in a paddock on a phone, in ten seconds, or it does not get made.
@@ -61,9 +61,9 @@ export async function ensureFoalRating(runQuery) {
 }
 
 /**
- * A rating the desk knows for a foal, laid over the horses our feed
+ * A rating the user knows for a foal, laid over the horses our feed
  * returned where the feed holds no figure for him — Sumaco's four French
- * runs came through without a Timeform figure, and the desk knows him as a
+ * runs came through without a Timeform figure, and the user knows him as a
  * 96. By name (as the stud book writes it), and by foaling year where both
  * sides know it. A figure from the feed is never overwritten; one laid on is
  * marked `ratingSource: "desk"` so a page can say whose it is. Returns how
@@ -141,8 +141,8 @@ const HTTP = /^https?:\/\//i;
  * The media list, cleaned.
  *
  * Only `http` and `https`. A `javascript:` or `data:` URL in a field that the
- * report renders as a link is a script running in the desk's browser under
- * our own origin, and the fact that only the desk can write here is not a
+ * report renders as a link is a script running in the user's browser under
+ * our own origin, and the fact that only the user can write here is not a
  * reason to store one: the person typing is not always the person who
  * supplied the text.
  */

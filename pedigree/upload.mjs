@@ -5,7 +5,7 @@
  * one fetch is a paced upstream call that is allowed to fail, and a mare who
  * is not in it is a mare with no grid, no inbreeding screen and no
  * theoretical foal — which is to say a mare the report cannot be written for.
- * The desk usually has her chart on paper. This lets them put it in.
+ * The user usually has her chart on paper. This lets them put it in.
  *
  * ## A typed pedigree is still a pedigree
  *

@@ -61,7 +61,7 @@ test("barren names the stallion she failed to, and a maiden names nobody", () =>
   assert.equal(maiden.coveringSire, null);
 });
 
-test("where a pack holds two readings of one season the desk's own report wins", () => {
+test("where a pack holds two readings of one season the user's own report wins", () => {
   const m = normaliseMare({
     name: "MELO MELO",
     plans2027: [

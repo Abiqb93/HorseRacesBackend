@@ -319,7 +319,7 @@ test("search hands back a token per horse, and says which one was meant", async 
   const found = await c.search({ kind: "named", name: "Starspangledbanner", year: 2006, country: "AUS" });
 
   assert.equal(found.found, true);
-  assert.equal(found.candidates.length, 2, "both are offered; the desk still chooses");
+  assert.equal(found.candidates.length, 2, "both are offered; the user still chooses");
   assert.equal(found.best, "Starspangledbanner (AUS) 2006", "and the one asked for is named");
   assert.deepEqual(found.candidates.map((x) => x.best), [false, true]);
   assert.deepEqual(browser.calls[0].searchHorses.kind, "named");
@@ -577,7 +577,7 @@ test("a mating is a dialog in two steps: the sire first, then the mares", async 
   const sires = await c1.search({ kind: "theoretical", sire: "Starspangledbanner", dam: "Lady Vivian", year: 2022, country: "IRE" });
   assert.equal(sires.stage, "sire");
   assert.equal(sires.best, null, "the mare's 2022 must not pick a stallion");
-  assert.equal(sires.candidates.length, 2, "the desk is asked which sire is meant");
+  assert.equal(sires.candidates.length, 2, "the user is asked which sire is meant");
 
   // the sire settled, the same grid now holds the mares
   const settled = { ...LIVE_HORSES[1] };
@@ -596,7 +596,7 @@ test("a mating is a dialog in two steps: the sire first, then the mares", async 
   assert.equal(made.horse, "Starspangledbanner (AUS) 2006 × Lady Vivian (IRE) 2022", "a mating is named as a mating");
   assert.equal(made.theoretical, true, "and is marked as a foal that does not exist");
   assert.match(made.files[0].label, /Starspangledbanner \(AUS\) 2006 × Lady Vivian \(IRE\) 2022/,
-    "the file the desk keeps and sends on names both parents, not just the mare");
+    "the file the user keeps and sends on names both parents, not just the mare");
 });
 
 test("a list that did not reach the end of Arion's pager says so", async () => {

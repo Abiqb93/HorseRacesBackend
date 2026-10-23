@@ -2,7 +2,7 @@
  * Nicks, from our own data.
  *
  * A nick is the oldest question in breeding: this stallion, over mares by
- * that one — has it worked? The desk's own reports answer it in a fixed
+ * that one — has it worked? The user's own reports answer it in a fixed
  * idiom, three figures at a time:
  *
  *   "Frankel / Kingman direct cross 9 runners including SW SAND GAZELLE"
@@ -302,7 +302,7 @@ export function describeCross(rows = [], { sire = null, damsire = null, basis = 
  * A sire line: the horse, and the sons of him who stand as sires themselves.
  *
  * One generation, not the whole male line. "Galileo / Kingman generally" in
- * the desk's report means Galileo and his sons over Kingman-line mares, and
+ * the user's report means Galileo and his sons over Kingman-line mares, and
  * widening it to every descendant would fold in half the stud book.
  */
 export function sireLine(root, parents = new Map()) {

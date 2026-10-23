@@ -191,7 +191,7 @@ test("Arion's own id for the horse is kept from the report frame", () => {
   assert.equal(horseIdFrom([]), null);
 });
 
-test("a session refuses to start without the desk's login, before any browser is launched", async () => {
+test("a session refuses to start without the user's login, before any browser is launched", async () => {
   await assert.rejects(
     withSession(() => {}, { env: {} }),
     (e) => e.code === "unconfigured" && e.status === 503,
@@ -412,7 +412,7 @@ test("a session Arion has dropped is signed into again, in the same browser", as
   await closeSession();
   const { launch, seen } = fakeLauncher();
   await withSession(async () => {}, { env: CREDS, launch });
-  seen.signedIn = false; // Arion timed the desk out between jobs
+  seen.signedIn = false; // Arion timed the user out between jobs
   await withSession(async () => {}, { env: CREDS, launch });
   assert.equal(seen.launched.length, 1);
   assert.equal(seen.logins, 2);

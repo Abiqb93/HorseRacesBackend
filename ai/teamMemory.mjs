@@ -1,7 +1,7 @@
 /**
  * What the rest of the team has been asking about.
  *
- * A bloodstock desk is a handful of people looking at the same market from
+ * A bloodstock team is a handful of people looking at the same market from
  * different angles, and the most useful thing an assistant can say is often not
  * a number at all: "Stuart asked about this horse on Monday" is a piece of
  * intelligence no query against the warehouse will ever return, because it is

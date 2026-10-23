@@ -17,6 +17,16 @@
  * the move, the country and median distance of the first runs for the new
  * yard, and how many runs each yard had.
  *
+ * Two sides, `side=to` (the default) and `side=from`. The same moves grouped
+ * by the yard the horse JOINED say what a yard does with the horses it takes
+ * on; grouped by the yard it LEFT they say what happens to a yard's horses
+ * after they leave it, which is the question a buyer at a sale asks (23
+ * October 2026: "we want to buy from trainers that do poorly with horses, and
+ * then when the horses leave they improve... trainers who get the most out of
+ * their horses, and then they don't improve or decline after leaving, we want
+ * to avoid"). On the leaving side the baseline is the horse's form with the
+ * yard it left, and a positive uplift is a horse that improved elsewhere.
+ *
  * The table is rebuilt in horseCode ranges (POST .../rebuild with
  * {codeFrom, codeTo, init, finalize}) because the source table is far too
  * large to order in one pass; the driver walks the ranges and the finalize
@@ -60,6 +70,7 @@ export async function initMoves(db) {
       after1 SMALLINT NULL, after3 SMALLINT NULL, after5 SMALLINT NULL, after10 SMALLINT NULL,
       uplift1 SMALLINT NULL, uplift3 SMALLINT NULL, uplift5 SMALLINT NULL, uplift10 SMALLINT NULL,
       INDEX idx_to_trainer (toTrainer),
+      INDEX idx_from_trainer (fromTrainer),
       INDEX idx_move_date (moveDate)
     )
   `);
@@ -184,6 +195,10 @@ export async function rebuildAll(db, { chunk = 100000, log = () => {} } = {}) {
 
 /* ---------------------------------------------------------- querying -- */
 
+/** Which yard a move is read for: the one joined (`to`, the default) or the one left (`from`). */
+export const sideOf = (query) => (String(query?.side || "").toLowerCase() === "from" ? "from" : "to");
+const trainerColumn = (query) => (sideOf(query) === "from" ? "fromTrainer" : "toTrainer");
+
 const FILTERS = (query) => {
   const where = [];
   const params = [];
@@ -210,15 +225,16 @@ const FILTERS = (query) => {
   if (Number.isFinite(dMin)) { where.push("medianDistF >= ?"); params.push(dMin); }
   if (Number.isFinite(dMax)) { where.push("medianDistF <= ?"); params.push(dMax); }
   if (query.since) { where.push("moveDate >= ?"); params.push(String(query.since)); }
-  if (query.trainer) { where.push("toTrainer = ?"); params.push(String(query.trainer)); }
+  if (query.trainer) { where.push(`${trainerColumn(query)} = ?`); params.push(String(query.trainer)); }
   return { where: where.length ? `WHERE ${where.join(" AND ")}` : "", params };
 };
 
 export async function summary(db, query) {
   const { where, params } = FILTERS(query);
+  const col = trainerColumn(query);
   const rows = await q(db, `
     SELECT
-      toTrainer AS trainer,
+      ${col} AS trainer,
       COUNT(*) AS moves,
       ROUND(AVG(baseline), 1) AS avgBaseline,
       ROUND(AVG(uplift1), 2) AS avgUplift1,   SUM(uplift1 IS NOT NULL) AS n1,
@@ -239,7 +255,7 @@ export async function summary(db, query) {
       SUM(LOWER(sex) IN ('c','g','h') AND medianDistF > 9.4 AND uplift3 IS NOT NULL)              AS cgStN
     FROM ${MOVES_TABLE}
     ${where}
-    GROUP BY toTrainer
+    GROUP BY ${col}
     HAVING COUNT(*) >= ?
   `, [...params, Math.max(1, Number(query.minMoves) || 5)]);
 

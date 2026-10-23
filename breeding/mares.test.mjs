@@ -40,7 +40,7 @@ test("a stud-book name drops the country and the sigil but keeps the apostrophe"
 test("a date is read in the four forms a mating pack writes it", () => {
   assert.equal(parseDate("24 Feb 26"), "2026-02-24");
   assert.equal(parseDate("25 Mar 2026"), "2026-03-25");
-  // Day first: 07.02.26 is the seventh of February to a British desk.
+  // Day first: 07.02.26 is the seventh of February to a British reader.
   assert.equal(parseDate("07.02.26"), "2026-02-07");
   assert.equal(parseDate("2026-05-20"), "2026-05-20");
   assert.equal(parseDate(""), null);
@@ -109,7 +109,7 @@ test("a preference line carries a jurisdiction and a note about the mating", () 
   assert.deepEqual(parsePreferenceLines(["Race Record: won a 7f novice"]), []);
 });
 
-test("the desk's abbreviations are the horses they stand for", () => {
+test("the user's abbreviations are the horses they stand for", () => {
   assert.equal(parseSuggestion("NTT")[0].stallion, "NOT THIS TIME");
   assert.equal(parseSuggestion("SSB")[0].stallion, "STARSPANGLEDBANNER");
   assert.deepEqual(parseSuggestion(""), []);

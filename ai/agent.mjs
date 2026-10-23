@@ -144,15 +144,15 @@ const DATASETS = {
     "editions[] (2); sires[] (747): {key, sire, yob, siresSire, st, by.<edition>{...24 fields}, move{status, abci, ai, bi, ci, runners}}. Sort on move.abci or by.<edition>.abci."],
 
   // Horses in Training sales. One set per sale: the catalogue with every lot's
-  // rating and rank, what the desk has listed and enquired on, and the digest
+  // rating and rank, what the user has listed and enquired on, and the digest
   // that goes out each morning.
   "hit-sale-tatts-july": ["/data/hitsales/tatts-july-2026/index.json", "Tattersalls July 2026 HIT catalogue: every lot with its rating, rank against the sale and against the GB/IRE/FRA population, pedigree, form and sectionals",
     "sale, counts, rows[] (816 lots, ~200 fields each: lot, name, age, sex, sire, dam, trainer, rating, rank, officialRating, price...). Always name fields."],
-  "hit-sale-tatts-july-tracking": ["/data/hitsales/tatts-july-2026/tracking.json", "Tattersalls July 2026: the desk's lists, categories and enquiries",
+  "hit-sale-tatts-july-tracking": ["/data/hitsales/tatts-july-2026/tracking.json", "Tattersalls July 2026: your lists, categories and enquiries",
     "lots[] (one per lot: name, horseCode, trainer, rating, priceGns, purchaser, sold, runs, wins, lastRun, nextRun) and runs[] (every run since the sale)."],
   "hit-sale-arc": ["/data/hitsales/arc-sale-2026/index.json", "Arqana Arc 2026 HIT catalogue: every lot with its rating and rank",
     "sale, counts, rows[] (51 lots, ~200 fields each). Always name fields."],
-  "hit-sale-arc-tracking": ["/data/hitsales/arc-sale-2026/tracking.json", "Arqana Arc 2026: the desk's lists, categories and enquiries",
+  "hit-sale-arc-tracking": ["/data/hitsales/arc-sale-2026/tracking.json", "Arqana Arc 2026: your lists, categories and enquiries",
     "lots[] and runs[] as for the Tattersalls tracking file."],
 
   // Prospects
@@ -272,7 +272,7 @@ export const TOOLS = [
     description:
       "What the rest of the team has recently asked BlandfordAI about. Pass a subject - a horse, " +
       "sire, dam, trainer, owner, course or sale - and get back the questions colleagues put about " +
-      "it, who asked, and when; omit the subject to see what the desk has been asking about lately. " +
+      "it, who asked, and when; omit the subject to see what you have been asking about lately. " +
       "This is the one thing you know that the warehouse does not, so call it whenever a question " +
       "names something specific. Two people working the same horse from different ends is worth " +
       "saying out loud.",
@@ -283,7 +283,7 @@ export const TOOLS = [
           type: "string",
           description:
             "The name to look for, as written - country suffixes and case do not matter. " +
-            "Leave empty for the desk's recent questions generally.",
+            "Leave empty for your recent questions generally.",
         },
         days: { type: "number", description: "How far back to look. Default 90." },
       },
@@ -632,7 +632,7 @@ export async function runTool({ name, input }, { db, allowedTables, userId }) {
           your_own_earlier_questions: you,
           note: colleagues.length
             ? undefined
-            : "Nobody else on the desk has asked about this in the window. Say nothing about it rather than reporting the absence.",
+            : "Nobody else on you have asked about this in the window. Say nothing about it rather than reporting the absence.",
         }),
         meta: { rowCount: rows.length },
       };
@@ -695,7 +695,7 @@ function webBrief(web) {
 
 You can also ${reach}. The platform's own data is always where you start and what you lead with; the web fills in around it.
 
-- Anything the platform could hold, look for there first: results, form, ratings, sectionals, entries and declarations, sales, pedigrees, sires, trainers, and the desk's own lists. Go to the web for what it does not hold, or holds only up to its last update - today's news, stable and trainer comments, going and non-runners, injuries and retirements, stud moves and fee announcements, prices from sales outside our catalogues, press coverage - and whenever you are ${lookUp}.
+- Anything the platform could hold, look for there first: results, form, ratings, sectionals, entries and declarations, sales, pedigrees, sires, trainers, and your own lists. Go to the web for what it does not hold, or holds only up to its last update - today's news, stable and trainer comments, going and non-runners, injuries and retirements, stud moves and fee announcements, prices from sales outside our catalogues, press coverage - and whenever you are ${lookUp}.
 - Never let a web figure stand in for one the warehouse holds. When a web source and the platform disagree, give the platform's figure first, then what the source says and how recent it is; do not quietly pick one.
 - Keep the two visibly apart. Everything you take from the web must be traceable to its page - ${traced} - so the reader can tell at a glance which facts are the platform's and which are a web page's. When an answer draws on both, lead with the platform.
 - Weigh the source. The racing authorities, the sales companies, the studs and the trade press count for more than a forum, a tipster or an undated page; say which you are relying on when it matters.${search ? `
@@ -730,9 +730,9 @@ When a query comes back empty, that is information: say so, say what you searche
 
 ## Advise, do not just answer
 
-You are the desk's adviser, not its query engine. The question asked is the starting point, not the boundary. Having answered it, say the thing a good colleague would say next - and only when you actually have it, never as a habit:
+You are your adviser, not its query engine. The question asked is the starting point, not the boundary. Having answered it, say the thing a good colleague would say next - and only when you actually have it, never as a habit:
 
-- **Who else is on it.** You are the only one who can see what the whole desk has been asking. Whenever a question names something specific - a horse, a sire, a dam, a trainer, an owner, a course, a sale - call team_activity for it. If a colleague has asked about the same thing recently, say so plainly and early: "Stuart asked about him on Monday." Name the person, say when, and say what they were after. Two people working the same horse from different ends is worth knowing, and neither of them can see it without you.
+- **Who else is on it.** You are the only one who can see what the whole team has been asking. Whenever a question names something specific - a horse, a sire, a dam, a trainer, an owner, a course, a sale - call team_activity for it. If a colleague has asked about the same thing recently, say so plainly and early: "Stuart asked about him on Monday." Name the person, say when, and say what they were after. Two people working the same horse from different ends is worth knowing, and neither of them can see it without you.
 - **What connects.** Relate the answer to what this platform already holds about them: whether the horse is on their tracker and why, whether it is entered in the days ahead, whether it is in a sale catalogue, whether the sire came up in another question. A fact that connects to their own book is worth more than a better fact that does not.
 - **What follows.** If the answer implies a next step - a race that fits, a lot worth a look, a page that shows the rest - say it in a line. One recommendation, not a list of options.
 

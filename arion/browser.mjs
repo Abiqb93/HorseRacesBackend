@@ -433,7 +433,7 @@ export async function probe({ env = process.env, name = "Frankel", kind = "named
  *            opened, the way the horse's own postback would carry it
  *
  * Each step reports what the sidebar holds, the files and frames on the page,
- * any box on screen, and a screenshot. It makes real reports — the desk's
+ * any box on screen, and a screenshot. It makes real reports — the user's
  * subscription is not metered — in a browser of its own, so the one jobs keep
  * is not disturbed.
  */
@@ -642,7 +642,7 @@ export async function candidatesOn(page) {
  *   <RtfFileName>Horse_Pedigreesreport-3_1343….rtf</RtfFileName>
  *
  * and the files themselves sit under /files/reports/, which is where the
- * page's own "Save As RTF" points. Both are read: the PDF is what the desk
+ * page's own "Save As RTF" points. Both are read: the PDF is what the user
  * wants to look at, the RTF is what it wants to edit.
  */
 export const REPORT_FILES = "/files/reports/";
@@ -695,7 +695,7 @@ export function horseIdFrom(frames = []) {
  *
  * Launching Chromium, loading Arion three times and posting the login took
  * about 8.5 of the 10 seconds a search took, and all of it was thrown away
- * when the search ended. Fifteen minutes covers a desk working down a list;
+ * when the search ended. Fifteen minutes covers a team working down a list;
  * past that the browser goes, and Arion's own session has likely lapsed too.
  */
 export const IDLE_MS = 15 * 60 * 1000;
@@ -797,7 +797,7 @@ export async function withSession(fn, { env = process.env, launch = launchChromi
       await signIn(page, env.ARION_USERNAME, env.ARION_PASSWORD);
       const now = await signedIn(page);
       if (!now.yes) {
-        throw new ArionError(`Arion refused the desk's login${now.failure ? `: ${now.failure}` : ""}`, { status: 401, code: "login" });
+        throw new ArionError(`Arion refused your login${now.failure ? `: ${now.failure}` : ""}`, { status: 401, code: "login" });
       }
     }
     // Arion sends a fresh login to /Home.aspx whatever asked for it
@@ -812,7 +812,7 @@ export async function withSession(fn, { env = process.env, launch = launchChromi
 }
 
 /**
- * Launch and sign in ahead of the first job, so it happens while the desk is
+ * Launch and sign in ahead of the first job, so it happens while the user is
  * still typing. A browser already kept is left as it is — its page may hold
  * the dialog a report is about to be made from — and only its clock restarts.
  */
@@ -899,7 +899,7 @@ export async function steadily(page, read, { tries = 3 } = {}) {
  * Arion hands a report's PDF to the frame that shows it and to nothing else:
  * on the live site the same address, asked for again by the same session a
  * second later, answered 404 for as long as anyone asked, while the frame was
- * showing it — the 404 the desk saw. The RTF, which no frame loads, answers
+ * showing it — the 404 the user saw. The RTF, which no frame loads, answers
  * normally. So the frame's own request goes through as it is, its answer is
  * handed on unchanged, and a copy is kept.
  */
@@ -1010,7 +1010,7 @@ export async function matingDialog(page, { sire = "", dam = "", sireIs = null } 
   const sires = (await runSearch(page, { kind: "theoretical", sire, dam })) ?? [];
   if (!sires.length) return { stage: "sire", candidates: [] };
   const chosen = sireIs ? { one: sires.find((h) => sameHorse(h, sireIs)) ?? null, among: sires } : pickCandidate(sires, { name: sire });
-  // Arion's own list could not be narrowed to one sire, so the desk picks.
+  // Arion's own list could not be narrowed to one sire, so the user picks.
   if (!chosen.one) return { stage: "sire", candidates: chosen.among };
   await page.click(`#${chosen.one.link}`, { timeout: 20000 });
   // Arion refills the same grid with the dams, and until it has, the sires
@@ -1087,7 +1087,7 @@ const menuHolds = (page) =>
 
 /**
  * The files a report was built into, fetched with the page's own cookies —
- * no second login — so the desk can open them again later without Arion. A
+ * no second login — so the user can open them again later without Arion. A
  * file that cannot be had, or a login page where a report should be, is left
  * as its address, which is all it was before.
  */
@@ -1205,7 +1205,7 @@ export async function drawnAsFile(page, src, { name = "arion-report" } = {}) {
 
 /**
  * An HTML report printed to PDF — a Standard pedigree is an HTML page, and
- * the desk keeps and sends PDFs. It is laid out at Arion's own address, so
+ * the user keeps and sends PDFs. It is laid out at Arion's own address, so
  * its styles and pictures come with the session, with its scripts taken out.
  */
 export async function htmlAsPdf(page, html, url, { name = "arion-report" } = {}) {
@@ -1362,7 +1362,7 @@ async function builtNow(page, { type, value, n }, had = []) {
  * Wait for the report asked for to be built, not for a clock: Arion shows
  * "Loading Report..." for as long as it takes. A report that is drawn and
  * filed both is given a moment for its files, which are the better copy.
- * Arion's "are you sure" is answered yes if it ever asks: the desk said yes
+ * Arion's "are you sure" is answered yes if it ever asks: the user said yes
  * by pressing Generate.
  */
 export async function waitForBuilt(page, reportId, { timeout = 60000, poll = 400, grace = 3000, captured = null, since = 0, had = new Set() } = {}) {
@@ -1512,7 +1512,7 @@ export async function makeReport({ env = process.env, values = {}, horse = {}, s
     const tried = await fetchFiles(page, named.filter((f) => ours(f.name) && f.kind === "rtf"));
     let files = [shown, ...tried.filter((f) => f.body)].filter(Boolean);
     // An HTML report is printed to PDF too, and the PDF comes first: it is
-    // what the desk opens, keeps and sends on. Arion's own page is kept beside it.
+    // what the user opens, keeps and sends on. Arion's own page is kept beside it.
     if (shown?.kind === "html") {
       const subject = sire ? `${sire.label} x ${horse.label}` : horse.label ?? horse.name;
       const pdf = await htmlAsPdf(page, decodeHtml(shown.body, shown.contentType), shown.url, { name: fileName(`${subject} - ${label}`) });

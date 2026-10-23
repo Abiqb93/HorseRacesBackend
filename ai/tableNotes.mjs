@@ -18,7 +18,7 @@
  */
 
 export const TABLE_NOTES = {
-  // --- the desk's own working lists ----------------------------------------
+  // --- the user's own working lists ----------------------------------------
   // These are what the product is for, and the assistant could not see any of
   // them until now: they route through hand-written endpoints rather than the
   // generic /api/:table one, so they were never on the allow-list it inherited.
@@ -26,7 +26,7 @@ export const TABLE_NOTES = {
     "The Review List: horses put up for review, with the rating and figures " +
     "they were put up on. Scope by user_id.",
   review_horse_actions:
-    "What the desk decided about a reviewed horse - the Enquire actions and " +
+    "What you decided about a reviewed horse - the Enquire actions and " +
     "their state. This is the record of what was actually done about a horse.",
   review_conditions: "The conditions a horse had to meet to reach the Review List.",
   review_rule_preferences: "Each user's Review List rules and thresholds.",
@@ -106,7 +106,7 @@ export const TABLE_NOTES = {
   report_trainer_uplift_moves: "The individual horse moves behind the trainer uplift summary.",
 
   // --- the broodmare band ---------------------------------------------------
-  my_mares: "A desk's broodmare band: one row per mare per agent, keyed on user_id.",
+  my_mares: "A team's broodmare band: one row per mare per agent, keyed on user_id.",
   mare_seasons:
     "What happened to a mare in one season. `season` is the COVERING year: the 2026 row " +
     "is the mare covered in 2026, and its `foaled_date` is the foal she dropped that spring " +
