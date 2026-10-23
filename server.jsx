@@ -7260,9 +7260,9 @@ async function worldwideOutlook({ sire, dam, damsire, damYear, damsireOf }) {
 const BREEDING_HINT = "/*+ MAX_EXECUTION_TIME(9000) */";
 
 /** Horses by one condition, best first. A timeout is an empty group, flagged. */
-async function horsesWhere(where, params, limit = 5000) {
+async function horsesWhere(where, params, limit = 5000, hint = BREEDING_HINT) {
   const { HORSE_SUMMARY_SELECT, summariseHorse } = await loadMating();
-  const sql = `${HORSE_SUMMARY_SELECT.replace("SELECT ", `SELECT ${BREEDING_HINT} `)}
+  const sql = `${HORSE_SUMMARY_SELECT.replace("SELECT ", `SELECT ${hint} `)}
    WHERE ${where}
    GROUP BY horseName, foalYear
    ORDER BY GREATEST(COALESCE(bestMaster, 0), COALESCE(bestPerformance, 0)) DESC, runs DESC
@@ -7285,13 +7285,13 @@ async function horsesWhere(where, params, limit = 5000) {
  * are out of a couple of thousand different mares and one IN-list that long
  * is not a query MySQL enjoys.
  */
-async function damsiresOf(damNames) {
+async function damsiresOf(damNames, hint = BREEDING_HINT) {
   const out = new Map();
   const names = [...new Set(damNames.filter(Boolean))];
   for (let i = 0; i < names.length; i += 400) {
     const chunk = names.slice(i, i + 400);
     const rows = await runQuery(
-      `SELECT ${BREEDING_HINT} horseName, MAX(sireName) AS sireName
+      `SELECT ${hint} horseName, MAX(sireName) AS sireName
          FROM APIData_Table2
         WHERE horseName IN (${chunk.map(() => "?").join(", ")})
         GROUP BY horseName`,
@@ -7320,46 +7320,30 @@ let breedingBaselineInFlight = null;
  * starts it, gets the fallback at once, and the measurement lands in the
  * cache for everyone after — two minutes' grace, because nobody is waiting.
  */
-function measureBaseline() {
+function measureBaseline({ hint = "/*+ MAX_EXECUTION_TIME(120000) */" } = {}) {
   if (breedingBaselineInFlight) return breedingBaselineInFlight;
   const since = new Date();
   since.setUTCFullYear(since.getUTCFullYear() - 2);
   // Flat runs only, as every figure the outlook reads: a population that
   // counted hurdlers' and chasers' figures would sit above the horses the
-  // sires are measured on.
-  breedingBaselineInFlight = loadMating()
-    .then(({ FLAT_RUN }) =>
-      runQuery(
-        `SELECT /*+ MAX_EXECUTION_TIME(120000) */ COUNT(*) AS n, AVG(best) AS mean, STDDEV_SAMP(best) AS sd
-           FROM (
-             SELECT GREATEST(
-                      COALESCE(MAX(CASE WHEN preRaceMasterRating BETWEEN 1 AND 140 THEN preRaceMasterRating END), 0),
-                      COALESCE(MAX(CASE WHEN performanceRating    BETWEEN 1 AND 140 THEN performanceRating    END), 0)
-                    ) AS best
-               FROM APIData_Table2
-              WHERE meetingDate >= ? AND ${FLAT_RUN}
-              GROUP BY horseName, YEAR(foalingDate)
-           ) t
-          WHERE best > 0`,
-        [since.toISOString().slice(0, 10)],
-      ),
-    )
-    .then(([row]) => {
-      const value = {
-        n: Number(row?.n) || 0,
-        mean: Number(row?.mean) || null,
-        sd: Number(row?.sd) || null,
-        since: since.toISOString().slice(0, 10),
-        measured: true,
-      };
-      if (value.n > 0 && value.mean) {
+  // sires are measured on. Read as a histogram, so the grade lines come out
+  // of the same pass as the mean, and kept in a table so a redeploy does
+  // not lose a measurement that takes minutes.
+  breedingBaselineInFlight = Promise.all([loadMating(), loadSummaries()])
+    .then(([{ FLAT_RUN }, { baselineHistogramSql, histogramStats, writeBaseline }]) =>
+      runQuery(baselineHistogramSql(FLAT_RUN, hint), [since.toISOString().slice(0, 10)]).then((rows) => {
+        const stats = histogramStats(rows);
+        if (!stats) {
+          console.warn("breeding baseline came back empty");
+          return null;
+        }
+        const value = { ...stats, since: since.toISOString().slice(0, 10), measured: true };
         breedingBaseline = { createdAt: Date.now(), value };
-        console.log(`breeding baseline measured: ${value.n} horses, mean ${value.mean.toFixed(2)}, sd ${value.sd?.toFixed(2)}`);
-      } else {
-        console.warn("breeding baseline came back empty");
-      }
-      return value;
-    })
+        console.log(`breeding baseline measured: ${value.n} horses, mean ${value.mean}, sd ${value.sd}, grades ${JSON.stringify(value.grades)}`);
+        writeBaseline(runQuery, value).catch((err) => console.warn("breeding baseline not kept:", err.message));
+        return value;
+      }),
+    )
     .catch((err) => {
       console.warn("breeding baseline failed:", err.message);
       return null;
@@ -7370,11 +7354,29 @@ function measureBaseline() {
   return breedingBaselineInFlight;
 }
 
+let storedBaselineRead = false;
 async function populationBaseline() {
   if (breedingBaseline && Date.now() - breedingBaseline.createdAt < BREEDING_BASELINE_TTL_MS) {
     return breedingBaseline.value;
   }
+  // The last measurement, from the table, once after a start: it is the
+  // answer until a fresher one lands, and it never was before — every
+  // redeploy began again with a two-minute query that did not finish.
+  if (!breedingBaseline && !storedBaselineRead) {
+    storedBaselineRead = true;
+    try {
+      const { readBaseline } = await loadSummaries();
+      const kept = await readBaseline(runQuery);
+      if (kept?.n) {
+        const { builtAt, ...value } = kept;
+        breedingBaseline = { createdAt: builtAt ?? Date.now(), value: { ...value, measured: true } };
+      }
+    } catch (err) {
+      console.warn("breeding baseline not read from the table:", err.message);
+    }
+  }
   measureBaseline();
+  if (breedingBaseline) return breedingBaseline.value;
   // A fallback that says it is one. `measured: false` tells the page to say
   // so, and the figures are the last measurement rather than a guess: on 12
   // September 2026 the query counted 38,596 horses that had run in the two
@@ -7397,28 +7399,116 @@ async function populationBaseline() {
  * damsire brings, independent of any stallion. His daughters that raced are
  * the only ones we can name, so this is the raced-dam subset.
  */
-async function damsireProgeny(damsire) {
+async function damsireProgeny(damsire, { hint = BREEDING_HINT, stored = true } = {}) {
   const none = { horses: [], timedOut: false };
   if (!damsire) return none;
+  // Summarised overnight, where it was: the daughters of a big sire are
+  // thousands, and their runners more, and a request cannot wait for them.
+  if (stored) {
+    const kept = await storedGroup("damsire", damsire);
+    if (kept) return kept;
+  }
+  let daughtersShort = false;
   const daughters = await runQuery(
-    `SELECT ${BREEDING_HINT} DISTINCT horseName
+    `SELECT ${hint} DISTINCT horseName
        FROM APIData_Table2
       WHERE sireName = ? AND horseGender IN ('f', 'm')
       LIMIT 3000`,
     [damsire],
-  ).catch(() => []);
+  ).catch((err) => {
+    // A list that could not be read in time is not an empty list: Dubawi's
+    // daughters were being reported as none, and cached as none.
+    daughtersShort = true;
+    console.warn(`damsire daughters for ${damsire} not read:`, err.message);
+    return [];
+  });
   const names = daughters.map((d) => d.horseName).filter(Boolean);
-  if (!names.length) return none;
+  if (!names.length) {
+    const out = { horses: [], timedOut: daughtersShort };
+    if (stored) keepGroup("damsire", damsire, out);
+    return out;
+  }
   const got = { horses: [], timedOut: false };
   for (let i = 0; i < names.length; i += 400) {
     const chunk = names.slice(i, i + 400);
-    const part = await horsesWhere(`damName IN (${chunk.map(() => "?").join(", ")})`, chunk, 2000);
+    const part = await horsesWhere(`damName IN (${chunk.map(() => "?").join(", ")})`, chunk, 2000, hint);
     got.horses.push(...part.horses);
     got.timedOut = got.timedOut || part.timedOut;
   }
   for (const h of got.horses) if (!h.damsire) h.damsire = damsire;
   got.horses.sort((a, b) => (b.best ?? 0) - (a.best ?? 0));
+  if (stored) keepGroup("damsire", damsire, got);
   return got;
+}
+
+/* ------------------------------------------------------------------ */
+/* Summaries kept overnight (breeding/summaries.mjs)                    */
+/* ------------------------------------------------------------------ */
+
+const loadSummaries = () => import("./breeding/summaries.mjs");
+loadSummaries()
+  .then(({ CREATE_SUMMARY, CREATE_BASELINE }) => runQuery(CREATE_SUMMARY, []).then(() => runQuery(CREATE_BASELINE, [])))
+  .catch((err) => console.warn("breeding summaries tables:", err.message));
+
+/** A group (a sire's runners, a damsire's daughters' runners) as the night left it, or null. */
+async function storedGroup(kind, key) {
+  try {
+    const { readSummaries, isFresh } = await loadSummaries();
+    const row = (await readSummaries(runQuery, kind, [key])).get(key);
+    if (isFresh(row)) return { horses: row.body.horses ?? [], timedOut: false, stored: true };
+  } catch (err) {
+    console.warn(`summaries: ${kind} ${key} not read:`, err.message);
+  }
+  return null;
+}
+
+/**
+ * A group just read live, kept for the next caller: written when it came
+ * back complete, remembered for the nightly pass when it did not. Off the
+ * request path; a failure here costs nobody an answer.
+ */
+function keepGroup(kind, key, got) {
+  if (!key) return;
+  loadSummaries()
+    .then(({ summaryOf, writeSummary, rememberAsked }) =>
+      got?.timedOut ? rememberAsked(runQuery, kind, [key]) : writeSummary(runQuery, kind, key, summaryOf(got?.horses ?? []), { timedOut: false }),
+    )
+    .catch((err) => console.warn(`summaries: could not keep ${kind} ${key}:`, err.message));
+}
+
+/** The live read of a group with a cap of the caller's choosing: the night's, or a background minute's. */
+async function readGroupLive(kind, key, hint) {
+  if (kind === "damsire") return damsireProgeny(key, { hint, stored: false });
+  const got = await horsesWhere("sireName = ?", [key], 5000, hint);
+  if (!got.timedOut) {
+    const damsireOf = await damsiresOf(got.horses.filter((h) => !h.damsire && h.dam).map((h) => h.dam), hint);
+    for (const h of got.horses) if (!h.damsire && h.dam) h.damsire = damsireOf.get(h.dam.toUpperCase()) ?? null;
+  }
+  return got;
+}
+
+/**
+ * Sires a request could not read in time, re-read one at a time with a
+ * minute each, so a page refreshed a little later has them. One queue, so
+ * two refreshes do not start two reads of Galileo.
+ */
+const backgroundBuilds = new Set();
+let backgroundChain = Promise.resolve();
+function buildInBackground(kind, keys) {
+  for (const key of keys) {
+    const id = `${kind}|${key}`;
+    if (!key || backgroundBuilds.has(id)) continue;
+    backgroundBuilds.add(id);
+    backgroundChain = backgroundChain
+      .then(async () => {
+        const { BACKGROUND_HINT } = await loadSummaries();
+        const got = await readGroupLive(kind, key, BACKGROUND_HINT);
+        keepGroup(kind, key, got);
+        if (!got.timedOut && kind === "sire") sireRatingsCache.delete(key);
+      })
+      .catch((err) => console.warn(`summaries: background ${kind} ${key} failed:`, err.message))
+      .finally(() => backgroundBuilds.delete(id));
+  }
 }
 
 async function matingOutlook({ sire, dam, damsire: askedDamsire = null, damYear = null }) {
@@ -7426,7 +7516,8 @@ async function matingOutlook({ sire, dam, damsire: askedDamsire = null, damYear 
   let damsire = askedDamsire ? studBookName(askedDamsire) : null;
 
   const [bySire, outOfDam, damRows] = await Promise.all([
-    horsesWhere("sireName = ?", [sire]),
+    // His runners as the night summarised them, where it has; live otherwise.
+    storedGroup("sire", sire).then((kept) => kept ?? horsesWhere("sireName = ?", [sire])),
     horsesWhere("damName = ?", [dam], 200),
     horsesWhere("horseName = ?", [dam], 5),
   ]);
@@ -7436,11 +7527,19 @@ async function matingOutlook({ sire, dam, damsire: askedDamsire = null, damYear 
   // The mare's own sire, if the caller did not know it: her own rows say.
   if (!damsire && damOwn.horses[0]?.sire) damsire = studBookName(damOwn.horses[0].sire);
 
-  // Damsires for the sire's runners, so the same cross can be picked out.
-  const damsireOf = await damsiresOf(bySire.horses.map((h) => h.dam));
-  for (const h of bySire.horses) {
-    if (!h.damsire && h.dam) h.damsire = damsireOf.get(h.dam.toUpperCase()) ?? null;
+  // Damsires for the sire's runners, so the same cross can be picked out —
+  // only the ones not already known, which for a stored summary is none.
+  const unresolved = bySire.horses.filter((h) => !h.damsire && h.dam);
+  const damsireOf = unresolved.length ? await damsiresOf(unresolved.map((h) => h.dam)) : new Map();
+  let resolved = 0;
+  for (const h of unresolved) {
+    h.damsire = damsireOf.get(h.dam.toUpperCase()) ?? null;
+    if (h.damsire) resolved += 1;
   }
+  // Kept for the next caller: a live read that came back complete, or a
+  // stored one whose damsires have just been filled in.
+  if (!bySire.timedOut && (!bySire.stored || resolved)) keepGroup("sire", sire, bySire);
+  else if (bySire.timedOut) buildInBackground("sire", [sire]);
   const nick = damsire
     ? bySire.horses.filter((h) => h.damsire && studBookName(h.damsire) === damsire)
     : [];
@@ -7532,7 +7631,8 @@ app.get("/api/breeding/mare-side", async (req, res) => {
         : null,
       nick: null,
     };
-    mareSideCache.set(cacheKey, { at: Date.now(), body });
+    // A read that ran out of time is not kept for six hours as if it were the answer.
+    if (!byDamsire.timedOut && !outOfDam.timedOut) mareSideCache.set(cacheKey, { at: Date.now(), body });
     if (mareSideCache.size > 500) mareSideCache.delete(mareSideCache.keys().next().value);
     res.json(body);
   } catch (err) {
@@ -8155,15 +8255,32 @@ const isQueryTimeout = (err) =>
 
 app.get("/api/breeding/sire-ratings", async (req, res) => {
   const { parseSireList, sireRunnersSql, summariseSires, SIRES_PER_QUERY } = await loadSires();
+  const { ratingsView, readSummaries, isFresh } = await loadSummaries();
   const sires = parseSireList(req.query.sires);
   if (!sires.length) return res.status(400).json({ error: "give sires, separated by |" });
 
   const out = {};
-  const wanted = [];
+  let wanted = [];
   for (const s of sires) {
     const hit = sireRatingsCache.get(s);
     if (hit && Date.now() - hit.at < SIRE_RATINGS_TTL_MS) out[s] = hit.body;
     else wanted.push(s);
+  }
+  // The night's summaries next: the biggest sires are exactly the ones a
+  // request cannot read in time, and they were read overnight.
+  if (wanted.length) {
+    try {
+      const kept = await readSummaries(runQuery, "sire", wanted);
+      wanted = wanted.filter((s) => {
+        const row = kept.get(s);
+        if (!isFresh(row)) return true;
+        out[s] = ratingsView(row.body);
+        sireRatingsCache.set(s, { at: Date.now(), body: out[s] });
+        return false;
+      });
+    } catch (err) {
+      console.warn("sire ratings: summaries not read:", err.message);
+    }
   }
   const chunks = [];
   for (let i = 0; i < wanted.length; i += SIRES_PER_QUERY) chunks.push(wanted.slice(i, i + SIRES_PER_QUERY));
@@ -8175,7 +8292,7 @@ app.get("/api/breeding/sire-ratings", async (req, res) => {
       const done = await Promise.all(
         wave.map((chunk) =>
           runQuery(sireRunnersSql(chunk.length, SIRE_RATINGS_HINT), chunk)
-            .then((rows) => ({ chunk, summary: summariseSires(rows, chunk) }))
+            .then((rows) => ({ chunk, summary: summariseSires(rows, chunk, { keepHorses: true }) }))
             .catch((err) => {
               if (isQueryTimeout(err)) return { chunk, timedOut: true };
               throw err;
@@ -8188,10 +8305,20 @@ app.get("/api/breeding/sire-ratings", async (req, res) => {
           continue;
         }
         for (const s of d.chunk) {
-          out[s] = d.summary[s];
-          sireRatingsCache.set(s, { at: Date.now(), body: d.summary[s] });
+          const full = d.summary[s];
+          out[s] = ratingsView(full);
+          sireRatingsCache.set(s, { at: Date.now(), body: out[s] });
+          keepGroup("sire", s, { horses: full?.horses ?? [], timedOut: false });
         }
       }
+    }
+    // The ones that ran out of time: remembered for the night, and re-read
+    // one at a time in the background, so a refresh in a minute has them.
+    if (timedOut.length) {
+      loadSummaries()
+        .then(({ rememberAsked }) => rememberAsked(runQuery, "sire", timedOut))
+        .catch((err) => console.warn("sire ratings: not remembered:", err.message));
+      buildInBackground("sire", timedOut);
     }
     if (sireRatingsCache.size > 4000) {
       for (const k of [...sireRatingsCache.keys()].slice(0, 1000)) sireRatingsCache.delete(k);
@@ -15318,6 +15445,27 @@ app.get('/api/france/racecards', (req, res) => {
     },
   );
 });
+
+// Sires' and damsires' runners summarised, and the population measured,
+// nightly: the reads the expected rating needs, done once with the time
+// they take instead of on a request that cannot wait for them. The names
+// are the ones the routes were asked for (breeding/summaries.mjs).
+{
+  const cron = require("node-cron");
+  const run = async (why) => {
+    try {
+      const { rebuildSummaries, NIGHTLY_HINT, BASELINE_HINT } = await loadSummaries();
+      await measureBaseline({ hint: BASELINE_HINT });
+      const out = await rebuildSummaries(runQuery, (kind, key) => readGroupLive(kind, key, NIGHTLY_HINT), {
+        log: { log: (m) => console.log("[summaries]", m), warn: (m) => console.warn("[summaries]", m) },
+      });
+      console.log(`[summaries] ${why}:`, JSON.stringify(out));
+    } catch (err) {
+      console.error(`[summaries] ${why} failed:`, err.message);
+    }
+  };
+  cron.schedule("50 2 * * *", () => run("nightly"), { timezone: "Europe/London" });
+}
 
 // Trainer uplift moves, weekly on Monday morning -- a full walk of the
 // results table, so not worth running daily.

@@ -52,7 +52,7 @@ export const sireRunnersSql = (count, hint = "") =>
  * Every sire asked about gets an entry — a sire with no runners on file is
  * `rated: 0`, which is an answer, not a gap.
  */
-export function summariseSires(rows, asked) {
+export function summariseSires(rows, asked, { keepHorses = false } = {}) {
   const by = new Map(asked.map((s) => [s, []]));
   for (const r of rows ?? []) {
     const key = studBookName(r.sireKeyRaw ?? r.sireName);
@@ -69,6 +69,9 @@ export function summariseSires(rows, asked) {
         .sort((a, b) => b.best - a.best)
         .slice(0, 3)
         .map((h) => ({ name: h.name, best: h.best, foalingYear: h.foalingYear, sex: h.sex })),
+      // The horses themselves, for a caller keeping the summary overnight;
+      // the route's answer leaves them out.
+      ...(keepHorses ? { horses } : {}),
     };
   }
   return out;
