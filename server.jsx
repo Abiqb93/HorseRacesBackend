@@ -7354,6 +7354,13 @@ function measureBaseline({ hint = "/*+ MAX_EXECUTION_TIME(120000) */" } = {}) {
   return breedingBaselineInFlight;
 }
 
+// A server with nothing kept measures once, a few minutes after it starts.
+setTimeout(() => {
+  populationBaseline()
+    .then((p) => (p?.measured ? null : loadSummaries().then(({ BASELINE_HINT }) => measureBaseline({ hint: BASELINE_HINT }))))
+    .catch((err) => console.warn("breeding baseline at start:", err.message));
+}, 3 * 60 * 1000).unref?.();
+
 let storedBaselineRead = false;
 async function populationBaseline() {
   if (breedingBaseline && Date.now() - breedingBaseline.createdAt < BREEDING_BASELINE_TTL_MS) {
@@ -7375,7 +7382,11 @@ async function populationBaseline() {
       console.warn("breeding baseline not read from the table:", err.message);
     }
   }
-  measureBaseline();
+  // Never measured on a request: the pass is a walk of two seasons of the
+  // results table, and firing it whenever a page asked kept the database
+  // busy all day for a figure that moves a tenth of a point a week. The
+  // night measures it; a server that finds nothing kept measures once,
+  // a few minutes after it starts.
   if (breedingBaseline) return breedingBaseline.value;
   // A fallback that says it is one. `measured: false` tells the page to say
   // so, and the figures are the last measurement rather than a guess: on 12
@@ -7425,7 +7436,10 @@ async function damsireProgeny(damsire, { hint = BREEDING_HINT, stored = true } =
   const names = daughters.map((d) => d.horseName).filter(Boolean);
   if (!names.length) {
     const out = { horses: [], timedOut: daughtersShort };
-    if (stored) keepGroup("damsire", damsire, out);
+    if (stored) {
+      keepGroup("damsire", damsire, out);
+      if (daughtersShort) buildInBackground("damsire", [damsire]);
+    }
     return out;
   }
   const got = { horses: [], timedOut: false };
@@ -7437,7 +7451,10 @@ async function damsireProgeny(damsire, { hint = BREEDING_HINT, stored = true } =
   }
   for (const h of got.horses) if (!h.damsire) h.damsire = damsire;
   got.horses.sort((a, b) => (b.best ?? 0) - (a.best ?? 0));
-  if (stored) keepGroup("damsire", damsire, got);
+  if (stored) {
+    keepGroup("damsire", damsire, got);
+    if (got.timedOut) buildInBackground("damsire", [damsire]);
+  }
   return got;
 }
 
@@ -7501,6 +7518,8 @@ function buildInBackground(kind, keys) {
     backgroundBuilds.add(id);
     backgroundChain = backgroundChain
       .then(async () => {
+        // Not on top of the population pass: one heavy read at a time.
+        if (breedingBaselineInFlight) await breedingBaselineInFlight.catch(() => null);
         const { BACKGROUND_HINT } = await loadSummaries();
         const got = await readGroupLive(kind, key, BACKGROUND_HINT);
         keepGroup(kind, key, got);
@@ -8261,10 +8280,14 @@ app.get("/api/breeding/sire-ratings", async (req, res) => {
 
   const out = {};
   let wanted = [];
+  // Where each answer came from, for the page and for anyone checking.
+  const served = { cached: [], stored: [], live: [], short: [] };
   for (const s of sires) {
     const hit = sireRatingsCache.get(s);
-    if (hit && Date.now() - hit.at < SIRE_RATINGS_TTL_MS) out[s] = hit.body;
-    else wanted.push(s);
+    if (hit && Date.now() - hit.at < SIRE_RATINGS_TTL_MS) {
+      out[s] = hit.body;
+      served.cached.push(s);
+    } else wanted.push(s);
   }
   // The night's summaries next: the biggest sires are exactly the ones a
   // request cannot read in time, and they were read overnight.
@@ -8276,6 +8299,7 @@ app.get("/api/breeding/sire-ratings", async (req, res) => {
         if (!isFresh(row)) return true;
         out[s] = ratingsView(row.body);
         sireRatingsCache.set(s, { at: Date.now(), body: out[s] });
+        served.stored.push(s);
         return false;
       });
     } catch (err) {
@@ -8308,6 +8332,7 @@ app.get("/api/breeding/sire-ratings", async (req, res) => {
           const full = d.summary[s];
           out[s] = ratingsView(full);
           sireRatingsCache.set(s, { at: Date.now(), body: out[s] });
+          served.live.push(s);
           keepGroup("sire", s, { horses: full?.horses ?? [], timedOut: false });
         }
       }
@@ -8323,9 +8348,11 @@ app.get("/api/breeding/sire-ratings", async (req, res) => {
     if (sireRatingsCache.size > 4000) {
       for (const k of [...sireRatingsCache.keys()].slice(0, 1000)) sireRatingsCache.delete(k);
     }
+    served.short = timedOut;
     res.json({
       asked: sires,
       sires: out,
+      served,
       timedOut,
       population: await populationBaseline(),
       basis: "Each runner's best Timeform figure on the flat on our results table (the better of master and performance), 1 to 140; figures earned over jumps are not counted.",
