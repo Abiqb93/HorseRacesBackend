@@ -7324,20 +7324,26 @@ function measureBaseline() {
   if (breedingBaselineInFlight) return breedingBaselineInFlight;
   const since = new Date();
   since.setUTCFullYear(since.getUTCFullYear() - 2);
-  breedingBaselineInFlight = runQuery(
-    `SELECT /*+ MAX_EXECUTION_TIME(120000) */ COUNT(*) AS n, AVG(best) AS mean, STDDEV_SAMP(best) AS sd
-       FROM (
-         SELECT GREATEST(
-                  COALESCE(MAX(CASE WHEN preRaceMasterRating BETWEEN 1 AND 140 THEN preRaceMasterRating END), 0),
-                  COALESCE(MAX(CASE WHEN performanceRating    BETWEEN 1 AND 140 THEN performanceRating    END), 0)
-                ) AS best
-           FROM APIData_Table2
-          WHERE meetingDate >= ?
-          GROUP BY horseName, YEAR(foalingDate)
-       ) t
-      WHERE best > 0`,
-    [since.toISOString().slice(0, 10)],
-  )
+  // Flat runs only, as every figure the outlook reads: a population that
+  // counted hurdlers' and chasers' figures would sit above the horses the
+  // sires are measured on.
+  breedingBaselineInFlight = loadMating()
+    .then(({ FLAT_RUN }) =>
+      runQuery(
+        `SELECT /*+ MAX_EXECUTION_TIME(120000) */ COUNT(*) AS n, AVG(best) AS mean, STDDEV_SAMP(best) AS sd
+           FROM (
+             SELECT GREATEST(
+                      COALESCE(MAX(CASE WHEN preRaceMasterRating BETWEEN 1 AND 140 THEN preRaceMasterRating END), 0),
+                      COALESCE(MAX(CASE WHEN performanceRating    BETWEEN 1 AND 140 THEN performanceRating    END), 0)
+                    ) AS best
+               FROM APIData_Table2
+              WHERE meetingDate >= ? AND ${FLAT_RUN}
+              GROUP BY horseName, YEAR(foalingDate)
+           ) t
+          WHERE best > 0`,
+        [since.toISOString().slice(0, 10)],
+      ),
+    )
     .then(([row]) => {
       const value = {
         n: Number(row?.n) || 0,
@@ -8195,7 +8201,7 @@ app.get("/api/breeding/sire-ratings", async (req, res) => {
       sires: out,
       timedOut,
       population: await populationBaseline(),
-      basis: "Each runner's best Timeform figure on our results table (the better of master and performance), 1 to 140.",
+      basis: "Each runner's best Timeform figure on the flat on our results table (the better of master and performance), 1 to 140; figures earned over jumps are not counted.",
     });
   } catch (err) {
     console.error("sire ratings failed:", err.message);

@@ -18,6 +18,18 @@ export const studBookName = (raw) =>
     .toUpperCase();
 
 /**
+ * A run on the flat, as the results table marks it.
+ *
+ * Timeform's jumps figures sit on a scale of their own — 136 over fences is
+ * a decent handicapper, 136 on the flat a champion — and the table holds
+ * both: a dual-purpose sire's hurdlers and chasers were lifting his runners'
+ * average above Dubawi's. So every figure read for breeding is a flat one.
+ * A row with no race type on it is taken as flat: the jumps rows come from
+ * the Timeform feed, which always names the type.
+ */
+export const FLAT_RUN = "(raceType IS NULL OR raceType = '' OR raceType = 'Flat')";
+
+/**
  * One row per horse: parentage, sex, foaling year, career, best figures.
  *
  * Grouped on the name *and* the foaling year, because a name is not a horse.
@@ -29,6 +41,8 @@ export const studBookName = (raw) =>
  * Timeform's master rating is the horse's level and the performance rating is
  * one run's; both carry a 999 sentinel for "none", which would make every
  * horse a champion if it were summed, so only figures inside the scale count.
+ * `best` is the horse's best on the flat; a figure it earned over jumps is
+ * kept apart as `bestJumps`, so a page can still say what it did there.
  */
 export const HORSE_SUMMARY_SELECT = `
   SELECT horseName,
@@ -38,8 +52,12 @@ export const HORSE_SUMMARY_SELECT = `
          MAX(NULLIF(damsireName, ''))         AS damsireName,
          MAX(horseGender)                     AS sex,
          MIN(foalingDate)                     AS foaled,
-         MAX(CASE WHEN preRaceMasterRating BETWEEN 1 AND 140 THEN preRaceMasterRating END) AS bestMaster,
-         MAX(CASE WHEN performanceRating    BETWEEN 1 AND 140 THEN performanceRating    END) AS bestPerformance,
+         MAX(CASE WHEN ${FLAT_RUN} AND preRaceMasterRating BETWEEN 1 AND 140 THEN preRaceMasterRating END) AS bestMaster,
+         MAX(CASE WHEN ${FLAT_RUN} AND performanceRating    BETWEEN 1 AND 140 THEN performanceRating    END) AS bestPerformance,
+         MAX(CASE WHEN NOT ${FLAT_RUN} THEN GREATEST(
+           COALESCE(CASE WHEN preRaceMasterRating BETWEEN 1 AND 200 THEN preRaceMasterRating END, 0),
+           COALESCE(CASE WHEN performanceRating    BETWEEN 1 AND 200 THEN performanceRating    END, 0)) END) AS bestJumps,
+         SUM(CASE WHEN ${FLAT_RUN} THEN 1 ELSE 0 END) AS flatRuns,
          COUNT(*)                             AS runs,
          SUM(CASE WHEN CAST(positionOfficial AS UNSIGNED) = 1 THEN 1 ELSE 0 END) AS wins,
          SUM(COALESCE(Stakes_Win, 0))         AS stakesWins,
@@ -61,11 +79,13 @@ export const summariseHorse = (r) => {
     sex: r.sex || null,
     foalingYear: foalYear,
     // The higher of the two: a horse's best figure is its best figure
-    // whichever scale recorded it.
+    // whichever scale recorded it — on the flat. Over jumps it is kept apart.
     best: Math.max(bestMaster ?? 0, bestPerformance ?? 0) || null,
     bestMaster,
     bestPerformance,
+    bestJumps: Number(r.bestJumps) || null,
     runs: Number(r.runs) || 0,
+    flatRuns: r.flatRuns === undefined ? null : Number(r.flatRuns) || 0,
     wins: Number(r.wins) || 0,
     stakesWins: Number(r.stakesWins) || 0,
     groupWins: Number(r.groupWins) || 0,
