@@ -149,6 +149,14 @@ export function mergeListNotes(stored, incoming, { now = new Date().toISOString(
   if (!Array.isArray(incoming?.categories) && !Array.isArray(stored?.categories)) delete list.categories;
   if (sale.at) list.notesAt = sale.at;
   else delete list.notesAt;
+  // The comments written for the client (the site's lotClientNotes, 23
+  // October 2026), by the notes' rule: the later edit wins where the save
+  // carries times, and a save that carries none adds its texts as edits now.
+  const client = mergeClientNotes(stored, incoming, { timed, now });
+  if (Object.keys(client.texts).length) list.lotClientNotes = client.texts;
+  else delete list.lotClientNotes;
+  if (Object.keys(client.times).length) list.lotClientNotesAt = client.times;
+  else delete list.lotClientNotesAt;
   // The desk's hand-set checks, by the notes' rule: the later setting of each
   // wins, and one the save does not mention is kept.
   const lotFlags = mergeLotFlags(stored?.lotFlags, incoming?.lotFlags);
@@ -163,6 +171,40 @@ export function mergeListNotes(stored, incoming, { now = new Date().toISOString(
   if (sends.length) list.sends = sends;
   else delete list.sends;
   return { list, changes };
+}
+
+/** A copy's client comments: lot -> { text, at }; a time with no text is a deletion. */
+export function clientNotesOf(list) {
+  const out = new Map();
+  if (!isObject(list)) return out;
+  const at = isObject(list.lotClientNotesAt) ? list.lotClientNotesAt : {};
+  const texts = isObject(list.lotClientNotes) ? list.lotClientNotes : {};
+  for (const [k, v] of Object.entries(texts)) {
+    const lot = lotKey(k);
+    if (lot && noteText(v)) out.set(lot, { text: v, at: noteTime(at[k]) });
+  }
+  for (const [k, v] of Object.entries(at)) {
+    const lot = lotKey(k);
+    if (lot && !out.has(lot) && noteTime(v)) out.set(lot, { text: "", at: noteTime(v) });
+  }
+  return out;
+}
+
+/** The client comments of a save merged into the stored ones, as the notes are. */
+export function mergeClientNotes(stored, incoming, { timed = isObject(incoming?.lotClientNotesAt), now = new Date().toISOString() } = {}) {
+  const merged = new Map(clientNotesOf(stored));
+  for (const [lot, note] of clientNotesOf(incoming)) {
+    const old = merged.get(lot);
+    if (timed) { if (!old || note.at > old.at) merged.set(lot, note); }
+    else if (note.text && (!old || note.text !== old.text)) merged.set(lot, { text: note.text, at: now });
+  }
+  const texts = {};
+  const times = {};
+  for (const [lot, note] of [...merged].sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))) {
+    if (note.text) texts[lot] = note.text;
+    if (note.at) times[lot] = note.at;
+  }
+  return { texts, times };
 }
 
 /**
