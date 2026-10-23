@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeListNotes, mergeLotFlags, mergeClientStates, mergeSends, notesOf, carriesTimes } from "./listNotes.mjs";
+import { mergeListNotes, mergeLotFlags, mergeClientStates, mergeSends, notesOf, carriesTimes, mergeClientNotes } from "./listNotes.mjs";
 
 const NOW = "2026-09-24T18:00:00.000Z";
 const T1 = "2026-09-24T10:00:00.000Z";
@@ -183,4 +183,19 @@ test("a save from an older page, with no times, keeps its own lots as before", (
   const { list } = mergeListNotes(stored, { entries: [{ lot: "1" }, { lot: "7" }] });
   assert.deepEqual(list.entries.map((e) => e.lot), ["1", "7"]);
   assert.equal(list.entryEdits["2"], "2026-10-21T10:00:00Z", "the stored times are kept for the next timed save");
+});
+
+test("the client comments merge as the notes do: the later edit wins, a deletion is a time with no text, an untimed save adds its texts", () => {
+  const stored = { lotNotesAt: {}, lotClientNotes: { 12: "A lovely mover", 3: "Old" }, lotClientNotesAt: { 12: T1, 3: T1 } };
+  const save = { lotNotesAt: {}, lotClientNotes: { 12: "A lovely mover, sound" }, lotClientNotesAt: { 12: T2, 3: T2 } };
+  const { list } = mergeListNotes(stored, save, { now: NOW });
+  assert.deepEqual(list.lotClientNotes, { 12: "A lovely mover, sound" }, "3 deleted at T2, 12 edited at T2");
+  assert.deepEqual(list.lotClientNotesAt, { 3: T2, 12: T2 });
+  const older = mergeListNotes(list, { lotNotesAt: {}, lotClientNotes: { 12: "A lovely mover", 3: "Old" }, lotClientNotesAt: { 12: T1, 3: T1 } }, { now: NOW });
+  assert.deepEqual(older.list.lotClientNotes, { 12: "A lovely mover, sound" }, "an older copy cannot put a deleted comment back");
+  const untimed = mergeClientNotes({ lotClientNotes: { 5: "Kept" }, lotClientNotesAt: { 5: T1 } }, { lotClientNotes: { 7: "New" } }, { now: NOW });
+  assert.deepEqual(untimed.texts, { 5: "Kept", 7: "New" });
+  assert.equal(untimed.times[7], NOW);
+  const none = mergeListNotes({ lotNotesAt: {} }, { lotNotesAt: {} }, { now: NOW });
+  assert.equal(none.list.lotClientNotes, undefined, "nothing written: nothing kept");
 });
