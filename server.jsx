@@ -7346,6 +7346,42 @@ async function worldwideOutlook({ sire, dam, damsire, damYear, damsireOf }) {
 }
 const BREEDING_HINT = "/*+ MAX_EXECUTION_TIME(9000) */";
 
+/**
+ * At most a few of the heavy runner reads at once, across every request.
+ *
+ * Three pages of ratings asked together (a re-ranking asks for its new
+ * leaders while the last page is still being read) were nine queries on
+ * the results table at once, each slower for the others, and the slowest
+ * ran out of its 25 s: 26-30 s a page on 23 October, a quarter of the
+ * sires unanswered. The rest wait their turn here, where waiting costs
+ * nothing, rather than in the database, where it costs everyone — and the
+ * cap on a query's execution time counts only its execution, not its wait.
+ */
+const limiter = (max) => {
+  let active = 0;
+  const waiting = [];
+  const next = () => {
+    if (active >= max || !waiting.length) return;
+    active += 1;
+    const { fn, resolve, reject } = waiting.shift();
+    Promise.resolve()
+      .then(fn)
+      .then(resolve, reject)
+      .finally(() => {
+        active -= 1;
+        next();
+      });
+  };
+  const run = (fn) =>
+    new Promise((resolve, reject) => {
+      waiting.push({ fn, resolve, reject });
+      next();
+    });
+  run.state = () => ({ max, active, waiting: waiting.length });
+  return run;
+};
+const runnerReads = limiter(4);
+
 /** Horses by one condition, best first. A timeout is an empty group, flagged. */
 async function horsesWhere(where, params, limit = 5000, hint = BREEDING_HINT) {
   const { HORSE_SUMMARY_SELECT, summariseHorse } = await loadMating();
@@ -7355,7 +7391,7 @@ async function horsesWhere(where, params, limit = 5000, hint = BREEDING_HINT) {
    ORDER BY GREATEST(COALESCE(bestMaster, 0), COALESCE(bestPerformance, 0)) DESC, runs DESC
    LIMIT ${Number(limit)}`;
   try {
-    return { horses: (await runQuery(sql, params)).map(summariseHorse), truncated: false, timedOut: false };
+    return { horses: (await runnerReads(() => runQuery(sql, params))).map(summariseHorse), truncated: false, timedOut: false };
   } catch (err) {
     // ER_QUERY_TIMEOUT: the cap above fired. A group we could not read in time
     // is reported as unread, never as empty — "no runners" and "did not finish
@@ -8463,7 +8499,7 @@ app.get("/api/breeding/sire-ratings", async (req, res) => {
       const wave = chunks.slice(i, i + 3);
       const done = await Promise.all(
         wave.map((chunk) =>
-          runQuery(sireRunnersSql(chunk.length, SIRE_RATINGS_HINT), chunk)
+          runnerReads(() => runQuery(sireRunnersSql(chunk.length, SIRE_RATINGS_HINT), chunk))
             .then((rows) => ({ chunk, summary: summariseSires(rows, chunk, { keepHorses: true }) }))
             .catch((err) => {
               if (isQueryTimeout(err)) return { chunk, timedOut: true };
@@ -15693,6 +15729,7 @@ app.get("/api/breeding/nightly", async (req, res) => {
         : { building: Boolean(distanceIndexInFlight) },
       grids: gridsCache ? { count: gridsCache.body.count, at: new Date(gridsCache.at).toISOString() } : null,
       damsireCrosses: damsireCrossCache.size,
+      runnerReads: runnerReads.state(),
       lastNightly,
     });
   } catch (err) {
