@@ -7475,6 +7475,8 @@ async function damsiresOf(damNames, hint = BREEDING_HINT) {
 const BREEDING_BASELINE_TTL_MS = 24 * 60 * 60 * 1000;
 let breedingBaseline = null;
 let breedingBaselineInFlight = null;
+/** Why the last measurement came back with nothing, until one succeeds. */
+let breedingBaselineFailure = null;
 
 /**
  * Measure the population, off the request path.
@@ -7500,10 +7502,12 @@ function measureBaseline({ hint = "/*+ MAX_EXECUTION_TIME(120000) */" } = {}) {
         const stats = histogramStats(rows);
         if (!stats) {
           console.warn("breeding baseline came back empty");
+          breedingBaselineFailure = { at: new Date().toISOString(), error: "came back empty", timedOut: false };
           return null;
         }
         const value = { ...stats, since: since.toISOString().slice(0, 10), measured: true };
         breedingBaseline = { createdAt: Date.now(), value };
+        breedingBaselineFailure = null;
         console.log(`breeding baseline measured: ${value.n} horses, mean ${value.mean}, sd ${value.sd}, grades ${JSON.stringify(value.grades)}`);
         writeBaseline(runQuery, value).catch((err) => console.warn("breeding baseline not kept:", err.message));
         return value;
@@ -7511,6 +7515,11 @@ function measureBaseline({ hint = "/*+ MAX_EXECUTION_TIME(120000) */" } = {}) {
     )
     .catch((err) => {
       console.warn("breeding baseline failed:", err.message);
+      breedingBaselineFailure = {
+        at: new Date().toISOString(),
+        error: err.message,
+        timedOut: err?.code === "ER_QUERY_TIMEOUT" || /max_execution_time|maximum statement execution/i.test(err?.message ?? ""),
+      };
       return null;
     })
     .finally(() => {
@@ -16029,9 +16038,13 @@ let lastNightly = null;
   const run = async (why) => {
     lastNightly = { why, startedAt: new Date().toISOString() };
     try {
-      const { rebuildSummaries, NIGHTLY_HINT, BASELINE_HINT } = await loadSummaries();
-      const baseline = await measureBaseline({ hint: BASELINE_HINT });
+      const { rebuildSummaries, NIGHTLY_HINT, NIGHT_BASELINE_HINT } = await loadSummaries();
+      const baselineStarted = Date.now();
+      const baseline = await measureBaseline({ hint: NIGHT_BASELINE_HINT });
       lastNightly.baseline = baseline ? { n: baseline.n, mean: baseline.mean, grades: baseline.grades } : null;
+      lastNightly.baselineMs = Date.now() - baselineStarted;
+      // Kept, so a morning's check reads why rather than inferring it.
+      if (!baseline) lastNightly.baselineError = breedingBaselineFailure ?? { error: "no measurement" };
       if (baseline) forgetPopulationBodies();
       const worldwide = await worldwidePopulation({ fresh: true, hint: "/*+ MAX_EXECUTION_TIME(180000) */" }).catch((err) => {
         console.warn("[summaries] worldwide population not recounted:", err.message);
@@ -16100,6 +16113,7 @@ app.post("/api/breeding/population/measure", async (req, res) => {
     .then((value) => {
       lastMeasure.finishedAt = new Date().toISOString();
       lastMeasure.value = value ? { n: value.n, mean: value.mean, sd: value.sd, median: value.median, grades: value.grades, since: value.since } : null;
+      if (!value) lastMeasure.error = breedingBaselineFailure?.error ?? "no measurement";
       if (value) forgetPopulationBodies();
     })
     .catch((err) => {

@@ -58,6 +58,12 @@ export const STALE_MS = 20 * 60 * 60 * 1000;
 /** The time a nightly read may take: four minutes a sire, fifteen for the population. */
 export const NIGHTLY_HINT = "/*+ MAX_EXECUTION_TIME(240000) */";
 export const BASELINE_HINT = "/*+ MAX_EXECUTION_TIME(900000) */";
+/**
+ * The population's walk at night, when nobody is waiting on it: forty
+ * minutes. On 23 October 2026 the walk took under six minutes by day; that
+ * night it ran into the fifteen-minute cap and the measurement was lost.
+ */
+export const NIGHT_BASELINE_HINT = "/*+ MAX_EXECUTION_TIME(2400000) */";
 /** A single sire re-read in the background after a timeout on a request. */
 export const BACKGROUND_HINT = "/*+ MAX_EXECUTION_TIME(120000) */";
 
@@ -287,6 +293,7 @@ export default {
   STALE_MS,
   NIGHTLY_HINT,
   BASELINE_HINT,
+  NIGHT_BASELINE_HINT,
   BACKGROUND_HINT,
   GRADE_SHARES,
   isFresh,
