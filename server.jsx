@@ -313,6 +313,18 @@ db.query(
   )`,
   (err) => { if (err) console.error("hit_sale_filters table check failed:", err.message); }
 );
+
+// Each user's own columns on the catalogue table: favourites, hidden, and the order
+db.query(
+  `CREATE TABLE IF NOT EXISTS hit_sale_columns (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    prefs JSON,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_user (user_id)
+  )`,
+  (err) => { if (err) console.error("hit_sale_columns table check failed:", err.message); }
+);
 // The user's own data on a lot, shared by everyone: figures checked by hand
 // and links to hand (a French or German horse's France Galop or
 // galopp-sieger page), one record per (sale, lot). The site and the nightly
@@ -642,6 +654,34 @@ app.put("/api/hitsales/filters/:userId", express.json({ limit: "256kb" }), (req,
     `INSERT INTO hit_sale_filters (user_id, filters) VALUES (?, ?)
      ON DUPLICATE KEY UPDATE filters = VALUES(filters)`,
     [String(req.params.userId), JSON.stringify(filters)],
+    (err) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ ok: true });
+    }
+  );
+});
+
+// Each user's columns on the catalogue table (the site's columnPrefs.js): one
+// set a user, so the order and favourites follow them to any machine.
+app.get("/api/hitsales/columns/:userId", (req, res) => {
+  db.query(
+    "SELECT prefs, updated_at FROM hit_sale_columns WHERE user_id = ?",
+    [String(req.params.userId)],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      const prefs = rows.length ? parseJsonCol(rows[0].prefs) : null;
+      res.json({ data: prefs && typeof prefs === "object" && !Array.isArray(prefs) ? prefs : null, updatedAt: rows.length ? rows[0].updated_at : null });
+    }
+  );
+});
+
+app.put("/api/hitsales/columns/:userId", express.json({ limit: "64kb" }), (req, res) => {
+  const prefs = req.body && typeof req.body === "object" ? req.body.prefs : undefined;
+  if (!prefs || typeof prefs !== "object" || Array.isArray(prefs)) return res.status(400).json({ error: "An object of column choices is required." });
+  db.query(
+    `INSERT INTO hit_sale_columns (user_id, prefs) VALUES (?, ?)
+     ON DUPLICATE KEY UPDATE prefs = VALUES(prefs)`,
+    [String(req.params.userId), JSON.stringify(prefs)],
     (err) => {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ ok: true });
