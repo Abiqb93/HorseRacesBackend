@@ -9938,8 +9938,8 @@ app.post("/api/bookings/:userId/roll", express.json(), async (req, res) => {
 // ---------------------------------------------------------------------------
 // Sales: every lot of every sale held (sales/), and the market read from
 // them. Foals, yearlings, two-year-olds and horses in training; the sale
-// houses' own results keep it current (Tattersalls so far), and the
-// workbooks seed the years before (the seed route below).
+// houses' own results keep it current (Tattersalls and Arqana so far), and
+// the workbooks seed the years before (the seed route below).
 // ---------------------------------------------------------------------------
 
 let salesService = null;
@@ -9960,7 +9960,7 @@ const salesRegion = (v) => (["EU", "US", "AUS", "NZ"].includes(String(v ?? "").t
 
 app.get("/api/sales/status", async (req, res) => {
   try {
-    res.json(await (await sales()).status());
+    res.json(await (await sales()).status({ quick: req.query.quick === "1" }));
   } catch (err) {
     salesError(res, "sales status", err);
   }
@@ -10007,13 +10007,22 @@ app.get("/api/sales/hit", async (req, res) => {
 });
 
 /**
- * Tattersalls' results read again: one sale (`code=OC125`), or every sale
- * of a span of years (`from=2015&to=2026`) in the background. The pages
- * are the house's public results; reading them again only refreshes rows.
+ * A house's results read again. Tattersalls: one sale (`code=OC125`), or
+ * every sale of a span of years (`from=2015&to=2026`). Arqana
+ * (`house=arqana`): one sale by its number (`venid=386`), or a run of
+ * numbers (`from=181&to=420`). Spans run in the background. The pages are
+ * the houses' public results; reading them again only refreshes rows.
  */
 app.post("/api/sales/fetch", async (req, res) => {
   try {
     const svc = await sales();
+    if (String(req.query.house ?? "").toLowerCase() === "arqana") {
+      if (req.query.venid) return res.json(await svc.importArqana(Number(req.query.venid)));
+      const from = Number(req.query.from);
+      const to = Number(req.query.to) || from;
+      if (!(from >= 150 && to >= from && to - from <= 400)) return res.status(400).json({ error: "from and to are Arqana sale numbers (186 is August 2014)" });
+      return res.status(202).json(svc.runArqana({ from, to }));
+    }
     if (req.query.code) return res.json(await svc.importTattersalls(String(req.query.code).toUpperCase()));
     const from = Number(req.query.from) || new Date().getFullYear();
     const to = Number(req.query.to) || from;
@@ -10024,14 +10033,17 @@ app.post("/api/sales/fetch", async (req, res) => {
   }
 });
 
-/** A part of the workbook seed, accepted only if its fingerprint is in sales/seed-manifest.json. */
+/**
+ * A part of the workbook seed, accepted only if its fingerprint is in
+ * sales/seed-manifest.json, and loaded in the background (a part takes
+ * longer than a request may stay open); the status shows how each went.
+ */
 app.post("/api/sales/seed", express.raw({ type: "*/*", limit: "40mb" }), async (req, res) => {
   try {
     const svc = await sales();
-    const out = await svc.acceptSeed(Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? ""));
+    const out = svc.queueSeed(Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? ""), { rebuild: req.query.rebuild === "1" });
     if (!out.accepted) return res.status(403).json({ error: "not a part of the seed", sha256: out.sha256 });
-    res.json(out);
-    if (req.query.rebuild === "1") svc.build().catch((err) => console.warn("[sales] index not rebuilt:", err.message));
+    res.status(202).json(out);
   } catch (err) {
     salesError(res, "sales seed", err);
   }
@@ -10063,7 +10075,8 @@ setTimeout(() => {
     try {
       const now = new Date();
       const years = now.getMonth() <= 1 ? [now.getFullYear() - 1, now.getFullYear()] : [now.getFullYear()];
-      const out = await (await sales()).refreshTattersalls({ years });
+      const svc = await sales();
+      const out = [...(await svc.refreshTattersalls({ years })), ...(await svc.refreshArqana({ years }))];
       console.log("[sales] daily:", JSON.stringify(out.filter((r) => r.lots || r.error)));
     } catch (err) {
       console.error("[sales] daily refresh failed:", err.message);
@@ -10071,7 +10084,9 @@ setTimeout(() => {
   }, london);
   cron.schedule("10 10-22/2 * * *", async () => {
     try {
-      const out = await (await sales()).refreshTattersalls({ years: [new Date().getFullYear()], live: true });
+      const svc = await sales();
+      const years = [new Date().getFullYear()];
+      const out = [...(await svc.refreshTattersalls({ years, live: true })), ...(await svc.refreshArqana({ years, live: true }))];
       if (out.length) console.log("[sales] live:", JSON.stringify(out));
     } catch (err) {
       console.error("[sales] live refresh failed:", err.message);
