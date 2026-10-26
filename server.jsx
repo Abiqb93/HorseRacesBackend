@@ -10092,6 +10092,7 @@ setTimeout(() => {
       const now = new Date();
       const years = now.getMonth() <= 1 ? [now.getFullYear() - 1, now.getFullYear()] : [now.getFullYear()];
       const svc = await sales();
+      if (svc.busy()) return console.log("[sales] daily: a long job is running; left to the next run");
       const { FEEDS } = await import("./sales/service.mjs");
       const out = [...(await svc.refreshTattersalls({ years })), ...(await svc.refreshArqana({ years }))];
       for (const house of Object.keys(FEEDS)) {
@@ -10105,6 +10106,7 @@ setTimeout(() => {
   cron.schedule("10 10-22/2 * * *", async () => {
     try {
       const svc = await sales();
+      if (svc.busy()) return;
       const years = [new Date().getFullYear()];
       const { FEEDS } = await import("./sales/service.mjs");
       const out = [...(await svc.refreshTattersalls({ years, live: true })), ...(await svc.refreshArqana({ years, live: true }))];
