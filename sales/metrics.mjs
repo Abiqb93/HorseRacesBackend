@@ -75,6 +75,33 @@ export function figures(lots) {
   };
 }
 
+/* ------------------------------------------------------ one lot, once */
+
+/** The house a lot was sold by, however its source writes the company. */
+export function houseOf(company) {
+  const c = String(company ?? "").toLowerCase();
+  const rule = [
+    [/tattersalls ireland|^tir\b/, "tir"], [/tattersalls/, "tat"], [/arqana/, "arq"], [/bbag|baden/, "bbag"], [/goffs uk|doncaster/, "guk"],
+    [/goffs/, "gof"], [/keeneland/, "kee"], [/fasig/, "ft"], [/magic millions/, "mm"], [/inglis/, "ing"], [/\bobs\b|ocala/, "obs"], [/nzb|new zealand bloodstock/, "nzb"],
+  ].find(([re]) => re.test(c));
+  return rule ? rule[1] : c.trim();
+}
+
+/**
+ * Lots read from a house's own results, and a workbook's reading of the
+ * same horse left out: the same house, sale year, dam and sire. The house
+ * is the record; the workbook can file a sale under another name (BBAG's
+ * October sale as "other sales", Tattersalls Ireland's foal sale too), so
+ * matching on the sale's key alone would count those lots twice.
+ */
+export function preferHouses(lots, houses) {
+  const key = (l) => `${houseOf(l.company)}|${l.year}|${l.dam_key}|${l.sire_key ?? ""}`;
+  const held = new Set();
+  for (const l of lots) if (houses.has(l.source) && l.dam_key) held.add(key(l));
+  const kept = lots.filter((l) => houses.has(l.source) || !l.dam_key || !held.has(key(l)));
+  return { lots: kept, dropped: lots.length - kept.length };
+}
+
 /* --------------------------------------------------------------- fees */
 
 /**

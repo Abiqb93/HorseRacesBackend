@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { convert, ratesFor } from "./fx.mjs";
 import { nameKey, horseName, saleOf, statusOf, bestReading, hammer, euReadings, fromEuRow, fromUsRow, fromAuRow, feeHintsFromEu } from "./normalise.mjs";
 import { parseHorseCell, readBuyer, parseTotals, parseResults, reconcile, parseCode } from "./tattersalls.mjs";
-import { figures, feeFinder, sireTable, marketLines, marketMedians, hitTable, damRecord, sireMedians, verdictOf } from "./metrics.mjs";
+import { figures, feeFinder, sireTable, marketLines, marketMedians, hitTable, damRecord, sireMedians, verdictOf, houseOf, preferHouses } from "./metrics.mjs";
 import { lotHash, rowValues } from "./store.mjs";
 
 test("guineas are pounds and five pence; other currencies at the month's ECB rates", () => {
@@ -307,4 +307,19 @@ test("a house read through its feed: sales found by year, held ones skipped, the
   fetched.length = 0;
   await svc.refreshHouse("fake", { years: [2025], now: new Date("2025-01-20T12:00:00Z") });
   assert.deepEqual(fetched, ["S1"], "January's sale is read in January; June's waits");
+});
+
+test("one horse, once: a workbook's lot gives way to the house's reading of the same horse", () => {
+  assert.equal(houseOf("Tattersalls Ireland"), "tir");
+  assert.equal(houseOf("Tattersalls"), "tat");
+  assert.equal(houseOf("Baden-Baden"), "bbag");
+  assert.equal(houseOf("Fasig Tipton"), "ft");
+  assert.equal(houseOf("Goffs UK"), "guk");
+  const house = lot({ source: "bbag", company: "BBAG", sale_key: "BBAG-AUT", year: 2024, dam_key: "ALMAHA", sire_key: "SEA THE MOON" });
+  const same = lot({ source: "eu-master", company: "Baden-Baden", sale_key: "BBAG-OTHER", year: 2024, dam_key: "ALMAHA", sire_key: "SEA THE MOON" });
+  const otherYear = { ...same, year: 2023 };
+  const otherHouse = { ...same, company: "Arqana" };
+  const { lots, dropped } = preferHouses([house, same, otherYear, otherHouse], new Set(["bbag"]));
+  assert.equal(dropped, 1);
+  assert.deepEqual(lots, [house, otherYear, otherHouse]);
 });

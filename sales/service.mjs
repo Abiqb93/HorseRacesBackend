@@ -25,20 +25,28 @@ import * as keeneland from "./keeneland.mjs";
 import * as fasig from "./fasig.mjs";
 import * as magicmillions from "./magicmillions.mjs";
 import * as inglis from "./inglis.mjs";
+import * as tattersallsireland from "./tattersallsireland.mjs";
+import * as bbag from "./bbag.mjs";
+import * as obs from "./obs.mjs";
 
 /**
  * The houses read through one shape: `discover({ year })` lists a year's
  * sales, `fetchSale(id, { info })` reads one into lots. `idOf` turns the
- * label a module gives its lots back into the id it fetches by.
+ * label a module gives its lots back into the id it fetches by; BBAG's
+ * label is the house's sale number, which it cannot be fetched by, so its
+ * sales are kept current by the daily reading alone.
  */
 export const FEEDS = {
   keeneland: { mod: keeneland, name: "Keeneland", idOf: (l) => String(l).replace(/^KEE-/, "") },
   fasig: { mod: fasig, name: "Fasig-Tipton", idOf: (l) => String(l).replace(/^FT-/, "") },
   magicmillions: { mod: magicmillions, name: "Magic Millions", idOf: String },
   inglis: { mod: inglis, name: "Inglis", idOf: String },
+  tattersallsireland: { mod: tattersallsireland, name: "Tattersalls Ireland", idOf: String },
+  bbag: { mod: bbag, name: "BBAG", idOf: null },
+  obs: { mod: obs, name: "OBS", idOf: (l) => String(l).replace(/^OBS/, "") },
 };
 export const HOUSE_SOURCES = ["tattersalls", "arqana", ...Object.keys(FEEDS)];
-import { KINDS, marketTable, marketLines, marketMedians, sireMedians, sireTable, hitTable, damRecord, feeFinder, figures } from "./metrics.mjs";
+import { KINDS, marketTable, marketLines, marketMedians, sireMedians, sireTable, hitTable, damRecord, feeFinder, figures, preferHouses } from "./metrics.mjs";
 import { nameKey } from "./normalise.mjs";
 
 export const HINTS_TABLE = "sale_fee_hints";
@@ -132,16 +140,18 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
     if (building) return building;
     building = (async () => {
       const t0 = Date.now();
-      const lots = await runQuery(
-        `SELECT /*+ MAX_EXECUTION_TIME(240000) */ source, sale_key, sale_name, sale_tier, region, year, sale_type, lot, sire, sire_key, dam_key,
+      const raw = await runQuery(
+        `SELECT /*+ MAX_EXECUTION_TIME(240000) */ source, company, sale_key, sale_name, sale_tier, region, year, sale_type, lot, sire, sire_key, dam_key,
                 sex, foaling_year, status, after_sale, price, currency, price_gbp
            FROM ${LOTS_TABLE}`,
         [],
       );
-      for (const l of lots) {
+      for (const l of raw) {
         l.price_gbp = l.price_gbp === null ? null : Number(l.price_gbp);
         l.price = l.price === null ? null : Number(l.price);
       }
+      // A horse a house's results hold is read from them, not a workbook too.
+      const { lots, dropped } = preferHouses(raw, new Set(HOUSE_SOURCES));
       const fees = await loadFees();
       const lines = marketLines(lots, fees.feeFor);
       const medians = marketMedians(lots);
@@ -162,6 +172,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
         tookMs: Date.now() - t0,
         lots,
         coverage: coverageOf(lots),
+        workbookTwice: dropped,
         market: marketTable(lots),
         tables,
         hit,
@@ -169,7 +180,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
         fees: { roster: fees.roster, hints: fees.hints, lines: lines.size },
         feeFor: fees.feeFor,
       };
-      log.log?.(`[sales] index: ${lots.length} lots in ${index.tookMs} ms`);
+      log.log?.(`[sales] index: ${lots.length} lots in ${index.tookMs} ms (${dropped} workbook lots a house also holds left out)`);
       return index;
     })().finally(() => {
       building = null;
@@ -224,7 +235,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
   async function status({ quick = false } = {}) {
     if (quick) {
       return {
-        index: index ? { builtAt: index.builtAt, lots: index.lots.length, tookMs: index.tookMs, fees: index.fees } : null,
+        index: index ? { builtAt: index.builtAt, lots: index.lots.length, tookMs: index.tookMs, fees: index.fees, workbookTwice: index.workbookTwice } : null,
         ...(index?.coverage ?? { bySource: [], byKind: [] }),
         job: job ? { ...job.state, results: job.state.results.slice(-5) } : null,
         lastJob,
@@ -464,7 +475,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
       return all;
     };
     return runJob(house, find, (entry) => importHouse(house, entry.id, entry), {
-      pauseMs, meta: { from, to }, skip: skipHeld ? heldLabels(house, feed.idOf) : null,
+      pauseMs, meta: { from, to }, skip: skipHeld && feed.idOf ? heldLabels(house, feed.idOf) : null,
     });
   }
 
@@ -476,12 +487,13 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
    */
   async function refreshHouse(house, { years = [new Date().getFullYear()], live = false, now = new Date() } = {}) {
     const feed = feeds[house];
-    const pending = (
+    const pending = !feed.idOf ? [] : (
       await runQuery(
         `SELECT DISTINCT sale_label FROM ${LOTS_TABLE} WHERE source = ? AND status = 'catalogued' AND year IN (${years.map(() => "?").join(", ")})`,
         [house, ...years],
       )
     ).map((r) => feed.idOf(r.sale_label));
+    if (live && !feed.idOf) return [];
     const entries = new Map(pending.map((id) => [id, { id }]));
     if (!live) {
       const monthNo = (m) => (/^\d{4}-\d{2}/.test(String(m)) ? Number(m.slice(0, 4)) * 12 + Number(m.slice(5, 7)) : null);

@@ -9938,9 +9938,10 @@ app.post("/api/bookings/:userId/roll", express.json(), async (req, res) => {
 // ---------------------------------------------------------------------------
 // Sales: every lot of every sale held (sales/), and the market read from
 // them. Foals, yearlings, two-year-olds and horses in training; the sale
-// houses' own results keep it current (Tattersalls, Arqana, Keeneland,
-// Fasig-Tipton, Magic Millions and Inglis), and the workbooks seed the
-// years before and the houses that cannot be read (the seed route below).
+// houses' own results keep it current (Tattersalls, Arqana, Tattersalls
+// Ireland, BBAG, Keeneland, Fasig-Tipton, OBS, Magic Millions and Inglis),
+// and the workbooks seed the years before and the houses that cannot be
+// read (Goffs, Goffs UK, New Zealand Bloodstock; the seed route below).
 // ---------------------------------------------------------------------------
 
 let salesService = null;
@@ -10012,8 +10013,9 @@ app.get("/api/sales/hit", async (req, res) => {
  * every sale of a span of years (`from=2015&to=2026`). Arqana
  * (`house=arqana`): one sale by its number (`venid=386`), or a run of
  * numbers (`from=181&to=420`). Keeneland, Fasig-Tipton, Magic Millions,
- * Inglis (`house=keeneland` and so on, sales/service.mjs FEEDS): one sale
- * by the house's own id (`id=202602`), or every sale of a span of years. Spans run in the background; `skipHeld=1`
+ * Inglis, Tattersalls Ireland, BBAG and OBS (`house=keeneland` and so on,
+ * sales/service.mjs FEEDS): one sale by the house's own id (`id=202602`),
+ * or every sale of a span of years. Spans run in the background; `skipHeld=1`
  * leaves out the sales of past years already read in full. The pages are
  * the houses' public results; reading them again only refreshes rows.
  */
