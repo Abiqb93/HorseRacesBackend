@@ -342,3 +342,15 @@ test("the index reads the lots table in pages by id", async () => {
   assert.equal(ix.lots.length, 5);
   assert.ok(ix.lots.every((l) => l.id === undefined));
 });
+
+test("a lot as the index keeps it: one shape, shared strings, numbers as numbers", async () => {
+  const { slim } = await import("./service.mjs");
+  const row = { id: 7, source: "tattersalls", company: "Tattersalls", sale_key: "TAT-OC2", sale_name: "Tattersalls October Book 2", sale_tier: 2, region: "EU", year: 2025, sale_type: "yearling", lot: "12", sire: "Night of Thunder", sire_key: "NIGHT OF THUNDER", dam_key: "A DAM", sex: "colt", foaling_year: 2024, status: "sold", after_sale: 0, price: "120000.00", currency: "GNS", price_gbp: "126000.00" };
+  const a = slim(row);
+  const b = slim({ ...row, sale_name: ["Tattersalls October ", "Book 2"].join("") });
+  assert.equal(a.id, undefined);
+  assert.equal(a.price, 120000);
+  assert.equal(a.price_gbp, 126000);
+  assert.deepEqual(Object.keys(a), Object.keys(slim({ source: "x", region: "EU", year: 2020, sale_type: "foal", status: "rna" })));
+  assert.equal(a.sale_name, b.sale_name);
+});

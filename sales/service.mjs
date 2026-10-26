@@ -84,6 +84,47 @@ export function coverageOf(lots) {
   };
 }
 
+/**
+ * A lot as the index keeps it: the same fields in the same order for every
+ * lot, so V8 gives them all one compact layout (deleting a field from a
+ * row instead turns each into a dictionary, six times the memory), and
+ * one shared copy of the strings that recur across hundreds of thousands
+ * of rows (sale names, sires, statuses), which the database driver
+ * otherwise gives every row its own copy of.
+ */
+const strings = new Map();
+const shared = (v) => {
+  if (typeof v !== "string") return v;
+  const had = strings.get(v);
+  if (had !== undefined) return had;
+  strings.set(v, v);
+  return v;
+};
+const num = (v) => (v === null || v === undefined || v === "" ? null : Number(v));
+export function slim(r) {
+  return {
+    source: shared(r.source),
+    company: shared(r.company ?? null),
+    sale_key: shared(r.sale_key),
+    sale_name: shared(r.sale_name ?? null),
+    sale_tier: r.sale_tier ?? null,
+    region: shared(r.region),
+    year: r.year,
+    sale_type: shared(r.sale_type),
+    lot: r.lot ?? null,
+    sire: shared(r.sire ?? null),
+    sire_key: shared(r.sire_key ?? null),
+    dam_key: r.dam_key ?? null,
+    sex: shared(r.sex ?? null),
+    foaling_year: r.foaling_year ?? null,
+    status: shared(r.status),
+    after_sale: r.after_sale ?? 0,
+    price: num(r.price),
+    currency: shared(r.currency ?? null),
+    price_gbp: num(r.price_gbp),
+  };
+}
+
 export function createSalesService({ runQuery, log = console, fetchImpl = fetch, feeds = FEEDS, buildPage = BUILD_PAGE } = {}) {
   let index = null;
   let building = null;
@@ -154,14 +195,9 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
         );
         for (const l of page) {
           after = Math.max(after, Number(l.id));
-          delete l.id;
-          raw.push(l);
+          raw.push(slim(l));
         }
         if (page.length < buildPage) break;
-      }
-      for (const l of raw) {
-        l.price_gbp = l.price_gbp === null ? null : Number(l.price_gbp);
-        l.price = l.price === null ? null : Number(l.price);
       }
       // A horse a house's results hold is read from them, not a workbook too.
       const { lots, dropped } = preferHouses(raw, new Set(HOUSE_SOURCES));
