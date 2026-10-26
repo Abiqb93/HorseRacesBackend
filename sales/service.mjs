@@ -50,6 +50,7 @@ import { KINDS, marketTable, marketLines, marketMedians, sireMedians, sireTable,
 import { nameKey } from "./normalise.mjs";
 
 export const HINTS_TABLE = "sale_fee_hints";
+const BUILD_PAGE = 50_000;
 const CREATE_HINTS = `
   CREATE TABLE IF NOT EXISTS ${HINTS_TABLE} (
     sire_key VARCHAR(96) NOT NULL,
@@ -83,7 +84,7 @@ export function coverageOf(lots) {
   };
 }
 
-export function createSalesService({ runQuery, log = console, fetchImpl = fetch, feeds = FEEDS } = {}) {
+export function createSalesService({ runQuery, log = console, fetchImpl = fetch, feeds = FEEDS, buildPage = BUILD_PAGE } = {}) {
   let index = null;
   let building = null;
   let feeData = null;
@@ -140,12 +141,24 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
     if (building) return building;
     building = (async () => {
       const t0 = Date.now();
-      const raw = await runQuery(
-        `SELECT /*+ MAX_EXECUTION_TIME(240000) */ source, company, sale_key, sale_name, sale_tier, region, year, sale_type, lot, sire, sire_key, dam_key,
-                sex, foaling_year, status, after_sale, price, currency, price_gbp
-           FROM ${LOTS_TABLE}`,
-        [],
-      );
+      // Read in pages by id, each with its own time limit: the table
+      // outgrew what one statement could read in four minutes while the
+      // feeds were writing to it.
+      const raw = [];
+      for (let after = 0; ; ) {
+        const page = await runQuery(
+          `SELECT /*+ MAX_EXECUTION_TIME(240000) */ id, source, company, sale_key, sale_name, sale_tier, region, year, sale_type, lot, sire, sire_key, dam_key,
+                  sex, foaling_year, status, after_sale, price, currency, price_gbp
+             FROM ${LOTS_TABLE} WHERE id > ? ORDER BY id LIMIT ${Number(buildPage)}`,
+          [after],
+        );
+        for (const l of page) {
+          after = Math.max(after, Number(l.id));
+          delete l.id;
+          raw.push(l);
+        }
+        if (page.length < buildPage) break;
+      }
       for (const l of raw) {
         l.price_gbp = l.price_gbp === null ? null : Number(l.price_gbp);
         l.price = l.price === null ? null : Number(l.price);

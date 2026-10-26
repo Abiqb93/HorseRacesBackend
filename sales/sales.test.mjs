@@ -323,3 +323,22 @@ test("one horse, once: a workbook's lot gives way to the house's reading of the 
   assert.equal(dropped, 1);
   assert.deepEqual(lots, [house, otherYear, otherHouse]);
 });
+
+test("the index reads the lots table in pages by id", async () => {
+  const { createSalesService } = await import("./service.mjs");
+  const rows = [1, 2, 3, 4, 5].map((id) => ({ id, ...lot({ source: "tattersalls", company: "Tattersalls", sale_key: "TAT-OC2", sire_key: "S", dam_key: `D${id}`, price_gbp: 1000 * id }) }));
+  const asked = [];
+  const runQuery = async (q, params) => {
+    if (/FROM sale_lots WHERE id > \?/.test(q)) {
+      asked.push(params[0]);
+      const limit = Number(q.match(/LIMIT (\d+)/)[1]);
+      return rows.filter((r) => r.id > params[0]).slice(0, limit).map((r) => ({ ...r }));
+    }
+    return [];
+  };
+  const svc = createSalesService({ runQuery, fetchImpl: async () => ({ ok: false, status: 404, json: async () => ({}) }), log: {}, buildPage: 2 });
+  const ix = await svc.build();
+  assert.deepEqual(asked, [0, 2, 4]);
+  assert.equal(ix.lots.length, 5);
+  assert.ok(ix.lots.every((l) => l.id === undefined));
+});
