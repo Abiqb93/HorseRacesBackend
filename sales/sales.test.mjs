@@ -148,7 +148,10 @@ const lot = (o) => ({ status: "sold", sale_type: "yearling", region: "EU", year:
 
 test("a group of lots as a sale reports it", () => {
   const f = figures([lot({ price_gbp: 100 }), lot({ price_gbp: 300 }), lot({ status: "rna", price_gbp: null }), lot({ status: "withdrawn", price_gbp: null })]);
-  assert.deepEqual(f, { offered: 3, sold: 2, clearance: 0.667, aggregate: 400, average: 200, median: 200, top: 300, tier1Share: 0 });
+  assert.deepEqual(
+    { offered: f.offered, sold: f.sold, clearance: f.clearance, aggregate: f.aggregate, average: f.average, median: f.median, top: f.top, tier1Share: f.tier1Share, withdrawn: f.withdrawn, withdrawnShare: f.withdrawnShare },
+    { offered: 3, sold: 2, clearance: 0.667, aggregate: 400, average: 200, median: 200, top: 300, tier1Share: 0, withdrawn: 1, withdrawnShare: 0.25 },
+  );
 });
 
 test("the covering fee: the roster's season first, the workbook's next, the nearest season marked approximate", () => {
@@ -212,4 +215,43 @@ test("a lot's row: the same lot hashes the same; every column has a value", () =
   assert.equal(lotHash(l), lotHash({ ...l, price: 1 }));
   assert.notEqual(lotHash(l), lotHash({ ...l, lot: "2" }));
   assert.equal(rowValues(l).length, 28);
+});
+
+test("how lots left a sale: withdrawn before the ring, sold after it, offered at two or three", () => {
+  const h = (o) => ({ sale_type: "hit", region: "EU", year: 2026, status: "sold", price_gbp: 20000, foaling_year: 2022, ...o });
+  const f = figures([h({ foaling_year: 2024 }), h({ after_sale: 1 }), h({ status: "rna", price_gbp: null, foaling_year: 2023 }), h({ status: "withdrawn" }), h({ status: "catalogued" })]);
+  assert.equal(f.offered, 3);
+  assert.equal(f.withdrawn, 1);
+  assert.equal(f.withdrawnShare, 0.25, "one of the four whose outcome is known");
+  assert.equal(f.afterRingShare, 0.5);
+  assert.equal(f.earlyShare, 0.667, "two of the three offered were two or three");
+});
+
+test("what is held, counted from memory: by source, and by kind, region and year", async () => {
+  const { coverageOf } = await import("./service.mjs");
+  const c = coverageOf([
+    { source: "arqana", sale_type: "yearling", region: "EU", year: 2025, status: "sold" },
+    { source: "arqana", sale_type: "yearling", region: "EU", year: 2024, status: "rna" },
+    { source: "us-master", sale_type: "yearling", region: "US", year: 2024, status: "sold" },
+  ]);
+  assert.deepEqual(c.bySource.find((s) => s.source === "arqana"), { source: "arqana", lots: 2, sold: 1, fromYear: 2024, toYear: 2025 });
+  assert.deepEqual(c.byKind.map((k) => `${k.region}${k.year}:${k.lots}`), ["EU2024:1", "EU2025:1", "US2024:1"]);
+});
+
+test("a rerun leaves out the sales of past years already read in full", async () => {
+  const { createSalesService } = await import("./service.mjs");
+  const asked = [];
+  const runQuery = async (sql) => (/FROM sale_imports WHERE source/.test(sql) ? [{ sale_label: "OC115" }] : []);
+  const fetchImpl = async (url) => {
+    asked.push(String(url));
+    return { ok: true, status: 200, headers: { get: () => null, getSetCookie: () => [] }, text: async () => "<html></html>", json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) };
+  };
+  const svc = createSalesService({ runQuery, fetchImpl, log: {} });
+  svc.runTattersalls({ from: 2015, to: 2015, prefixes: ["OC1", "OC2"], pauseMs: 0, skipHeld: true });
+  for (let i = 0; i < 100 && !(await svc.status({ quick: true })).lastJob; i += 1) await new Promise((r) => setTimeout(r, 10));
+  const last = (await svc.status({ quick: true })).lastJob;
+  assert.equal(last.skipped, 1);
+  assert.equal(last.done, 2);
+  assert.ok(asked.some((u) => /OC215/.test(u)), "the sale not yet held is read");
+  assert.ok(!asked.some((u) => /OC115/.test(u)), "the one held is not");
 });

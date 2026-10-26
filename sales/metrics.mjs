@@ -41,12 +41,23 @@ export function median(xs) {
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 const round = (v, d = 0) => (v === null || v === undefined || !Number.isFinite(v) ? null : Number(v.toFixed(d)));
 
-/** A group of lots as the figures a sale reports. */
+/**
+ * A group of lots as the figures a sale reports, and three readings of
+ * how the lots left it: withdrawn before the ring (a share of those whose
+ * outcome is known), sold after it (a share of those sold), and offered at
+ * two or three (a share of those offered whose age is known; for horses in
+ * training, how many are being sold early in their careers).
+ */
 export function figures(lots) {
   const offered = lots.filter(OFFERED);
   const sold = offered.filter(SOLD);
   const prices = sold.map((l) => Number(l.price_gbp));
   const tier1 = sold.filter((l) => Number(l.sale_tier) === 1).length;
+  const known = lots.filter((l) => l.status !== "catalogued");
+  const withdrawn = known.filter((l) => l.status === "withdrawn").length;
+  const afterRing = sold.filter((l) => Number(l.after_sale) === 1 || l.after_sale === true).length;
+  const aged = offered.filter((l) => Number(l.foaling_year) > 0);
+  const early = aged.filter((l) => l.year - l.foaling_year <= 3).length;
   return {
     offered: offered.length,
     sold: sold.length,
@@ -56,6 +67,11 @@ export function figures(lots) {
     median: round(median(prices)),
     top: prices.length ? Math.max(...prices) : null,
     tier1Share: sold.length ? round(tier1 / sold.length, 3) : null,
+    withdrawn,
+    withdrawnShare: known.length ? round(withdrawn / known.length, 3) : null,
+    afterRing,
+    afterRingShare: sold.length ? round(afterRing / sold.length, 3) : null,
+    earlyShare: aged.length ? round(early / aged.length, 3) : null,
   };
 }
 

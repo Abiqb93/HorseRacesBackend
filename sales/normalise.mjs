@@ -91,6 +91,9 @@ const SALES = [
   [/arqana/i, /august|select yearling/i, "ARQ-AUG", "Arqana August", 1],
   [/arqana/i, /october|september yearling/i, "ARQ-OCT", "Arqana October", 2],
   [/arqana/i, /november/i, "ARQ-NOV", "Arqana November Yearlings", 3],
+  [/arqana/i, /autumn/i, "ARQ-AUT", "Arqana Autumn", 2],
+  [/arqana/i, /february|f.vrier/i, "ARQ-FEB", "Arqana February", 3],
+  [/arqana/i, /summer/i, "ARQ-SUM", "Arqana Summer", 2],
   [/arqana/i, /./, "ARQ-OTHER", "Arqana (other sales)", 3],
   // BBAG, Baden-Baden — euros
   [/bbag/i, /premier|september yearling/i, "BBAG-PREM", "BBAG Premier Yearlings", 2],
