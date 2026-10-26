@@ -92,12 +92,19 @@ export function parseHorseCell(html) {
  */
 export function readBuyer(buyerCell, price) {
   const b = text(buyerCell);
+  // Withdrawn from the ring and sold privately: "Lot Withdrawn / Rabbah Bloodstock (P.S.)".
+  const wdPs = b.match(/^lot withdrawn\s*\/\s*(.+?)\s*\(P\.?S\.?\)\s*$/i);
+  if (wdPs) return { status: price ? "sold" : "sold_private", buyer: wdPs[1].trim(), bid: null, afterSale: true };
   if (/lot withdrawn|^wd$/i.test(b)) return { status: "withdrawn", buyer: null, bid: null, afterSale: false };
-  const ps = b.match(/^vendor\s*(?:\(([\d,]+)\))?\s*\/\s*(.+?)\s*\(P\.?S\.?\)\s*$/i);
+  // Not sold in the ring, then sold privately: "Vendor (30,000) / Dan Astbury (P.S.)",
+  // or "Lot Not Sold (38,000) / George Boughey Racing / Morshead (P.S.)".
+  const ps = b.match(/^(?:vendor|lot not sold|not sold)\s*(?:\(([\d,]+)\))?\s*\/\s*(.+?)\s*\(P\.?S\.?\)\s*$/i);
   if (ps) return { status: price ? "sold" : "rna", buyer: ps[2].trim(), bid: money(ps[1]), afterSale: true };
   const vendor = b.match(/^(?:vendor|lot not sold|not sold)\s*(?:\(([\d,]+)\))?/i);
   if (vendor) return { status: "rna", buyer: null, bid: money(vendor[1]) ?? price, afterSale: false };
-  if (b && price) return { status: "sold", buyer: b, bid: null, afterSale: false };
+  // A buyer marked (P.S.) alone bought privately, outside the ring.
+  const privately = /\(P\.?S\.?\)\s*$/i.test(b);
+  if (b && price) return { status: "sold", buyer: privately ? b.replace(/\s*\(P\.?S\.?\)\s*$/i, "") : b, bid: null, afterSale: privately };
   if (b && !price) return { status: "unknown", buyer: b, bid: null, afterSale: false };
   return { status: price ? "sold" : "unknown", buyer: null, bid: null, afterSale: false };
 }
@@ -224,12 +231,15 @@ export async function fetchResults(code, { fetchImpl = fetch } = {}) {
  */
 export function reconcile({ lots, totals }) {
   if (!totals) return null;
+  // The house's count is its "Whole Sale" line and its subsequent private
+  // sales together: the private sales are on the results page too, each
+  // lot marked (P.S.) beside its buyer.
   const sold = lots.filter((l) => l.status === "sold" && l.price);
   const ring = sold.filter((l) => !l.after_sale);
   const sum = (xs) => xs.reduce((a, l) => a + l.price, 0);
   const houseCount = totals.sold + (totals.privateSales?.lots ?? 0);
   const houseAggregate = totals.aggregate + (totals.privateSales?.aggregate ?? 0);
-  const exact = ring.length === totals.sold && Math.abs(sum(ring) - totals.aggregate) <= 1;
+  const exact = sold.length === houseCount && Math.abs(sum(sold) - houseAggregate) <= 1;
   const gap = houseCount ? (houseCount - sold.length) / houseCount : 0;
   return {
     sold: { ours: sold.length, house: houseCount, ring: ring.length, houseRing: totals.sold },

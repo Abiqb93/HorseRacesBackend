@@ -255,3 +255,11 @@ test("a rerun leaves out the sales of past years already read in full", async ()
   assert.ok(asked.some((u) => /OC215/.test(u)), "the sale not yet held is read");
   assert.ok(!asked.some((u) => /OC115/.test(u)), "the one held is not");
 });
+
+test("a Tattersalls buyer cell: sold privately after the ring or after a withdrawal", () => {
+  assert.deepEqual(readBuyer("Lot Not Sold (38,000) / George Boughey Racing / Morshead (P.S.)", 40000), { status: "sold", buyer: "George Boughey Racing / Morshead", bid: 38000, afterSale: true });
+  assert.deepEqual(readBuyer("Lot Withdrawn / Rabbah Bloodstock (P.S.)", 120000), { status: "sold", buyer: "Rabbah Bloodstock", bid: null, afterSale: true });
+  assert.equal(readBuyer("Lot Withdrawn / Rabbah Bloodstock (P.S.)", null).status, "sold_private");
+  assert.deepEqual(readBuyer("BBA Ireland (P.S.)", 50000), { status: "sold", buyer: "BBA Ireland", bid: null, afterSale: true });
+  assert.equal(readBuyer("Lot Withdrawn", null).status, "withdrawn");
+});
