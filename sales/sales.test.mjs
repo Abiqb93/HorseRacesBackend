@@ -226,3 +226,14 @@ test("how lots left a sale: withdrawn before the ring, sold after it, offered at
   assert.equal(f.afterRingShare, 0.5);
   assert.equal(f.earlyShare, 0.667, "two of the three offered were two or three");
 });
+
+test("what is held, counted from memory: by source, and by kind, region and year", async () => {
+  const { coverageOf } = await import("./service.mjs");
+  const c = coverageOf([
+    { source: "arqana", sale_type: "yearling", region: "EU", year: 2025, status: "sold" },
+    { source: "arqana", sale_type: "yearling", region: "EU", year: 2024, status: "rna" },
+    { source: "us-master", sale_type: "yearling", region: "US", year: 2024, status: "sold" },
+  ]);
+  assert.deepEqual(c.bySource.find((s) => s.source === "arqana"), { source: "arqana", lots: 2, sold: 1, fromYear: 2024, toYear: 2025 });
+  assert.deepEqual(c.byKind.map((k) => `${k.region}${k.year}:${k.lots}`), ["EU2024:1", "EU2025:1", "US2024:1"]);
+});

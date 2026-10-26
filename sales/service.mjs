@@ -36,6 +36,28 @@ const CREATE_HINTS = `
 const SITE = "https://www.blandfordbloodstock.tech";
 const MANIFEST = path.join(path.dirname(new URL(import.meta.url).pathname), "seed-manifest.json");
 
+/** What the lots held come from, and how many of each kind, region and year: the status, read from memory. */
+export function coverageOf(lots) {
+  const bySource = new Map();
+  const byKind = new Map();
+  for (const l of lots) {
+    const sold = l.status === "sold" ? 1 : 0;
+    const s = bySource.get(l.source) ?? bySource.set(l.source, { source: l.source, lots: 0, sold: 0, fromYear: l.year, toYear: l.year }).get(l.source);
+    s.lots += 1;
+    s.sold += sold;
+    s.fromYear = Math.min(s.fromYear, l.year);
+    s.toYear = Math.max(s.toYear, l.year);
+    const k = `${l.sale_type}|${l.region}|${l.year}`;
+    const c = byKind.get(k) ?? byKind.set(k, { type: l.sale_type, region: l.region, year: l.year, lots: 0, sold: 0 }).get(k);
+    c.lots += 1;
+    c.sold += sold;
+  }
+  return {
+    bySource: [...bySource.values()],
+    byKind: [...byKind.values()].sort((a, b) => a.type.localeCompare(b.type) || a.region.localeCompare(b.region) || a.year - b.year),
+  };
+}
+
 export function createSalesService({ runQuery, log = console, fetchImpl = fetch } = {}) {
   let index = null;
   let building = null;
@@ -107,7 +129,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch 
       const lines = marketLines(lots, fees.feeFor);
       const medians = marketMedians(lots);
       const tables = new Map();
-      for (const type of KINDS.filter((k) => k !== "hit")) {
+      for (const type of KINDS) {
         for (const region of [null, "EU", "US", "AUS", "NZ"]) {
           const t = sireTable(lots, { type, region, feeFor: fees.feeFor, lines, medians });
           if (t.rows.length) tables.set(`${type}|${region ?? "ALL"}`, t);
@@ -122,6 +144,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch 
         builtAt: new Date().toISOString(),
         tookMs: Date.now() - t0,
         lots,
+        coverage: coverageOf(lots),
         market: marketTable(lots),
         tables,
         hit,
@@ -182,7 +205,15 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch 
 
   /** What is held and how the feeds went. `quick` leaves the database out: the job, the seeds, the index. */
   async function status({ quick = false } = {}) {
-    if (quick) return { index: index ? { builtAt: index.builtAt, lots: index.lots.length, tookMs: index.tookMs, fees: index.fees } : null, job: job ? { ...job.state, results: job.state.results.slice(-5) } : null, lastJob, seeds };
+    if (quick) {
+      return {
+        index: index ? { builtAt: index.builtAt, lots: index.lots.length, tookMs: index.tookMs, fees: index.fees } : null,
+        ...(index?.coverage ?? { bySource: [], byKind: [] }),
+        job: job ? { ...job.state, results: job.state.results.slice(-5) } : null,
+        lastJob,
+        seeds,
+      };
+    }
     const [bySource, byKind, imports] = await Promise.all([
       runQuery(`SELECT source, COUNT(*) AS lots, SUM(status = 'sold') AS sold, MIN(year) AS fromYear, MAX(year) AS toYear FROM ${LOTS_TABLE} GROUP BY source`, []),
       runQuery(`SELECT sale_type AS type, region, year, COUNT(*) AS lots, SUM(status = 'sold') AS sold FROM ${LOTS_TABLE} GROUP BY sale_type, region, year ORDER BY sale_type, region, year`, []),
