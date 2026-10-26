@@ -21,6 +21,23 @@ import { convert } from "./fx.mjs";
 import { ensureSalesSchema, upsertLots, dropSuperseded, logImport, LOTS_TABLE, IMPORTS_TABLE } from "./store.mjs";
 import { TATTERSALLS, codeFor, fetchResults, reconcile } from "./tattersalls.mjs";
 import { fetchExport as fetchArqana } from "./arqana.mjs";
+import * as keeneland from "./keeneland.mjs";
+import * as fasig from "./fasig.mjs";
+import * as magicmillions from "./magicmillions.mjs";
+import * as inglis from "./inglis.mjs";
+
+/**
+ * The houses read through one shape: `discover({ year })` lists a year's
+ * sales, `fetchSale(id, { info })` reads one into lots. `idOf` turns the
+ * label a module gives its lots back into the id it fetches by.
+ */
+export const FEEDS = {
+  keeneland: { mod: keeneland, name: "Keeneland", idOf: (l) => String(l).replace(/^KEE-/, "") },
+  fasig: { mod: fasig, name: "Fasig-Tipton", idOf: (l) => String(l).replace(/^FT-/, "") },
+  magicmillions: { mod: magicmillions, name: "Magic Millions", idOf: String },
+  inglis: { mod: inglis, name: "Inglis", idOf: String },
+};
+export const HOUSE_SOURCES = ["tattersalls", "arqana", ...Object.keys(FEEDS)];
 import { KINDS, marketTable, marketLines, marketMedians, sireMedians, sireTable, hitTable, damRecord, feeFinder, figures } from "./metrics.mjs";
 import { nameKey } from "./normalise.mjs";
 
@@ -58,7 +75,7 @@ export function coverageOf(lots) {
   };
 }
 
-export function createSalesService({ runQuery, log = console, fetchImpl = fetch } = {}) {
+export function createSalesService({ runQuery, log = console, fetchImpl = fetch, feeds = FEEDS } = {}) {
   let index = null;
   let building = null;
   let feeData = null;
@@ -255,12 +272,15 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch 
    */
   function runJob(house, items, importOne, { pauseMs = 500, meta = {}, skip = null } = {}) {
     if (job) return { running: true, state: job.state };
-    const state = { house, ...meta, startedAt: new Date().toISOString(), done: 0, total: items.length, skipped: 0, results: [] };
+    const state = { house, ...meta, startedAt: new Date().toISOString(), done: 0, total: Array.isArray(items) ? items.length : null, skipped: 0, results: [] };
     job = { state };
     (async () => {
+      // A list, or a function that finds it (a house's sales of some years).
+      const list = Array.isArray(items) ? items : await items(state);
+      state.total = list.length;
       const held = skip ? await skip() : new Set();
-      for (const item of items) {
-        if (held.has(String(item))) {
+      for (const item of list) {
+        if (held.has(String(item?.id ?? item))) {
           state.skipped += 1;
           state.done += 1;
           continue;
@@ -269,8 +289,8 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch 
           const r = await importOne(item);
           if (r.lots) state.results.push(r);
         } catch (err) {
-          state.results.push({ item, error: err.message });
-          await logImport(runQuery, { source: house, saleLabel: String(item), error: err.message }).catch(() => {});
+          state.results.push({ item: item?.id ?? item, error: err.message });
+          await logImport(runQuery, { source: house, saleLabel: String(item?.id ?? item), year: item?.year ?? null, error: err.message }).catch(() => {});
         }
         state.done += 1;
         if (pauseMs) await new Promise((r) => setTimeout(r, pauseMs));
@@ -402,6 +422,92 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch 
     return results;
   }
 
+  /**
+   * One sale of a house read through FEEDS and written. The workbook's
+   * rows for the same sale and year give way, as for Tattersalls; the
+   * house's totals, where it publishes them, are reconciled against.
+   */
+  async function importHouse(house, id, info = null) {
+    const feed = feeds[house];
+    if (!feed) throw new Error(`no feed for ${house}`);
+    const out = await feed.mod.fetchSale(id, { fetchImpl, info: info?.key ? info : null });
+    if (!out?.sale || !out.lots?.length) return { house, id, title: out?.title ?? info?.title ?? null, lots: 0 };
+    await upsertLots(runQuery, out.lots);
+    let dropped = 0;
+    for (const k of new Set(out.lots.map((l) => `${l.sale_key}|${l.year}`))) {
+      const [saleKey, year] = k.split("|");
+      dropped += await dropSuperseded(runQuery, { saleKey, year: Number(year), source: house });
+    }
+    const rec = out.totals && typeof feed.mod.reconcile === "function" ? feed.mod.reconcile(out) : null;
+    const sold = out.lots.filter((l) => l.status === "sold").length;
+    const catalogued = out.lots.filter((l) => l.status === "catalogued").length;
+    await logImport(runQuery, {
+      source: house, saleKey: out.sale.key, saleLabel: out.lots[0].sale_label, year: out.sale.year, lots: out.lots.length, sold, reconcile: rec,
+      note: [out.title, catalogued ? `${catalogued} not yet through the ring` : null, dropped ? `replaced ${dropped} workbook rows` : null].filter(Boolean).join("; "),
+    });
+    return { house, id, title: out.title, key: out.sale.key, year: out.sale.year, lots: out.lots.length, sold, catalogued, replaced: dropped, verdict: rec?.verdict ?? null };
+  }
+
+  /** A house's sales found year by year and read one at a time, in the background. */
+  function runHouse(house, { from, to, pauseMs = 1000, skipHeld = false } = {}) {
+    const feed = feeds[house];
+    if (!feed) throw new Error(`no feed for ${house}`);
+    const find = async (state) => {
+      const all = [];
+      for (let y = from; y <= to; y += 1) {
+        try {
+          all.push(...(await feed.mod.discover({ year: y, fetchImpl })));
+        } catch (err) {
+          state.results.push({ item: `discover ${y}`, error: err.message });
+        }
+      }
+      return all;
+    };
+    return runJob(house, find, (entry) => importHouse(house, entry.id, entry), {
+      pauseMs, meta: { from, to }, skip: skipHeld ? heldLabels(house, feed.idOf) : null,
+    });
+  }
+
+  /**
+   * A house kept current. Daily: the sales of `years` within a month or so
+   * of today (a sale's results settle in the weeks after it; a catalogue
+   * appears weeks before), and any with lots still to go through the ring.
+   * Live: only those with lots still to go through the ring.
+   */
+  async function refreshHouse(house, { years = [new Date().getFullYear()], live = false, now = new Date() } = {}) {
+    const feed = feeds[house];
+    const pending = (
+      await runQuery(
+        `SELECT DISTINCT sale_label FROM ${LOTS_TABLE} WHERE source = ? AND status = 'catalogued' AND year IN (${years.map(() => "?").join(", ")})`,
+        [house, ...years],
+      )
+    ).map((r) => feed.idOf(r.sale_label));
+    const entries = new Map(pending.map((id) => [id, { id }]));
+    if (!live) {
+      const monthNo = (m) => (/^\d{4}-\d{2}/.test(String(m)) ? Number(m.slice(0, 4)) * 12 + Number(m.slice(5, 7)) : null);
+      const here = now.getFullYear() * 12 + now.getMonth() + 1;
+      for (const y of years) {
+        for (const e of await feed.mod.discover({ year: y, fetchImpl })) {
+          const m = monthNo(e.month);
+          if (m === null || Math.abs(m - here) <= 1) entries.set(String(e.id), e);
+          else if (entries.has(String(e.id))) entries.set(String(e.id), e);
+        }
+      }
+    }
+    const results = [];
+    for (const e of entries.values()) {
+      try {
+        const r = await importHouse(house, e.id, e);
+        if (r.lots) results.push(r);
+      } catch (err) {
+        results.push({ house, id: e.id, error: err.message });
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    if (results.some((r) => r.lots)) await build().catch((err) => log.warn?.(`[sales] index not rebuilt: ${err.message}`));
+    return results;
+  }
+
   /* -------------------------------------------------------------- seed */
 
   function manifest() {
@@ -434,7 +540,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch 
     }
     // A sale-year the house's own results hold is not overwritten by a workbook.
     const housed = new Set(
-      (await runQuery(`SELECT DISTINCT sale_key, year FROM ${LOTS_TABLE} WHERE source IN ('tattersalls', 'arqana')`, [])).map((r) => `${r.sale_key}|${r.year}`),
+      (await runQuery(`SELECT DISTINCT sale_key, year FROM ${LOTS_TABLE} WHERE source IN (${HOUSE_SOURCES.map(() => "?").join(", ")})`, HOUSE_SOURCES)).map((r) => `${r.sale_key}|${r.year}`),
     );
     const keep = lines.filter((l) => !housed.has(`${l.sale_key}|${l.year}`));
     await upsertLots(runQuery, keep);
@@ -468,8 +574,9 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch 
 
   return {
     ensure, build, ready, market, sires, sire, dam, hit, status, figures, manifest,
-    importTattersalls, runTattersalls, refreshTattersalls, importArqana, runArqana, refreshArqana, acceptSeed, queueSeed,
+    importTattersalls, runTattersalls, refreshTattersalls, importArqana, runArqana, refreshArqana, importHouse, runHouse, refreshHouse,
+    acceptSeed, queueSeed,
   };
 }
 
-export default { createSalesService, HINTS_TABLE };
+export default { createSalesService, HINTS_TABLE, FEEDS, HOUSE_SOURCES };

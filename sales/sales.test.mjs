@@ -263,3 +263,48 @@ test("a Tattersalls buyer cell: sold privately after the ring or after a withdra
   assert.deepEqual(readBuyer("BBA Ireland (P.S.)", 50000), { status: "sold", buyer: "BBA Ireland", bid: null, afterSale: true });
   assert.equal(readBuyer("Lot Withdrawn", null).status, "withdrawn");
 });
+
+test("a house read through its feed: sales found by year, held ones skipped, the near ones kept current", async () => {
+  const { createSalesService } = await import("./service.mjs");
+  const fetched = [];
+  const feed = {
+    idOf: (l) => String(l).replace(/^F-/, ""),
+    mod: {
+      discover: async ({ year }) => [
+        { id: "S1", key: "FAKE-JAN", year, month: `${year}-01` },
+        { id: "S2", key: "FAKE-JUN", year, month: `${year}-06` },
+      ],
+      fetchSale: async (id, { info }) => {
+        fetched.push(id);
+        const l = lot({ source: "fake", sale_key: info?.key ?? "FAKE-JAN", sale_label: `F-${id}`, year: 2025 });
+        return { id, title: `Fake ${id}`, sale: { key: l.sale_key, year: 2025 }, lots: [l, { ...l, lot: "2", status: "catalogued", price_gbp: null }] };
+      },
+    },
+  };
+  const sql = [];
+  const runQuery = async (q, params) => {
+    sql.push([q, params]);
+    if (/FROM sale_imports WHERE source/.test(q)) return [{ sale_label: "F-S1" }];
+    if (/^DELETE/.test(q.trim())) return { affectedRows: 3 };
+    return [];
+  };
+  const svc = createSalesService({ runQuery, fetchImpl: async () => ({ ok: false, status: 404, json: async () => ({}), text: async () => "" }), log: {}, feeds: { fake: feed } });
+
+  const one = await svc.importHouse("fake", "S2", { id: "S2", key: "FAKE-JUN" });
+  assert.equal(one.lots, 2);
+  assert.equal(one.catalogued, 1);
+  assert.equal(one.replaced, 3, "the workbook's rows for the sale and year give way");
+  assert.ok(sql.some(([q, p]) => /^DELETE/.test(q.trim()) && p[0] === "FAKE-JUN" && p[2] === "fake"));
+
+  fetched.length = 0;
+  svc.runHouse("fake", { from: 2025, to: 2025, pauseMs: 0, skipHeld: true });
+  for (let i = 0; i < 200 && !(await svc.status({ quick: true })).lastJob; i += 1) await new Promise((r) => setTimeout(r, 10));
+  const last = (await svc.status({ quick: true })).lastJob;
+  assert.equal(last.total, 2);
+  assert.equal(last.skipped, 1);
+  assert.deepEqual(fetched, ["S2"]);
+
+  fetched.length = 0;
+  await svc.refreshHouse("fake", { years: [2025], now: new Date("2025-01-20T12:00:00Z") });
+  assert.deepEqual(fetched, ["S1"], "January's sale is read in January; June's waits");
+});

@@ -9938,8 +9938,9 @@ app.post("/api/bookings/:userId/roll", express.json(), async (req, res) => {
 // ---------------------------------------------------------------------------
 // Sales: every lot of every sale held (sales/), and the market read from
 // them. Foals, yearlings, two-year-olds and horses in training; the sale
-// houses' own results keep it current (Tattersalls and Arqana so far), and
-// the workbooks seed the years before (the seed route below).
+// houses' own results keep it current (Tattersalls, Arqana, Keeneland,
+// Fasig-Tipton, Magic Millions and Inglis), and the workbooks seed the
+// years before and the houses that cannot be read (the seed route below).
 // ---------------------------------------------------------------------------
 
 let salesService = null;
@@ -10010,14 +10011,25 @@ app.get("/api/sales/hit", async (req, res) => {
  * A house's results read again. Tattersalls: one sale (`code=OC125`), or
  * every sale of a span of years (`from=2015&to=2026`). Arqana
  * (`house=arqana`): one sale by its number (`venid=386`), or a run of
- * numbers (`from=181&to=420`). Spans run in the background; `skipHeld=1`
+ * numbers (`from=181&to=420`). Keeneland, Fasig-Tipton, Magic Millions,
+ * Inglis (`house=keeneland` and so on, sales/service.mjs FEEDS): one sale
+ * by the house's own id (`id=202602`), or every sale of a span of years. Spans run in the background; `skipHeld=1`
  * leaves out the sales of past years already read in full. The pages are
  * the houses' public results; reading them again only refreshes rows.
  */
 app.post("/api/sales/fetch", async (req, res) => {
   try {
     const svc = await sales();
-    if (String(req.query.house ?? "").toLowerCase() === "arqana") {
+    const house = String(req.query.house ?? "").toLowerCase();
+    const { FEEDS } = await import("./sales/service.mjs");
+    if (FEEDS[house]) {
+      if (req.query.id) return res.json(await svc.importHouse(house, String(req.query.id)));
+      const from = Number(req.query.from) || new Date().getFullYear();
+      const to = Number(req.query.to) || from;
+      if (from < 2010 || to > new Date().getFullYear() + 1 || to < from) return res.status(400).json({ error: "from and to are years, from 2010" });
+      return res.status(202).json(svc.runHouse(house, { from, to, skipHeld: req.query.skipHeld === "1" }));
+    }
+    if (house === "arqana") {
       if (req.query.venid) return res.json(await svc.importArqana(Number(req.query.venid)));
       const from = Number(req.query.from);
       const to = Number(req.query.to) || from;
@@ -10077,7 +10089,11 @@ setTimeout(() => {
       const now = new Date();
       const years = now.getMonth() <= 1 ? [now.getFullYear() - 1, now.getFullYear()] : [now.getFullYear()];
       const svc = await sales();
+      const { FEEDS } = await import("./sales/service.mjs");
       const out = [...(await svc.refreshTattersalls({ years })), ...(await svc.refreshArqana({ years }))];
+      for (const house of Object.keys(FEEDS)) {
+        out.push(...(await svc.refreshHouse(house, { years }).catch((err) => [{ house, error: err.message }])));
+      }
       console.log("[sales] daily:", JSON.stringify(out.filter((r) => r.lots || r.error)));
     } catch (err) {
       console.error("[sales] daily refresh failed:", err.message);
@@ -10087,7 +10103,11 @@ setTimeout(() => {
     try {
       const svc = await sales();
       const years = [new Date().getFullYear()];
+      const { FEEDS } = await import("./sales/service.mjs");
       const out = [...(await svc.refreshTattersalls({ years, live: true })), ...(await svc.refreshArqana({ years, live: true }))];
+      for (const house of Object.keys(FEEDS)) {
+        out.push(...(await svc.refreshHouse(house, { years, live: true }).catch((err) => [{ house, error: err.message }])));
+      }
       if (out.length) console.log("[sales] live:", JSON.stringify(out));
     } catch (err) {
       console.error("[sales] live refresh failed:", err.message);
