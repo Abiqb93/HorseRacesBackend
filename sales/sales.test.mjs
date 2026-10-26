@@ -148,7 +148,10 @@ const lot = (o) => ({ status: "sold", sale_type: "yearling", region: "EU", year:
 
 test("a group of lots as a sale reports it", () => {
   const f = figures([lot({ price_gbp: 100 }), lot({ price_gbp: 300 }), lot({ status: "rna", price_gbp: null }), lot({ status: "withdrawn", price_gbp: null })]);
-  assert.deepEqual(f, { offered: 3, sold: 2, clearance: 0.667, aggregate: 400, average: 200, median: 200, top: 300, tier1Share: 0 });
+  assert.deepEqual(
+    { offered: f.offered, sold: f.sold, clearance: f.clearance, aggregate: f.aggregate, average: f.average, median: f.median, top: f.top, tier1Share: f.tier1Share, withdrawn: f.withdrawn, withdrawnShare: f.withdrawnShare },
+    { offered: 3, sold: 2, clearance: 0.667, aggregate: 400, average: 200, median: 200, top: 300, tier1Share: 0, withdrawn: 1, withdrawnShare: 0.25 },
+  );
 });
 
 test("the covering fee: the roster's season first, the workbook's next, the nearest season marked approximate", () => {
@@ -212,4 +215,14 @@ test("a lot's row: the same lot hashes the same; every column has a value", () =
   assert.equal(lotHash(l), lotHash({ ...l, price: 1 }));
   assert.notEqual(lotHash(l), lotHash({ ...l, lot: "2" }));
   assert.equal(rowValues(l).length, 28);
+});
+
+test("how lots left a sale: withdrawn before the ring, sold after it, offered at two or three", () => {
+  const h = (o) => ({ sale_type: "hit", region: "EU", year: 2026, status: "sold", price_gbp: 20000, foaling_year: 2022, ...o });
+  const f = figures([h({ foaling_year: 2024 }), h({ after_sale: 1 }), h({ status: "rna", price_gbp: null, foaling_year: 2023 }), h({ status: "withdrawn" }), h({ status: "catalogued" })]);
+  assert.equal(f.offered, 3);
+  assert.equal(f.withdrawn, 1);
+  assert.equal(f.withdrawnShare, 0.25, "one of the four whose outcome is known");
+  assert.equal(f.afterRingShare, 0.5);
+  assert.equal(f.earlyShare, 0.667, "two of the three offered were two or three");
 });
