@@ -9935,6 +9935,150 @@ app.post("/api/bookings/:userId/roll", express.json(), async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Sales: every lot of every sale held (sales/), and the market read from
+// them. Foals, yearlings, two-year-olds and horses in training; the sale
+// houses' own results keep it current (Tattersalls so far), and the
+// workbooks seed the years before (the seed route below).
+// ---------------------------------------------------------------------------
+
+let salesService = null;
+async function sales() {
+  if (!salesService) {
+    const { createSalesService } = await import("./sales/service.mjs");
+    salesService = createSalesService({ runQuery, log: { log: (m) => console.log(m), warn: (m) => console.warn(m) } });
+    await salesService.ensure();
+  }
+  return salesService;
+}
+const salesError = (res, what, err) => {
+  console.error(`[sales] ${what} failed:`, err.message);
+  res.status(500).json({ error: `${what} failed`, detail: err.message });
+};
+const salesKind = (v) => (["foal", "yearling", "2yo", "hit"].includes(String(v)) ? String(v) : null);
+const salesRegion = (v) => (["EU", "US", "AUS", "NZ"].includes(String(v ?? "").toUpperCase()) ? String(v).toUpperCase() : null);
+
+app.get("/api/sales/status", async (req, res) => {
+  try {
+    res.json(await (await sales()).status());
+  } catch (err) {
+    salesError(res, "sales status", err);
+  }
+});
+
+app.get("/api/sales/market", async (req, res) => {
+  try {
+    res.json(await (await sales()).market({ type: salesKind(req.query.type), region: salesRegion(req.query.region) }));
+  } catch (err) {
+    salesError(res, "sales market", err);
+  }
+});
+
+app.get("/api/sales/sires", async (req, res) => {
+  try {
+    res.json(await (await sales()).sires({ type: salesKind(req.query.type) ?? "yearling", region: salesRegion(req.query.region), limit: Math.min(5000, Number(req.query.limit) || 2000) }));
+  } catch (err) {
+    salesError(res, "sales sires", err);
+  }
+});
+
+app.get("/api/sales/sire/:key", async (req, res) => {
+  try {
+    res.json(await (await sales()).sire(req.params.key));
+  } catch (err) {
+    salesError(res, "sales sire", err);
+  }
+});
+
+app.get("/api/sales/dam/:key", async (req, res) => {
+  try {
+    res.json(await (await sales()).dam(req.params.key));
+  } catch (err) {
+    salesError(res, "sales dam", err);
+  }
+});
+
+app.get("/api/sales/hit", async (req, res) => {
+  try {
+    res.json(await (await sales()).hit({ region: salesRegion(req.query.region) }));
+  } catch (err) {
+    salesError(res, "sales hit", err);
+  }
+});
+
+/**
+ * Tattersalls' results read again: one sale (`code=OC125`), or every sale
+ * of a span of years (`from=2015&to=2026`) in the background. The pages
+ * are the house's public results; reading them again only refreshes rows.
+ */
+app.post("/api/sales/fetch", async (req, res) => {
+  try {
+    const svc = await sales();
+    if (req.query.code) return res.json(await svc.importTattersalls(String(req.query.code).toUpperCase()));
+    const from = Number(req.query.from) || new Date().getFullYear();
+    const to = Number(req.query.to) || from;
+    if (from < 2010 || to > new Date().getFullYear() + 1 || to < from) return res.status(400).json({ error: "from and to are years, from 2010" });
+    res.status(202).json(svc.runTattersalls({ from, to }));
+  } catch (err) {
+    salesError(res, "sales fetch", err);
+  }
+});
+
+/** A part of the workbook seed, accepted only if its fingerprint is in sales/seed-manifest.json. */
+app.post("/api/sales/seed", express.raw({ type: "*/*", limit: "40mb" }), async (req, res) => {
+  try {
+    const svc = await sales();
+    const out = await svc.acceptSeed(Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? ""));
+    if (!out.accepted) return res.status(403).json({ error: "not a part of the seed", sha256: out.sha256 });
+    res.json(out);
+    if (req.query.rebuild === "1") svc.build().catch((err) => console.warn("[sales] index not rebuilt:", err.message));
+  } catch (err) {
+    salesError(res, "sales seed", err);
+  }
+});
+
+app.post("/api/sales/rebuild", async (req, res) => {
+  try {
+    const ix = await (await sales()).build();
+    res.json({ builtAt: ix.builtAt, lots: ix.lots.length, tookMs: ix.tookMs, fees: ix.fees });
+  } catch (err) {
+    salesError(res, "sales rebuild", err);
+  }
+});
+
+// The index built a couple of minutes after a start, so the first page to
+// ask does not wait for three hundred thousand lots to be read.
+setTimeout(() => {
+  sales()
+    .then((svc) => svc.build())
+    .catch((err) => console.warn("[sales] warm-up failed:", err.message));
+}, 120_000);
+
+// The house's results kept current: every sale of the year read again at
+// 04:20, and every two hours through the day the sales still being sold.
+{
+  const cron = require("node-cron");
+  const london = { timezone: "Europe/London" };
+  cron.schedule("20 4 * * *", async () => {
+    try {
+      const now = new Date();
+      const years = now.getMonth() <= 1 ? [now.getFullYear() - 1, now.getFullYear()] : [now.getFullYear()];
+      const out = await (await sales()).refreshTattersalls({ years });
+      console.log("[sales] daily:", JSON.stringify(out.filter((r) => r.lots || r.error)));
+    } catch (err) {
+      console.error("[sales] daily refresh failed:", err.message);
+    }
+  }, london);
+  cron.schedule("10 10-22/2 * * *", async () => {
+    try {
+      const out = await (await sales()).refreshTattersalls({ years: [new Date().getFullYear()], live: true });
+      if (out.length) console.log("[sales] live:", JSON.stringify(out));
+    } catch (err) {
+      console.error("[sales] live refresh failed:", err.message);
+    }
+  }, london);
+}
+
 // The review-rules API registers its own GET routes further down this file.
 // Express tries routes in the order they are registered, so this catch-all
 // answered all three first with "Invalid table name." and they never ran: a
