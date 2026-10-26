@@ -343,7 +343,15 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
    * A list of sales read one at a time in the background, the index rebuilt
    * at the end. One job at a time; asking again while one runs reports it.
    */
-  function runJob(house, items, importOne, { pauseMs = 500, meta = {}, skip = null } = {}) {
+  /**
+   * One sale's import, given up after `ms`: a fetch or a write that never
+   * returns would otherwise hold the job, and every job after it, for good.
+   */
+  const bounded = (work, ms, what) =>
+    Promise.race([work, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what}: no answer in ${Math.round(ms / 1000)} s`)), ms).unref?.())]);
+
+  function runJob(house, items, importOne, { pauseMs = 500, meta = {}, skip = null, itemTimeoutMs: limit } = {}) {
+    const itemTimeoutMs = limit ?? 10 * 60_000;
     if (job) return { running: true, state: job.state };
     const state = { house, ...meta, startedAt: new Date().toISOString(), done: 0, total: Array.isArray(items) ? items.length : null, skipped: 0, results: [] };
     job = { state };
@@ -359,7 +367,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
           continue;
         }
         try {
-          const r = await importOne(item);
+          const r = await bounded(importOne(item), itemTimeoutMs, String(item?.id ?? item));
           if (r.lots) state.results.push(r);
         } catch (err) {
           state.results.push({ item: item?.id ?? item, error: err.message });
@@ -522,7 +530,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
   }
 
   /** A house's sales found year by year and read one at a time, in the background. */
-  function runHouse(house, { from, to, pauseMs = 1000, skipHeld = false } = {}) {
+  function runHouse(house, { from, to, pauseMs = 1000, skipHeld = false, itemTimeoutMs } = {}) {
     const feed = feeds[house];
     if (!feed) throw new Error(`no feed for ${house}`);
     const find = async (state) => {
@@ -537,7 +545,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
       return all;
     };
     return runJob(house, find, (entry) => importHouse(house, entry.id, entry), {
-      pauseMs, meta: { from, to }, skip: skipHeld && feed.idOf ? heldLabels(house, feed.idOf) : null,
+      pauseMs, meta: { from, to }, skip: skipHeld && feed.idOf ? heldLabels(house, feed.idOf) : null, itemTimeoutMs,
     });
   }
 
@@ -646,8 +654,11 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
     return { accepted: true, queued: true, part: part.name };
   }
 
+  /** Whether a long job is writing: the scheduled refreshes wait for the next run rather than write beside it. */
+  const busy = () => Boolean(job);
+
   return {
-    ensure, build, ready, market, sires, sire, dam, hit, status, figures, manifest,
+    ensure, build, ready, busy, market, sires, sire, dam, hit, status, figures, manifest,
     importTattersalls, runTattersalls, refreshTattersalls, importArqana, runArqana, refreshArqana, importHouse, runHouse, refreshHouse,
     acceptSeed, queueSeed,
   };
