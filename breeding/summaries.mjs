@@ -58,6 +58,17 @@ export const STALE_MS = 20 * 60 * 60 * 1000;
 /** The time a nightly read may take: four minutes a sire, fifteen for the population. */
 export const NIGHTLY_HINT = "/*+ MAX_EXECUTION_TIME(240000) */";
 export const BASELINE_HINT = "/*+ MAX_EXECUTION_TIME(900000) */";
+/**
+ * One month of the population's walk (baselineSliceSql): five minutes.
+ *
+ * The walk as one query grouped two seasons of runs by horse in a single
+ * temporary table. It took under six minutes by day on 23 October 2026;
+ * on the night of the 24th it ran into a fifteen-minute cap, and on the
+ * 26th it ran 87 minutes before a forty-minute cap stopped it. A month at a
+ * time reads its runs through the race-date index and groups them in
+ * memory; a slice that still runs out of time is split and asked again.
+ */
+export const BASELINE_SLICE_HINT = "/*+ MAX_EXECUTION_TIME(300000) */";
 /** A single sire re-read in the background after a timeout on a request. */
 export const BACKGROUND_HINT = "/*+ MAX_EXECUTION_TIME(120000) */";
 
@@ -212,6 +223,112 @@ export const baselineHistogramSql = (flatRun, hint = "") => `
    ORDER BY best`;
 
 /**
+ * The walk in slices: one month of runs, each horse's best flat figures in
+ * it. The race-date range is the bare column, so the index on it is used;
+ * the flat filter and the rating range are in the WHERE, so the rows that
+ * could never count are not grouped at all. Same figures as the one-pass
+ * query above, merged across months by mergeSlice.
+ */
+export const baselineSliceSql = (flatRun, hint = "") => `
+  SELECT ${hint} horseName AS name, YEAR(foalingDate) AS fy,
+         MAX(CASE WHEN preRaceMasterRating BETWEEN 1 AND 140 THEN preRaceMasterRating END) AS bestMaster,
+         MAX(CASE WHEN performanceRating    BETWEEN 1 AND 140 THEN performanceRating    END) AS bestPerformance
+    FROM APIData_Table2
+   WHERE meetingDate >= ? AND meetingDate < ?
+     AND ${flatRun}
+     AND (preRaceMasterRating BETWEEN 1 AND 140 OR performanceRating BETWEEN 1 AND 140)
+   GROUP BY horseName, YEAR(foalingDate)`;
+
+const iso = (d) => d.toISOString().slice(0, 10);
+
+/** Month-long ranges from `since` (inclusive) to `until` (exclusive), as ISO dates. */
+export function monthSlices(since, until = new Date()) {
+  const start = new Date(`${String(since).slice(0, 10)}T00:00:00Z`);
+  const end = new Date(`${iso(until instanceof Date ? until : new Date(until))}T00:00:00Z`);
+  end.setUTCDate(end.getUTCDate() + 1);
+  const out = [];
+  let from = start;
+  while (from < end) {
+    const to = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 1));
+    out.push({ from: iso(from), to: iso(to < end ? to : end) });
+    from = to;
+  }
+  return out;
+}
+
+/** A range cut in two, for a slice that ran out of time. Null for a single day. */
+export function halveSlice({ from, to }) {
+  const a = Date.parse(`${from}T00:00:00Z`);
+  const b = Date.parse(`${to}T00:00:00Z`);
+  const days = Math.round((b - a) / 86_400_000);
+  if (days < 2) return null;
+  const mid = iso(new Date(a + Math.floor(days / 2) * 86_400_000));
+  return [{ from, to: mid }, { from: mid, to }];
+}
+
+/**
+ * A horse as MySQL's GROUP BY saw it: the name compared without case or
+ * accents (the table's collation), and the foaling year.
+ */
+const horseKey = (name, fy) =>
+  `${String(name ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().trim()}\u0000${fy ?? ""}`;
+
+/** Each horse's best figure so far, raised by one slice's rows. */
+export function mergeSlice(best, rows = []) {
+  for (const r of rows) {
+    const figure = Math.max(Number(r.bestMaster) || 0, Number(r.bestPerformance) || 0);
+    if (!(figure > 0)) continue;
+    const key = horseKey(r.name, r.fy);
+    if (!(best.get(key) >= figure)) best.set(key, figure);
+  }
+  return best;
+}
+
+/** The merged bests as histogram rows `{ best, n }`, for histogramStats. */
+export function histogramOf(best) {
+  const counts = new Map();
+  for (const figure of best.values()) counts.set(figure, (counts.get(figure) ?? 0) + 1);
+  return [...counts.entries()].sort((a, b) => a[0] - b[0]).map(([b, n]) => ({ best: b, n }));
+}
+
+/**
+ * The population measured a month at a time. `runQuery(sql, args)` reads
+ * one slice; a slice that times out is halved and each half asked once
+ * more. Any slice that still fails fails the measurement, so a partial
+ * population is never kept. Returns `{ rows, slices, tookMs, slowest }`.
+ */
+export async function measureInSlices(runQuery, { flatRun, since, until = new Date(), hint = BASELINE_SLICE_HINT, pauseMs = 500, isTimeout = () => false } = {}) {
+  const started = Date.now();
+  const best = new Map();
+  let slices = 0;
+  let slowest = { ms: 0, from: null, to: null };
+  const read = async (slice, depth = 0) => {
+    const t0 = Date.now();
+    try {
+      const rows = await runQuery(baselineSliceSql(flatRun, hint), [slice.from, slice.to]);
+      mergeSlice(best, rows);
+      slices += 1;
+      const ms = Date.now() - t0;
+      if (ms > slowest.ms) slowest = { ms, from: slice.from, to: slice.to };
+    } catch (err) {
+      const halves = depth < 2 && isTimeout(err) ? halveSlice(slice) : null;
+      if (!halves) {
+        err.slice = slice;
+        throw err;
+      }
+      for (const h of halves) await read(h, depth + 1);
+    }
+  };
+  for (const slice of monthSlices(since, until)) {
+    await read(slice);
+    // A breath between months, so the other reads of the night (and of a
+    // day, when it is asked for by hand) are not queued behind the walk.
+    if (pauseMs) await new Promise((r) => setTimeout(r, pauseMs));
+  }
+  return { rows: histogramOf(best), slices, tookMs: Date.now() - started, slowest };
+}
+
+/**
  * The grades' lines on the population, as the user defines them: an A+ is
  * the top 3% of rated horses, an A the top 10%, a B the top 20%, a C the
  * top half; the rest is a D. Each is the lowest figure whose share from the
@@ -287,6 +404,7 @@ export default {
   STALE_MS,
   NIGHTLY_HINT,
   BASELINE_HINT,
+  BASELINE_SLICE_HINT,
   BACKGROUND_HINT,
   GRADE_SHARES,
   isFresh,
@@ -298,6 +416,12 @@ export default {
   dueForBuild,
   rebuildSummaries,
   baselineHistogramSql,
+  baselineSliceSql,
+  monthSlices,
+  halveSlice,
+  mergeSlice,
+  histogramOf,
+  measureInSlices,
   histogramStats,
   readBaseline,
   writeBaseline,

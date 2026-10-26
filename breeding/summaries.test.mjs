@@ -117,3 +117,95 @@ test("the table round trip: remembered names are due, a build writes them, a sho
   await writeSummary(runQuery, "damsire", "DUBAWI", summaryOf([h("Y", 95)]), { tookMs: 12 });
   assert.equal((await readSummaries(runQuery, "damsire", ["DUBAWI"])).get("DUBAWI").body.n, 1);
 });
+
+/* ------------------------------------------------- the walk a month at a time */
+
+import { baselineSliceSql, monthSlices, halveSlice, mergeSlice, histogramOf, measureInSlices } from "./summaries.mjs";
+
+test("two seasons are read a month at a time, the last month ending tomorrow", () => {
+  const s = monthSlices("2024-10-26", new Date("2026-10-26T04:00:00Z"));
+  assert.equal(s.length, 25);
+  assert.deepEqual(s[0], { from: "2024-10-26", to: "2024-11-01" });
+  assert.deepEqual(s[1], { from: "2024-11-01", to: "2024-12-01" });
+  assert.deepEqual(s.at(-1), { from: "2026-10-01", to: "2026-10-27" });
+  for (let i = 1; i < s.length; i += 1) assert.equal(s[i].from, s[i - 1].to, "no gap and no overlap between months");
+});
+
+test("a month that runs out of time is cut in two, down to a day", () => {
+  assert.deepEqual(halveSlice({ from: "2025-03-01", to: "2025-04-01" }), [{ from: "2025-03-01", to: "2025-03-16" }, { from: "2025-03-16", to: "2025-04-01" }]);
+  assert.equal(halveSlice({ from: "2025-03-01", to: "2025-03-02" }), null);
+});
+
+test("a slice reads the race-date range on the bare column, flat runs with a rating only", () => {
+  const sql = baselineSliceSql("(raceType = 'Flat')", "/*+ X */");
+  assert.match(sql, /SELECT \/\*\+ X \*\/ horseName/);
+  assert.match(sql, /meetingDate >= \? AND meetingDate < \?/);
+  assert.doesNotMatch(sql, /DATE\(meetingDate\)/);
+  assert.match(sql, /AND \(raceType = 'Flat'\)/);
+  assert.match(sql, /GROUP BY horseName, YEAR\(foalingDate\)/);
+});
+
+test("a horse's best is kept across months, and a name is one horse whatever its case or accents", () => {
+  const best = new Map();
+  mergeSlice(best, [
+    { name: "Élan Vital", fy: 2021, bestMaster: 88, bestPerformance: 91 },
+    { name: "Enable", fy: 2014, bestMaster: 128, bestPerformance: null },
+    { name: "Enable", fy: 2008, bestMaster: 40, bestPerformance: null },
+    { name: "Nothing Rated", fy: 2022, bestMaster: null, bestPerformance: null },
+  ]);
+  mergeSlice(best, [
+    { name: "ELAN VITAL", fy: 2021, bestMaster: 95, bestPerformance: 90 },
+    { name: "enable", fy: 2014, bestMaster: 120, bestPerformance: 125 },
+  ]);
+  assert.equal(best.size, 3);
+  assert.deepEqual(histogramOf(best), [{ best: 40, n: 1 }, { best: 95, n: 1 }, { best: 128, n: 1 }]);
+});
+
+test("the walk merges every month, halves one that times out, and gives the one-pass histogram", async () => {
+  const runs = [
+    ["2025-01-10", "A", 2020, 80, 82], ["2025-06-15", "A", 2020, 90, 85],
+    ["2025-03-05", "B", 2019, 100, null], ["2025-03-20", "B", 2019, 70, 104],
+    ["2025-02-01", "C", 2021, 60, 61],
+  ];
+  const asked = [];
+  const runQuery = async (sql, [from, to]) => {
+    asked.push(`${from}..${to}`);
+    if (from === "2025-03-01" && to === "2025-04-01") {
+      const err = new Error("ER_QUERY_TIMEOUT: maximum statement execution time exceeded");
+      err.code = "ER_QUERY_TIMEOUT";
+      throw err;
+    }
+    const by = new Map();
+    for (const [d, name, fy, m, p] of runs) {
+      if (d < from || d >= to) continue;
+      const k = `${name}|${fy}`;
+      const r = by.get(k) ?? { name, fy, bestMaster: null, bestPerformance: null };
+      r.bestMaster = Math.max(r.bestMaster ?? 0, m ?? 0) || null;
+      r.bestPerformance = Math.max(r.bestPerformance ?? 0, p ?? 0) || null;
+      by.set(k, r);
+    }
+    return [...by.values()];
+  };
+  const out = await measureInSlices(runQuery, {
+    flatRun: "(1=1)",
+    since: "2025-01-01",
+    until: new Date("2025-06-30T00:00:00Z"),
+    pauseMs: 0,
+    isTimeout: (e) => e.code === "ER_QUERY_TIMEOUT",
+  });
+  assert.deepEqual(out.rows, [{ best: 61, n: 1 }, { best: 90, n: 1 }, { best: 104, n: 1 }]);
+  assert.ok(asked.includes("2025-03-01..2025-03-16") && asked.includes("2025-03-16..2025-04-01"), "March was halved and both halves read");
+  assert.equal(out.slices, 7, "five whole months and March's two halves");
+  assert.equal(histogramStats(out.rows).n, 3);
+});
+
+test("a month that fails for another reason fails the walk, so no partial population is kept", async () => {
+  const runQuery = async (sql, [from]) => {
+    if (from === "2025-02-01") throw new Error("ER_LOCK_WAIT_TIMEOUT");
+    return [];
+  };
+  await assert.rejects(
+    measureInSlices(runQuery, { flatRun: "(1=1)", since: "2025-01-01", until: new Date("2025-03-15T00:00:00Z"), pauseMs: 0, isTimeout: () => false }),
+    (err) => err.slice?.from === "2025-02-01",
+  );
+});

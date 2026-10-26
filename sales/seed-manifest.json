@@ -1,0 +1,110 @@
+{
+  "about": "Fingerprints of the workbook seed parts the sales seed route accepts (POST /api/sales/seed). The parts themselves are the user's compiled sales databases and are kept in the private site repository (data/sales/seed), not here.",
+  "built": "2026-10-26",
+  "parts": [
+    {
+      "name": "eu-master-2015-2017",
+      "kind": "lots",
+      "source": "eu-master",
+      "rows": 16816,
+      "bytes": 937412,
+      "sha256": "1792e07a75513add7e3af0d30b67b9d98972935650751a84b926890f4840e2c0"
+    },
+    {
+      "name": "eu-master-2018-2020",
+      "kind": "lots",
+      "source": "eu-master",
+      "rows": 20040,
+      "bytes": 1095083,
+      "sha256": "c505f31c8dea0aa71a3e99eda0c98cfcf507c5372fc8100e1170b91c99bdb4d1"
+    },
+    {
+      "name": "eu-master-2021-2023",
+      "kind": "lots",
+      "source": "eu-master",
+      "rows": 21293,
+      "bytes": 1076590,
+      "sha256": "1943355205c354eefc9a5ab09ac682e23877a311dc53330769ba0286f01281c8"
+    },
+    {
+      "name": "eu-master-2024-2025",
+      "kind": "lots",
+      "source": "eu-master",
+      "rows": 12622,
+      "bytes": 494476,
+      "sha256": "b1520db7c2cf6ba81e033c40169d0baa33815e7652f096ac3e1633d62be8b2f0"
+    },
+    {
+      "name": "us-master-2015-2017",
+      "kind": "lots",
+      "source": "us-master",
+      "rows": 22828,
+      "bytes": 1410753,
+      "sha256": "da4808156dda623ed6a0b2ccd3a240542ebe0625d99b782667ab1a95382c8d86"
+    },
+    {
+      "name": "us-master-2018-2020",
+      "kind": "lots",
+      "source": "us-master",
+      "rows": 24443,
+      "bytes": 1499552,
+      "sha256": "ee9c04a9d391858f4e6b67da6e9b0f25ef469dd63a8f0fd58694ece01a7f9363"
+    },
+    {
+      "name": "us-master-2021-2023",
+      "kind": "lots",
+      "source": "us-master",
+      "rows": 24080,
+      "bytes": 1430180,
+      "sha256": "8f8788787d1972a974af6149320078108a08317b0795f8919d49932d85cac745"
+    },
+    {
+      "name": "us-master-2024-2025",
+      "kind": "lots",
+      "source": "us-master",
+      "rows": 16080,
+      "bytes": 804543,
+      "sha256": "2dc947728b12397f8403128a11606bcd99782e9cd0f9b87ba8cbb397754caed2"
+    },
+    {
+      "name": "aus-nz-master-2015-2017",
+      "kind": "lots",
+      "source": "aus-nz-master",
+      "rows": 19164,
+      "bytes": 1017953,
+      "sha256": "4bd23ffeca1d12e06a0919a5831dbc1ee8746882a5cdab1f790f610fe3e36040"
+    },
+    {
+      "name": "aus-nz-master-2018-2020",
+      "kind": "lots",
+      "source": "aus-nz-master",
+      "rows": 19732,
+      "bytes": 1047122,
+      "sha256": "fb84385e8463f7caa3973d45a737970bb0505951eea558e172ef6739b952ff6d"
+    },
+    {
+      "name": "aus-nz-master-2021-2023",
+      "kind": "lots",
+      "source": "aus-nz-master",
+      "rows": 20123,
+      "bytes": 1085949,
+      "sha256": "9f939a60acae7368ea10238a19ec598613a62905558ac97e50b4352d32aed04f"
+    },
+    {
+      "name": "aus-nz-master-2024-2025",
+      "kind": "lots",
+      "source": "aus-nz-master",
+      "rows": 12901,
+      "bytes": 623562,
+      "sha256": "878cc1f6e83686d3f4ea78ac70897a2df786af5506b48f0e60eab413b9370eb5"
+    },
+    {
+      "name": "fee-hints-eu",
+      "kind": "fee-hints",
+      "source": "eu-master",
+      "rows": 1043,
+      "bytes": 6940,
+      "sha256": "69df2bd79296bd31d66fad73c7a17876e7b32b319f84db1a6eab8035d04ac127"
+    }
+  ]
+}
