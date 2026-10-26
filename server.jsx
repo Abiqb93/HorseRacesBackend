@@ -10010,7 +10010,8 @@ app.get("/api/sales/hit", async (req, res) => {
  * A house's results read again. Tattersalls: one sale (`code=OC125`), or
  * every sale of a span of years (`from=2015&to=2026`). Arqana
  * (`house=arqana`): one sale by its number (`venid=386`), or a run of
- * numbers (`from=181&to=420`). Spans run in the background. The pages are
+ * numbers (`from=181&to=420`). Spans run in the background; `skipHeld=1`
+ * leaves out the sales of past years already read in full. The pages are
  * the houses' public results; reading them again only refreshes rows.
  */
 app.post("/api/sales/fetch", async (req, res) => {
@@ -10021,13 +10022,13 @@ app.post("/api/sales/fetch", async (req, res) => {
       const from = Number(req.query.from);
       const to = Number(req.query.to) || from;
       if (!(from >= 150 && to >= from && to - from <= 400)) return res.status(400).json({ error: "from and to are Arqana sale numbers (186 is August 2014)" });
-      return res.status(202).json(svc.runArqana({ from, to }));
+      return res.status(202).json(svc.runArqana({ from, to, skipHeld: req.query.skipHeld === "1" }));
     }
     if (req.query.code) return res.json(await svc.importTattersalls(String(req.query.code).toUpperCase()));
     const from = Number(req.query.from) || new Date().getFullYear();
     const to = Number(req.query.to) || from;
     if (from < 2010 || to > new Date().getFullYear() + 1 || to < from) return res.status(400).json({ error: "from and to are years, from 2010" });
-    res.status(202).json(svc.runTattersalls({ from, to }));
+    res.status(202).json(svc.runTattersalls({ from, to, skipHeld: req.query.skipHeld === "1" }));
   } catch (err) {
     salesError(res, "sales fetch", err);
   }

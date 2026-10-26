@@ -237,3 +237,21 @@ test("what is held, counted from memory: by source, and by kind, region and year
   assert.deepEqual(c.bySource.find((s) => s.source === "arqana"), { source: "arqana", lots: 2, sold: 1, fromYear: 2024, toYear: 2025 });
   assert.deepEqual(c.byKind.map((k) => `${k.region}${k.year}:${k.lots}`), ["EU2024:1", "EU2025:1", "US2024:1"]);
 });
+
+test("a rerun leaves out the sales of past years already read in full", async () => {
+  const { createSalesService } = await import("./service.mjs");
+  const asked = [];
+  const runQuery = async (sql) => (/FROM sale_imports WHERE source/.test(sql) ? [{ sale_label: "OC115" }] : []);
+  const fetchImpl = async (url) => {
+    asked.push(String(url));
+    return { ok: true, status: 200, headers: { get: () => null, getSetCookie: () => [] }, text: async () => "<html></html>", json: async () => ({}), arrayBuffer: async () => new ArrayBuffer(0) };
+  };
+  const svc = createSalesService({ runQuery, fetchImpl, log: {} });
+  svc.runTattersalls({ from: 2015, to: 2015, prefixes: ["OC1", "OC2"], pauseMs: 0, skipHeld: true });
+  for (let i = 0; i < 100 && !(await svc.status({ quick: true })).lastJob; i += 1) await new Promise((r) => setTimeout(r, 10));
+  const last = (await svc.status({ quick: true })).lastJob;
+  assert.equal(last.skipped, 1);
+  assert.equal(last.done, 2);
+  assert.ok(asked.some((u) => /OC215/.test(u)), "the sale not yet held is read");
+  assert.ok(!asked.some((u) => /OC115/.test(u)), "the one held is not");
+});

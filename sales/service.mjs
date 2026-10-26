@@ -214,13 +214,18 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch 
         seeds,
       };
     }
-    const [bySource, byKind, imports] = await Promise.all([
-      runQuery(`SELECT source, COUNT(*) AS lots, SUM(status = 'sold') AS sold, MIN(year) AS fromYear, MAX(year) AS toYear FROM ${LOTS_TABLE} GROUP BY source`, []),
-      runQuery(`SELECT sale_type AS type, region, year, COUNT(*) AS lots, SUM(status = 'sold') AS sold FROM ${LOTS_TABLE} GROUP BY sale_type, region, year ORDER BY sale_type, region, year`, []),
-      runQuery(`SELECT source, sale_key, sale_label, year, lots, sold, reconcile, note, error, at FROM ${IMPORTS_TABLE} ORDER BY id DESC LIMIT 60`, []),
-    ]);
+    // Counting the whole table can take minutes while a feed is writing to
+    // it; the counts are given up after 20 seconds and the index's used.
+    const counted = await Promise.all([
+      runQuery(`SELECT /*+ MAX_EXECUTION_TIME(20000) */ source, COUNT(*) AS lots, SUM(status = 'sold') AS sold, MIN(year) AS fromYear, MAX(year) AS toYear FROM ${LOTS_TABLE} GROUP BY source`, []),
+      runQuery(`SELECT /*+ MAX_EXECUTION_TIME(20000) */ sale_type AS type, region, year, COUNT(*) AS lots, SUM(status = 'sold') AS sold FROM ${LOTS_TABLE} GROUP BY sale_type, region, year ORDER BY sale_type, region, year`, []),
+    ]).catch((err) => ({ error: err.message }));
+    const fallback = index?.coverage ?? { bySource: [], byKind: [] };
+    const [bySource, byKind] = counted.error ? [fallback.bySource, fallback.byKind] : counted;
+    const imports = await runQuery(`SELECT source, sale_key, sale_label, year, lots, sold, reconcile, note, error, at FROM ${IMPORTS_TABLE} ORDER BY id DESC LIMIT 60`, []);
     return {
       index: index ? { builtAt: index.builtAt, lots: index.lots.length, tookMs: index.tookMs, fees: index.fees } : null,
+      counts: counted.error ? `from the index (${counted.error})` : "from the table",
       bySource: bySource.map((r) => ({ ...r, lots: Number(r.lots), sold: Number(r.sold) })),
       byKind: byKind.map((r) => ({ ...r, lots: Number(r.lots), sold: Number(r.sold) })),
       imports: imports.map((r) => ({ ...r, reconcile: typeof r.reconcile === "string" ? JSON.parse(r.reconcile) : r.reconcile })),
@@ -248,12 +253,18 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch 
    * A list of sales read one at a time in the background, the index rebuilt
    * at the end. One job at a time; asking again while one runs reports it.
    */
-  function runJob(house, items, importOne, { pauseMs = 500, meta = {} } = {}) {
+  function runJob(house, items, importOne, { pauseMs = 500, meta = {}, skip = null } = {}) {
     if (job) return { running: true, state: job.state };
-    const state = { house, ...meta, startedAt: new Date().toISOString(), done: 0, total: items.length, results: [] };
+    const state = { house, ...meta, startedAt: new Date().toISOString(), done: 0, total: items.length, skipped: 0, results: [] };
     job = { state };
     (async () => {
+      const held = skip ? await skip() : new Set();
       for (const item of items) {
+        if (held.has(String(item))) {
+          state.skipped += 1;
+          state.done += 1;
+          continue;
+        }
         try {
           const r = await importOne(item);
           if (r.lots) state.results.push(r);
@@ -277,11 +288,24 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch 
     return { started: true, state };
   }
 
+  /**
+   * The sales of a house already read in full: imported without an error,
+   * with lots, in a year before this one (this year's may still be
+   * selling). A run asked to skip them picks up where a restart cut one off.
+   */
+  const heldLabels = (source, toLabel = String) => async () => {
+    const rows = await runQuery(
+      `SELECT DISTINCT sale_label FROM ${IMPORTS_TABLE} WHERE source = ? AND error IS NULL AND lots > 0 AND year < ?`,
+      [source, new Date().getFullYear()],
+    );
+    return new Set(rows.map((r) => toLabel(r.sale_label)));
+  };
+
   /** Every Tattersalls sale in a range of years, one at a time, in the background. */
-  function runTattersalls({ from, to, prefixes = Object.keys(TATTERSALLS), pauseMs = 500 } = {}) {
+  function runTattersalls({ from, to, prefixes = Object.keys(TATTERSALLS), pauseMs = 500, skipHeld = false } = {}) {
     const codes = [];
     for (let y = from; y <= to; y += 1) for (const p of prefixes) codes.push(codeFor(p, y));
-    return runJob("tattersalls", codes, importTattersalls, { pauseMs, meta: { from, to } });
+    return runJob("tattersalls", codes, importTattersalls, { pauseMs, meta: { from, to }, skip: skipHeld ? heldLabels("tattersalls") : null });
   }
 
   /**
@@ -305,10 +329,10 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch 
   }
 
   /** A run of Arqana's sale numbers (186 is August 2014), in the background. */
-  function runArqana({ from, to, pauseMs = 500 } = {}) {
+  function runArqana({ from, to, pauseMs = 500, skipHeld = false } = {}) {
     const venids = [];
     for (let v = from; v <= to; v += 1) venids.push(v);
-    return runJob("arqana", venids, importArqana, { pauseMs, meta: { from, to } });
+    return runJob("arqana", venids, importArqana, { pauseMs, meta: { from, to }, skip: skipHeld ? heldLabels("arqana", (l) => String(l).replace(/^ARQ/, "")) : null });
   }
 
   const heldArqana = async (where, params) =>
