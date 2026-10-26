@@ -7517,6 +7517,8 @@ let breedingBaseline = null;
 let breedingBaselineInFlight = null;
 /** Why the last measurement came back with nothing, until one succeeds. */
 let breedingBaselineFailure = null;
+/** How the last walk went: the months read, the time, the slowest month. */
+let breedingBaselineWalk = null;
 
 /**
  * Measure the population, off the request path.
@@ -7527,7 +7529,9 @@ let breedingBaselineFailure = null;
  * starts it, gets the fallback at once, and the measurement lands in the
  * cache for everyone after — two minutes' grace, because nobody is waiting.
  */
-function measureBaseline({ hint = "/*+ MAX_EXECUTION_TIME(120000) */" } = {}) {
+const isQueryTimeoutError = (err) => err?.code === "ER_QUERY_TIMEOUT" || /max_execution_time|maximum statement execution/i.test(err?.message ?? "");
+
+function measureBaseline({ hint = null } = {}) {
   if (breedingBaselineInFlight) return breedingBaselineInFlight;
   const since = new Date();
   since.setUTCFullYear(since.getUTCFullYear() - 2);
@@ -7536,9 +7540,17 @@ function measureBaseline({ hint = "/*+ MAX_EXECUTION_TIME(120000) */" } = {}) {
   // sires are measured on. Read as a histogram, so the grade lines come out
   // of the same pass as the mean, and kept in a table so a redeploy does
   // not lose a measurement that takes minutes.
+  // A month at a time (breeding/summaries.mjs, measureInSlices): one query
+  // over two seasons ran past every cap it was given at night.
   breedingBaselineInFlight = Promise.all([loadMating(), loadSummaries()])
-    .then(([{ FLAT_RUN }, { baselineHistogramSql, histogramStats, writeBaseline }]) =>
-      runQuery(baselineHistogramSql(FLAT_RUN, hint), [since.toISOString().slice(0, 10)]).then((rows) => {
+    .then(([{ FLAT_RUN }, { measureInSlices, BASELINE_SLICE_HINT, histogramStats, writeBaseline }]) =>
+      measureInSlices(runQuery, {
+        flatRun: FLAT_RUN,
+        since: since.toISOString().slice(0, 10),
+        hint: hint ?? BASELINE_SLICE_HINT,
+        isTimeout: isQueryTimeoutError,
+      }).then(({ rows, slices, tookMs, slowest }) => {
+        breedingBaselineWalk = { slices, tookMs, slowest };
         const stats = histogramStats(rows);
         if (!stats) {
           console.warn("breeding baseline came back empty");
@@ -7558,7 +7570,8 @@ function measureBaseline({ hint = "/*+ MAX_EXECUTION_TIME(120000) */" } = {}) {
       breedingBaselineFailure = {
         at: new Date().toISOString(),
         error: err.message,
-        timedOut: err?.code === "ER_QUERY_TIMEOUT" || /max_execution_time|maximum statement execution/i.test(err?.message ?? ""),
+        timedOut: isQueryTimeoutError(err),
+        slice: err.slice ?? null,
       };
       return null;
     })
@@ -16078,11 +16091,12 @@ let lastNightly = null;
   const run = async (why) => {
     lastNightly = { why, startedAt: new Date().toISOString() };
     try {
-      const { rebuildSummaries, NIGHTLY_HINT, NIGHT_BASELINE_HINT } = await loadSummaries();
+      const { rebuildSummaries, NIGHTLY_HINT } = await loadSummaries();
       const baselineStarted = Date.now();
-      const baseline = await measureBaseline({ hint: NIGHT_BASELINE_HINT });
+      const baseline = await measureBaseline();
       lastNightly.baseline = baseline ? { n: baseline.n, mean: baseline.mean, grades: baseline.grades } : null;
       lastNightly.baselineMs = Date.now() - baselineStarted;
+      lastNightly.baselineWalk = baseline ? breedingBaselineWalk : null;
       // Kept, so a morning's check reads why rather than inferring it.
       if (!baseline) lastNightly.baselineError = breedingBaselineFailure ?? { error: "no measurement" };
       if (baseline) forgetPopulationBodies();
@@ -16147,13 +16161,13 @@ app.post("/api/breeding/population/measure", async (req, res) => {
   if (breedingBaseline?.value?.measured && Date.now() - breedingBaseline.createdAt < MEASURE_AGAIN_MS && !req.query.force) {
     return res.json({ measured: breedingBaseline.value, at: new Date(breedingBaseline.createdAt).toISOString(), note: "measured within the last six hours; add &force=1 to measure again" });
   }
-  const { BASELINE_HINT } = await loadSummaries();
   lastMeasure = { startedAt: new Date().toISOString(), by: "request" };
-  measureBaseline({ hint: BASELINE_HINT })
+  measureBaseline()
     .then((value) => {
       lastMeasure.finishedAt = new Date().toISOString();
       lastMeasure.value = value ? { n: value.n, mean: value.mean, sd: value.sd, median: value.median, grades: value.grades, since: value.since } : null;
       if (!value) lastMeasure.error = breedingBaselineFailure?.error ?? "no measurement";
+      lastMeasure.walk = value ? breedingBaselineWalk : null;
       if (value) forgetPopulationBodies();
     })
     .catch((err) => {
