@@ -9954,6 +9954,7 @@ async function sales() {
   return salesService;
 }
 const salesError = (res, what, err) => {
+  if (err.code === "SALES_BUILDING") return res.status(503).set("Retry-After", "60").json({ error: "building", detail: err.message });
   console.error(`[sales] ${what} failed:`, err.message);
   res.status(500).json({ error: `${what} failed`, detail: err.message });
 };

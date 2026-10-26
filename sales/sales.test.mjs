@@ -354,3 +354,16 @@ test("a lot as the index keeps it: one shape, shared strings, numbers as numbers
   assert.deepEqual(Object.keys(a), Object.keys(slim({ source: "x", region: "EU", year: 2020, sale_type: "foal", status: "rna" })));
   assert.equal(a.sale_name, b.sale_name);
 });
+
+test("a page's request while the first index is built is answered at once, not held", async () => {
+  const { createSalesService } = await import("./service.mjs");
+  let release;
+  const gate = new Promise((r) => (release = r));
+  const runQuery = async (q) => (/FROM sale_lots WHERE id > \?/.test(q) ? (await gate, []) : []);
+  const svc = createSalesService({ runQuery, fetchImpl: async () => ({ ok: false, status: 404, json: async () => ({}) }), log: {} });
+  await assert.rejects(svc.market({ type: "yearling", region: "EU" }), (e) => e.code === "SALES_BUILDING");
+  release();
+  await svc.build();
+  const m = await svc.market({ type: "yearling", region: "EU" });
+  assert.deepEqual(m.cells, []);
+});

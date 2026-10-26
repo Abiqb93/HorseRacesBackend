@@ -239,23 +239,36 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
 
   const ready = async () => index ?? build();
 
+  /**
+   * The index for a page's request: the one held, or, while the first
+   * one after a restart is still being built, an error the routes answer
+   * with 503 at once, rather than holding the request open for minutes.
+   */
+  const readyNow = async () => {
+    if (index) return index;
+    build().catch((err) => log.warn?.(`[sales] index not built: ${err.message}`));
+    const err = new Error("the sales figures are being built after a restart; try again in a minute or two");
+    err.code = "SALES_BUILDING";
+    throw err;
+  };
+
   /* ------------------------------------------------------------ reads */
 
   async function market({ type = null, region = null } = {}) {
-    const ix = await ready();
+    const ix = await readyNow();
     const keep = (c) => (!type || c.type === type) && (!region || c.region === region);
     return { builtAt: ix.builtAt, cells: ix.market.cells.filter(keep), sales: ix.market.sales.filter(keep) };
   }
 
   async function sires({ type = "yearling", region = null, limit = 2000 } = {}) {
-    const ix = await ready();
+    const ix = await readyNow();
     const t = ix.tables.get(`${type}|${region ?? "ALL"}`);
     if (!t) return { type, region, years: [], rows: [], builtAt: ix.builtAt };
     return { ...t, rows: t.rows.slice(0, limit), builtAt: ix.builtAt };
   }
 
   async function sire(key) {
-    const ix = await ready();
+    const ix = await readyNow();
     const k = nameKey(key);
     const out = {};
     for (const [tk, t] of ix.tables) {
@@ -271,12 +284,12 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
   }
 
   async function dam(key) {
-    const ix = await ready();
+    const ix = await readyNow();
     return damRecord(ix.lots, nameKey(key), { sireMedians: ix.sireMedians });
   }
 
   async function hit({ region = null } = {}) {
-    const ix = await ready();
+    const ix = await readyNow();
     return { ...(ix.hit.get(region ?? "ALL") ?? { rows: [], years: [] }), builtAt: ix.builtAt };
   }
 
