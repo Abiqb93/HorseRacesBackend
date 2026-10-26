@@ -8691,8 +8691,10 @@ function measureAgeGrid() {
       ...ageGrid(rows),
       since: AGE_SINCE,
       basis:
-        "Every runner on the flat in our database foaled since 2008 whose dam raced here, so her age at foaling is known; " +
-        "the sire's age at the cover where he raced here too, else under unknownSire. Stakes is Listed and above; rates are per runner, not per foal.",
+        "Every runner on the flat in our database foaled since 2008. The grid holds those whose dam raced here, so her age at foaling is known, " +
+        "with the sire's age at the cover where he raced here too, else under unknownSire; population counts every runner, ages known or not. " +
+        "stakesIndex is a cell's stakes winners against the sum of its runners' sires' own stakes rates (100 = par). " +
+        "Stakes is Listed and above; rates are per runner, not per foal.",
       generatedAt: new Date().toISOString(),
     };
     ageGridCache = { at: Date.now(), body };
