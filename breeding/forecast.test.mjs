@@ -288,6 +288,12 @@ test("the forecast counts Timeform p symbols among this season's runners when th
   assert.ok(star.p.horses.every((h) => h.symbol === "p"));
   assert.equal(f.sires.find((s) => s.sire === "SLOW BURNER").p.n, 0);
   assert.equal(f.symbols.since, "2026-10-28");
+
+  // Kept without a foaling date: found by name alone.
+  const [key, r] = [...seasons.get(2026)].find(([, x]) => x[F.sire] === "Slow Burner");
+  const loose = new Map([[horseKey(r[F.name], 0), "P"]]);
+  const g = buildForecast(seasons, { now: day("2026-10-27"), symbols: loose });
+  assert.equal(g.sires.find((s) => s.sire === "SLOW BURNER").p.n, 1, key);
 });
 
 test("a period stored in an older shape is read again, and left out until it is", async () => {

@@ -76,6 +76,8 @@ export const MAX_INDEX = 4;
 export const MAX_STAGE = 10;
 /** Fewer runners than this and a sire is listed but not graded. */
 export const MIN_GRADED_RUNNERS = 10;
+/** "Might go on" takes more: twenty runners, so a small book's three good horses do not make the call. */
+export const BREAKOUT_MIN_RUNNERS = 20;
 /** One month of the walk: five minutes, as the population's. */
 export const SLICE_HINT = "/*+ MAX_EXECUTION_TIME(300000) */";
 /** A stored body is cut into parts of this many characters. */
@@ -669,7 +671,10 @@ export function buildForecast(seasons, { now = new Date(), symbols = null, symbo
     const prevIdx = prev ? indexes(prev.toDate, parAt(st.k - 1)?.toDate) : null;
     const kept = stats.horses;
     const active = kept.filter((x) => x.lastSeason === point.season);
-    const pHorses = symbols ? active.filter((x) => /p/i.test(symbols.get(x.h.key) ?? "")) : null;
+    // A symbol is looked up by name and foaling year, and by name alone where
+    // it was kept without a foaling date (the backfill fills them in after).
+    const symbolOf = (h) => symbols.get(h.key) ?? symbols.get(horseKey(h.name, 0)) ?? "";
+    const pHorses = symbols ? active.filter((x) => /p/i.test(symbolOf(x.h))) : null;
     const crops = new Set(r.horses.map((h) => h.fy).filter((y) => y >= r.first)).size;
     out.push({
       sire: r.name,
@@ -691,12 +696,12 @@ export function buildForecast(seasons, { now = new Date(), symbols = null, symbo
       nextScore: round(nextScore, 1),
       // Young, graded, and still a quarter above par once the carry-over has
       // taken its share: the ones that might really go on next season.
-      breakout: st.k <= 4 && stats.runners >= MIN_GRADED_RUNNERS && nextScore >= 125,
+      breakout: st.k <= 4 && stats.runners >= BREAKOUT_MIN_RUNNERS && nextScore >= 125,
       stakesWinners: stats.sw,
       groupWinners: stats.gw,
       // Lightly raced: this season's runners with three rated runs or fewer in all.
       unexposed: active.filter((x) => x.runs <= 3).length,
-      p: pHorses ? { n: pHorses.length, share: active.length ? round(pHorses.length / active.length) : null, horses: pHorses.sort((a, b) => b.best - a.best).slice(0, 6).map((x) => ({ name: x.h.name, best: x.best, symbol: symbols.get(x.h.key) })) } : null,
+      p: pHorses ? { n: pHorses.length, share: active.length ? round(pHorses.length / active.length) : null, horses: pHorses.sort((a, b) => b.best - a.best).slice(0, 6).map((x) => ({ name: x.h.name, best: x.best, symbol: symbolOf(x.h) })) } : null,
       top: kept
         .filter((x) => x.best > 0)
         .sort((a, b) => b.best - a.best)
@@ -715,7 +720,7 @@ export function buildForecast(seasons, { now = new Date(), symbols = null, symbo
     basis: { countries: HOME_COUNTRIES, words: "runners in Britain and Ireland, where Timeform rates every runner" },
     seasonsHeld: held,
     firstSeason: dataFirst,
-    rules: { minParRunners: MIN_PAR_RUNNERS, shrinkRunners: SHRINK_RUNNERS, priorHorses: PRIOR_HORSES, maxIndex: MAX_INDEX, minGradedRunners: MIN_GRADED_RUNNERS, maxStage: MAX_STAGE },
+    rules: { minParRunners: MIN_PAR_RUNNERS, shrinkRunners: SHRINK_RUNNERS, priorHorses: PRIOR_HORSES, maxIndex: MAX_INDEX, minGradedRunners: MIN_GRADED_RUNNERS, breakoutMinRunners: BREAKOUT_MIN_RUNNERS, maxStage: MAX_STAGE },
     par,
     carry,
     symbols: symbols ? { held: true, since: symbolsSince, horses: symbolsCount ?? symbols.size } : { held: false },
