@@ -683,6 +683,8 @@ export function buildForecast(seasons, { now = new Date(), symbols = null, symbo
       stage: st.k,
       crops,
       runners: stats.runners,
+      // The middle of his runners' best figures, rated ones only.
+      median: round(quantile(kept.filter((x) => x.best > 0).map((x) => x.best), 0.5), 0),
       active: active.length,
       n: stats.n,
       share: stats.n.map((c) => round(c / stats.runners)),

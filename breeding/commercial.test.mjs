@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCommercial, fitHorizon, historyIndex, latestLine, marketByYear, pairsFor, sameSireMoves, stageAt, stageBucket, testFit } from "./commercial.mjs";
+import { basisOf, buildCommercial, fitHorizon, historyIndex, homeWeight, latestLine, marketByYear, pairsFor, sameSireMoves, stageAt, stageBucket, steadyPath, testFit } from "./commercial.mjs";
 
 /**
  * A made-up European yearling market: the market's median rises 3% a year;
@@ -119,17 +119,34 @@ test("a sire scoring well above par is projected to gain on one at par, and the 
   assert.equal(fresh.projected, null);
   assert.equal(fresh.score, 120);
   assert.ok(out.model.test.pairs > 0);
-  assert.equal(hot.scoreFrom, "now");
+  assert.equal(hot.scoreUsed, 150);
+  assert.deepEqual(hot.basis.years, [2024, 2025, 2026], "the last three sale years together");
+  assert.equal(hot.basis.sold, 36);
 
-  // A proven sire the forecast no longer scores keeps his last score, not par.
-  const proven = buildCommercial({
-    yearlings,
-    cells,
-    lines,
-    history: { ...history, "SIRE 4": { ...history["SIRE 4"], s: history["SIRE 4"].s.filter(([T]) => T <= 2022) } },
-    current: [],
-    now: new Date("2026-10-27T00:00:00Z"),
-  }).sires.find((s) => s.key === "SIRE 4");
-  assert.equal(proven.scoreUsed, 150);
-  assert.equal(proven.scoreFrom, 2022);
+  // Proven (seven seasons of runners or more): held at his level whatever his score.
+  const old = buildCommercial({ yearlings, cells, lines, history, current: [{ sire: "SIRE 4", stage: 8, score: 150 }], now: new Date("2026-10-27T00:00:00Z") }).sires.find((s) => s.key === "SIRE 4");
+  assert.equal(old.proven, true);
+  assert.equal(old.scoreUsed, null);
+  assert.ok(old.projected.every((p) => p.median === old.basis.median));
+
+  // Read on 14 of his 225 runners, a score of 167 counts for little.
+  const abroad = buildCommercial({ yearlings, cells, lines, history, current: [{ sire: "SIRE 4", stage: 5, score: 167, runners: 14 }], runners: new Map([["SIRE 4", 225]]), now: new Date("2026-10-27T00:00:00Z") }).sires.find((s) => s.key === "SIRE 4");
+  assert.ok(abroad.scoreUsed > 100 && abroad.scoreUsed < 110, `${abroad.scoreUsed}`);
+  assert.ok(gain(abroad) < gain(hot));
+});
+
+test("where a projection starts, how much a score counts, and a path that keeps to one road", () => {
+  const moves = new Map([[2024, Math.log(1.1)], [2025, 0]]);
+  // Five sold in 2026 alone is not the whole of him: 2024's eleven count too, carried 10% for the market.
+  const b = basisOf([[2023, { sold: 14, median: 21000 }], [2024, { sold: 11, median: 15750 }], [2025, { sold: 2, median: 26142 }], [2026, { sold: 5, median: 26250 }]], 2026, moves);
+  assert.deepEqual(b.years, [2024, 2025, 2026]);
+  assert.equal(b.sold, 18);
+  assert.ok(b.median > 19000 && b.median < 22000, `${b.median}`);
+  assert.equal(basisOf([[2026, { sold: 3, median: 9000 }]], 2026), null, "three sold is too few");
+  assert.equal(homeWeight(274, 547), 1, "half his runners in Britain and Ireland: read in full");
+  assert.ok(Math.abs(homeWeight(14, 225) - 0.124) < 0.001);
+  assert.equal(homeWeight(14, null), 1, "nothing to set it against");
+  assert.deepEqual(steadyPath([0.3, 0.2, 0.25]), [0.25, 0.25, 0.25], "never past the end, never back");
+  assert.deepEqual(steadyPath([0.1, 0.2, 0.3]), [0.1, 0.2, 0.3]);
+  assert.deepEqual(steadyPath([0.05, -0.1, -0.2]), [0, -0.1, -0.2]);
 });

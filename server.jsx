@@ -16658,6 +16658,7 @@ app.get("/api/breeding/commercial", async (req, res) => {
         history: forecast.history ?? {},
         current: forecast.sires ?? [],
         fees: inputs.fees,
+        runners: inputs.runners,
       });
       body.tookMs = Date.now() - t0;
       body.inputs = { sales: inputs.builtAt, forecast: forecast.builtAt, historyHeld: Boolean(forecast.history) };

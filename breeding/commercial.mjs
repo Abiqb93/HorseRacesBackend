@@ -34,15 +34,23 @@
  *             judged on those two: how close it came, against a call that
  *             the median moves with the market.
  *
- * A projection is a sire's latest median moved a year at a time by the
- * one-year fit, his stage advancing and his place against the market
- * updated each year, so the pull back towards the market works the same
- * way at every step; the longer fits give the spread around it. The market
- * is held where it is: today's money. (Fitted separately, the three-year
- * fit pulled an expensive sire back less hard than the one-year fit, and
- * Frankel, at 2.5 times par for years, rose 38% by 2029 on one and held on
- * the other.) The line (log price on log fee, the latest year of the kind) is
- * returned as well: it is what a mare's fee sweet spot is worked out on.
+ * A projection starts from his last three sale years together (each
+ * carried to the latest by the market's same-sire moves, weighted by how
+ * many sold), not one year: Golden Horn's 2026 median was five yearlings.
+ * Each target year is read off the fit for that horizon directly, the path
+ * kept from turning back or running past the three-year fit. Moving a year
+ * at a time on the one-year fit compounded what the longer fits show does
+ * not compound: Golden Horn £26k to £57k by 2029, City Light £14k to £41k
+ * (27 October 2026: "the data isn't holding up for me").
+ *
+ * A proven sire (seven seasons of runners or more) is held at his level:
+ * the market has his record, and the fits are for sires it is still
+ * learning. A Timeform score read on a sire whose runners mostly race
+ * abroad counts for as much of him as those runners are: City Light's 167
+ * was read on 14 of his 225 runners, the ones sent to Britain and Ireland.
+ * The market is held where it is: today's money. The line (log price on
+ * log fee, the latest year of the kind) is returned as well: it is what a
+ * mare's fee sweet spot is worked out on.
  *
  * Pure: the routes hand in the sales tables and the forecast's history.
  */
@@ -58,6 +66,13 @@ export const MIN_STAGE_PAIRS = 60;
 const goodYear = (v, minSold = MIN_SOLD) => v && v.sold >= minSold && v.median > 0;
 const round = (v, dp = 3) => (Number.isFinite(v) ? Number(v.toFixed(dp)) : null);
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+
+/** From this many seasons of runners a sire is proven, and held at his level. */
+export const PROVEN_STAGE = 7;
+/** A Timeform score counts in full once his British and Irish runners are this share of all his runners. */
+export const HOME_SHARE_FULL = 0.5;
+/** The sale years a projection starts from. */
+export const BASIS_YEARS = 3;
 
 /** A stage of career as the fit groups it: 0 no runners yet, 1–3, and 4 for four and on. */
 export const stageBucket = (k) => (k === null || k === undefined ? null : k <= 0 ? 0 : k >= 4 ? 4 : k);
@@ -254,6 +269,52 @@ export function testFit(ps, fromYear) {
   };
 }
 
+/**
+ * Where a projection starts: his medians over the last BASIS_YEARS sale
+ * years, each carried to the latest year by the market's same-sire moves
+ * (`oneYear`: year -> log move to the next), averaged on the log scale and
+ * weighted by how many sold. Null with fewer than MIN_SOLD sold in all.
+ */
+export function basisOf(years, latestYear, oneYear = new Map()) {
+  const used = (years ?? []).filter(([y, v]) => y > latestYear - BASIS_YEARS && y <= latestYear && v?.sold > 0 && v.median > 0);
+  const sold = used.reduce((a, [, v]) => a + v.sold, 0);
+  if (sold < MIN_SOLD) return null;
+  let sum = 0;
+  for (const [y, v] of used) {
+    let carry = 0;
+    for (let t = y; t < latestYear; t += 1) carry += oneYear.get(t) ?? 0;
+    sum += v.sold * (Math.log(v.median) + carry);
+  }
+  return { kind: "yearlings", year: latestYear, median: Math.round(Math.exp(sum / sold)), sold, years: used.map(([y]) => y) };
+}
+
+/** How much of a sire his British and Irish runners are, as the weight his Timeform score is read at. */
+export function homeWeight(homeRunners, allRunners) {
+  if (!(homeRunners > 0) || !(allRunners >= 20)) return 1;
+  return Math.min(1, homeRunners / allRunners / HOME_SHARE_FULL);
+}
+
+/**
+ * The moves to each target, kept on one road: none turns back on the one
+ * before it or runs past where the last ends (fitted separately, the
+ * horizons can disagree in the middle).
+ */
+export function steadyPath(ds) {
+  const last = ds.at(-1);
+  if (!Number.isFinite(last)) return ds.map(() => null);
+  const lo = Math.min(0, last);
+  const hi = Math.max(0, last);
+  const out = [];
+  let prev = 0;
+  for (const d of ds) {
+    let v = Number.isFinite(d) ? Math.max(lo, Math.min(hi, d)) : prev;
+    v = last >= 0 ? Math.max(v, prev) : Math.min(v, prev);
+    out.push(v);
+    prev = v;
+  }
+  return out;
+}
+
 /** The market's line for a kind and region: the latest year with one, `{ year, a, b, n }`. */
 export function latestLine(lines, type = "yearling", region = "EU") {
   let best = null;
@@ -268,9 +329,10 @@ export function latestLine(lines, type = "yearling", region = "EU") {
 /**
  * Each sire's projection. `rows` the yearling table (by year), `foals` the
  * foal table, `current` the forecast's sires this season (their score to
- * date), `fees` the workbook fees by sire and covering year.
+ * date), `fees` the workbook fees by sire and covering year, `runners` each
+ * sire's runners worldwide on the roster.
  */
-export function buildCommercial({ yearlings = [], foals = [], cells = [], lines = {}, history = {}, current = [], fees = new Map(), now = new Date(), region = "EU" } = {}) {
+export function buildCommercial({ yearlings = [], foals = [], cells = [], lines = {}, history = {}, current = [], fees = new Map(), runners = new Map(), now = new Date(), region = "EU" } = {}) {
   const market = marketByYear(cells, "yearling", region, { minSold: 200 });
   const foalMarket = marketByYear(cells, "foal", region, { minSold: 200 });
   const hist = historyIndex(history);
@@ -307,49 +369,39 @@ export function buildCommercial({ yearlings = [], foals = [], cells = [], lines 
       .sort((a, b) => a[0] - b[0]);
     const recent = years.filter(([y]) => y >= latestYear - 3);
     if (!recent.length && !f) continue;
-    // The base: his latest year with three sold, else nothing to move.
-    const base = [...years].reverse().find(([y, v]) => y >= latestYear - 2 && v.sold >= 3 && v.median > 0) ?? null;
-    // His Timeform score: this season's, else the base year's, else the last
-    // the forecast kept (it stops at eleven seasons of runners, and a proven
-    // sire read at par would be pulled down to the market's median: Sea The
-    // Stars from £205k to £102k).
-    const lastScore = hi ? [...hi.byYear.entries()].filter(([, v]) => v.score).sort((a, b) => b[0] - a[0])[0] ?? null : null;
-    const scoreUsed = f?.score ?? (base ? hi?.byYear.get(base[0])?.score : null) ?? lastScore?.[1]?.score ?? null;
+    const stage = f?.stage ?? (years.length ? stageAt(row, hi, nowYear) : null);
+    const proven = stage !== null && stage >= PROVEN_STAGE;
+    const basis = basisOf(years, latestYear, oneYear);
+    // His Timeform score this season, read for as much of him as his
+    // British and Irish runners are. A proven sire's is not read: he is held.
+    const weight = f?.score ? homeWeight(f.runners, runners.get(key) ?? null) : 0;
+    const scoreUsed = !proven && f?.score ? 100 * Math.exp(weight * Math.log(f.score / 100)) : null;
     const x = scoreUsed ? Math.log(scoreUsed / 100) : 0;
     let projected = null;
-    let basis = null;
-    if (base && market.get(base[0]) && fits[1]) {
-      const [y0, v0] = base;
-      const k0 = stageAt(row, hi, y0);
-      const level = (y) => market.get(Math.min(y, latestYear));
-      basis = { kind: "yearlings", year: y0, median: v0.median, sold: v0.sold };
-      const at = new Map();
-      let m = v0.median;
-      for (let y = y0, k = k0; y < targets.at(-1); y += 1, k += 1) {
-        const g = predict(fits[1], stageBucket(k), x, Math.log(m / level(y)));
-        // Before the latest year the market's own move is known; after it, held.
-        m *= Math.exp((g?.d ?? 0) + (y < latestYear ? (oneYear.get(y) ?? 0) : 0));
-        at.set(y + 1, m);
-      }
-      projected = targets.map((Y) => {
-        const centre = at.get(Y);
-        if (!centre) return { year: Y, median: null };
-        const h = Math.min(Y - y0, HORIZONS.at(-1));
-        const sd = fits[h]?.buckets?.[stageBucket(k0)]?.sd ?? (fits[1]?.buckets?.[stageBucket(k0)]?.sd ? fits[1].buckets[stageBucket(k0)].sd * Math.sqrt(h) : null);
+    if (basis && market.get(latestYear) && fits[1]) {
+      const bucket = stageBucket(stage ?? 4);
+      const rel = Math.log(basis.median / market.get(latestYear));
+      const hs = targets.map((Y) => Math.min(Y - latestYear, HORIZONS.at(-1)));
+      const ds = proven ? hs.map(() => 0) : steadyPath(hs.map((h) => predict(fits[h], bucket, x, rel)?.d ?? null));
+      projected = targets.map((Y, i) => {
+        const centre = basis.median * Math.exp(ds[i] ?? 0);
+        const sd = fits[hs[i]]?.buckets?.[bucket]?.sd ?? null;
         return { year: Y, median: Math.round(centre), low: sd ? Math.round(centre * Math.exp(-sd)) : null, high: sd ? Math.round(centre * Math.exp(sd)) : null };
       });
     }
+    const yearOf = ([y, v]) => ({ year: y, sold: v.sold, median: v.median, average: v.average ?? null, fee: v.fee, multiple: v.multiple });
     sires.push({
       key,
       sire: row?.sire ?? f?.sire ?? key,
-      stage: f?.stage ?? (base ? stageAt(row, hi, nowYear) : null),
+      stage,
+      proven,
       score: f?.score ?? null,
       scoreUsed: scoreUsed ? round(scoreUsed, 1) : null,
-      scoreFrom: f?.score ? "now" : scoreUsed ? (base && hi?.byYear.get(base[0])?.score ? base[0] : lastScore?.[0] ?? null) : null,
+      scoreWeight: f?.score ? round(weight, 2) : null,
       fee: row?.fee ?? null,
       yearlings: recent.length
         ? {
-            years: recent.map(([y, v]) => ({ year: y, sold: v.sold, median: v.median, fee: v.fee, multiple: v.multiple })),
+            years: recent.map(yearOf),
             latest: recent.at(-1)[0],
             multiple: row?.multiple ?? null,
             premium: row?.premium ?? null,
@@ -359,7 +411,7 @@ export function buildCommercial({ yearlings = [], foals = [], cells = [], lines 
       foals: foalRow
         ? {
             years: Object.entries(foalRow.byYear ?? {})
-              .map(([y, v]) => ({ year: Number(y), sold: v.sold, median: v.median, fee: v.fee, multiple: v.multiple }))
+              .map(([y, v]) => yearOf([Number(y), v]))
               .filter((v) => v.year >= latestYear - 3),
             multiple: foalRow.multiple ?? null,
           }
@@ -394,4 +446,4 @@ export function buildCommercial({ yearlings = [], foals = [], cells = [], lines 
   };
 }
 
-export default { HORIZONS, MIN_SOLD, stageBucket, marketByYear, sameSireMoves, historyIndex, stageAt, pairsFor, fitHorizon, testFit, latestLine, buildCommercial };
+export default { HORIZONS, MIN_SOLD, PROVEN_STAGE, HOME_SHARE_FULL, BASIS_YEARS, basisOf, homeWeight, steadyPath, stageBucket, marketByYear, sameSireMoves, historyIndex, stageAt, pairsFor, fitHorizon, testFit, latestLine, buildCommercial };

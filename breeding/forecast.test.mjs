@@ -271,6 +271,7 @@ test("the forecast: par by stage from past sires, the young sires graded against
   assert.equal(star.p, null, "no symbols held, no p count");
   assert.equal(f.symbols.held, false);
   assert.ok(star.top.length === 3 && star.top[0].best >= star.top[2].best);
+  assert.ok(star.median > slow.median, "the middle of his runners' best figures");
   assert.ok(!f.sires.some((s) => s.sire.startsWith("PAST SIRE") && s.stage > 10), "proven sires are not forecast");
   const travelling = f.sires.find((s) => s.sire === "TRAVELLING MAN");
   assert.equal(travelling.runners, 5 * 3, "only his runners in Britain and Ireland count: five a crop, three crops");
