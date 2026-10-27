@@ -16553,7 +16553,9 @@ app.get("/api/breeding/forecast", async (req, res) => {
       sires = sires.filter((s) => want.has(s.key));
     }
     res.set("Cache-Control", "public, max-age=300");
-    res.json({ ...body, sires });
+    // The season-by-season history is the commercial forecast's input, not the page's.
+    const { history, ...rest } = body;
+    res.json({ ...rest, sires, ...(req.query.history === "1" ? { history } : {}) });
   } catch (err) {
     console.error("forecast failed:", err.message);
     res.status(500).json({ error: "database error", detail: err.message });
@@ -16597,6 +16599,43 @@ app.post("/api/breeding/forecast/walk", async (req, res) => {
   const maxSlices = Math.max(1, Math.min(400, Number(req.query.slices) || 24));
   runForecast({ maxSlices, why: "request" });
   res.status(202).json({ walking: true, maxSlices, startedAt: forecastJob?.state?.startedAt ?? null });
+});
+
+/**
+ * The commercial forecast (breeding/commercial.mjs): where each sire's
+ * European yearling prices are heading, fitted on how past sires' prices
+ * moved with their Timeform scores, and the market's line a mare's fee
+ * sweet spot is read on. Worked out from the sales index and the stallion
+ * forecast in memory, kept until either is rebuilt.
+ */
+let commercialCache = null;
+app.get("/api/breeding/commercial", async (req, res) => {
+  try {
+    const inputs = await (await sales()).commercialInputs({ region: "EU" });
+    const forecast = await currentForecast();
+    if (!forecast) return res.status(503).json({ error: "the stallion forecast is being built", code: "FORECAST_BUILDING" });
+    const stamp = `${inputs.builtAt}|${forecast.builtAt}`;
+    if (commercialCache?.stamp !== stamp) {
+      const { buildCommercial } = await import("./breeding/commercial.mjs");
+      const t0 = Date.now();
+      const body = buildCommercial({
+        yearlings: inputs.yearlings,
+        foals: inputs.foals,
+        cells: inputs.cells,
+        lines: inputs.lines,
+        history: forecast.history ?? {},
+        current: forecast.sires ?? [],
+        fees: inputs.fees,
+      });
+      body.tookMs = Date.now() - t0;
+      body.inputs = { sales: inputs.builtAt, forecast: forecast.builtAt, historyHeld: Boolean(forecast.history) };
+      commercialCache = { stamp, body };
+    }
+    res.set("Cache-Control", "public, max-age=300");
+    res.json(commercialCache.body);
+  } catch (err) {
+    salesError(res, "commercial forecast", err);
+  }
 });
 
 // Each morning, after the scraper has written the night's results: the last
