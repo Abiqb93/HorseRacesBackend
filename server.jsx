@@ -96,7 +96,7 @@ app.get("/api/version", (req, res) => res.json({ marker: "france-2cb2e46-trigger
 
 app.get("/api/env-status", (req, res) => {
   const names = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT",
-    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN", "ML_SERVICE_URL"];
+    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN", "ML_SERVICE_URL", "SALES_IMPORT_TOKEN"];
   res.json({ set: Object.fromEntries(names.map((n) => [n, Boolean(process.env[n])])) });
 });
 
@@ -104,7 +104,7 @@ app.get("/api/env-status", (req, res) => {
 // only, never values. Lets us verify the Railway variable configuration.
 app.get("/api/env-status", (req, res) => {
   const names = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT",
-    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN", "ML_SERVICE_URL"];
+    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN", "ML_SERVICE_URL", "SALES_IMPORT_TOKEN"];
   res.json({ set: Object.fromEntries(names.map((n) => [n, Boolean(process.env[n])])) });
 });
 
@@ -9940,8 +9940,9 @@ app.post("/api/bookings/:userId/roll", express.json(), async (req, res) => {
 // them. Foals, yearlings, two-year-olds and horses in training; the sale
 // houses' own results keep it current (Tattersalls, Arqana, Tattersalls
 // Ireland, BBAG, Keeneland, Fasig-Tipton, OBS, Magic Millions and Inglis),
-// and the workbooks seed the years before and the houses that cannot be
-// read (Goffs, Goffs UK, New Zealand Bloodstock; the seed route below).
+// Goffs and Goffs UK are sent in from the results notebook (the import route
+// below), and the workbooks seed the years before and the houses that cannot
+// be read (New Zealand Bloodstock; the seed route below).
 // ---------------------------------------------------------------------------
 
 let salesService = null;
@@ -10046,6 +10047,37 @@ app.post("/api/sales/fetch", async (req, res) => {
     res.status(202).json(svc.runTattersalls({ from, to, skipHeld: req.query.skipHeld === "1" }));
   } catch (err) {
     salesError(res, "sales fetch", err);
+  }
+});
+
+/**
+ * A house's results read elsewhere and sent in. Goffs and Goffs UK
+ * (`house=goffs`): the CSV the results notebook writes (goffs_sale_results.ipynb,
+ * read by sales/goffs.mjs); goffs.com turns this server away, so its results
+ * are read wherever the site answers. `year` is the year for a sale whose
+ * year the file does not give; `dryRun=1` reads the file and says what it
+ * would write without writing it. Off unless SALES_IMPORT_TOKEN is set, and
+ * then only with that token in x-sales-token: the rows are read as the market.
+ */
+app.post("/api/sales/import", express.text({ type: () => true, limit: "40mb" }), async (req, res) => {
+  const expected = process.env.SALES_IMPORT_TOKEN;
+  if (!expected) return res.status(503).json({ error: "imports are off: SALES_IMPORT_TOKEN is not set" });
+  const given = Buffer.from(String(req.get("x-sales-token") ?? ""));
+  const want = Buffer.from(expected);
+  if (given.length !== want.length || !crypto.timingSafeEqual(given, want)) return res.status(401).json({ error: "x-sales-token required" });
+  const house = String(req.query.house ?? "").toLowerCase();
+  if (house !== "goffs") return res.status(400).json({ error: "house=goffs is the only import so far" });
+  try {
+    const { fromNotebookCsv } = await import("./sales/goffs.mjs");
+    const read = fromNotebookCsv(typeof req.body === "string" ? req.body : "", { year: Number(req.query.year) || null });
+    const bySale = read.sales.map(({ title, key, year, lots, sold, leftOut }) => ({ title, key, year, lots, sold, leftOut }));
+    const summary = { rows: read.rows, lots: read.lots.length, sales: bySale, problems: read.problems };
+    if (!read.lots.length) return res.status(422).json({ error: "no lots read", ...summary });
+    if (req.query.dryRun === "1") return res.json({ dryRun: true, ...summary });
+    const written = await (await sales()).importLots("goffs", read.lots, read.sales);
+    res.json({ ...summary, ...written });
+  } catch (err) {
+    salesError(res, "sales import", err);
   }
 });
 

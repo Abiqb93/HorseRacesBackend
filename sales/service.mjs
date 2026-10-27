@@ -45,7 +45,8 @@ export const FEEDS = {
   bbag: { mod: bbag, name: "BBAG", idOf: null },
   obs: { mod: obs, name: "OBS", idOf: (l) => String(l).replace(/^OBS/, "") },
 };
-export const HOUSE_SOURCES = ["tattersalls", "arqana", ...Object.keys(FEEDS)];
+/** Goffs is read by the results notebook, not from here, and sent in (importLots, sales/goffs.mjs). */
+export const HOUSE_SOURCES = ["tattersalls", "arqana", ...Object.keys(FEEDS), "goffs"];
 import { KINDS, marketTable, marketLines, marketMedians, sireMedians, sireTable, hitTable, damRecord, feeFinder, figures, preferHouses } from "./metrics.mjs";
 import { nameKey } from "./normalise.mjs";
 
@@ -557,6 +558,32 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
     return { house, id, title: out.title, key: out.sale.key, year: out.sale.year, lots: out.lots.length, sold, catalogued, replaced: dropped, verdict: rec?.verdict ?? null };
   }
 
+  /**
+   * A house's lots read elsewhere and sent in (Goffs: the results
+   * notebook's CSV, read by sales/goffs.mjs), written as a feed's are. The
+   * workbook's rows of a sale-year give way to them, except under a key
+   * that gathers several sales ("-OTHER"), where only the horses they hold
+   * give way (the index's preferHouses). The index is rebuilt behind.
+   */
+  async function importLots(source, lots, sales = []) {
+    await upsertLots(runQuery, lots);
+    let dropped = 0;
+    for (const k of new Set(lots.filter((l) => !/-OTHER$/.test(l.sale_key)).map((l) => `${l.sale_key}|${l.year}`))) {
+      const [saleKey, year] = k.split("|");
+      dropped += await dropSuperseded(runQuery, { saleKey, year: Number(year), source });
+    }
+    for (const s of sales) {
+      if (!s.lots) continue;
+      await logImport(runQuery, {
+        source, saleKey: s.key, saleLabel: s.label, year: s.year, lots: s.lots, sold: s.sold,
+        note: [s.title, s.leftOut ? `${s.leftOut} left out` : null].filter(Boolean).join("; "),
+      });
+    }
+    // After any build already under way, which would not hold these lots.
+    if (lots.length) Promise.resolve(building).catch(() => {}).then(() => build()).catch((err) => log.warn?.(`[sales] index not rebuilt: ${err.message}`));
+    return { source, lots: lots.length, sold: lots.filter((l) => l.status === "sold").length, replaced: dropped, rebuilding: lots.length > 0 };
+  }
+
   /** A house's sales found year by year and read one at a time, in the background. */
   function runHouse(house, { from, to, pauseMs = 1000, skipHeld = false, itemTimeoutMs } = {}) {
     const feed = feeds[house];
@@ -687,7 +714,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
 
   return {
     ensure, build, ready, busy, market, sires, sire, dam, hit, commercialInputs, status, figures, manifest,
-    importTattersalls, runTattersalls, refreshTattersalls, importArqana, runArqana, refreshArqana, importHouse, runHouse, refreshHouse,
+    importTattersalls, runTattersalls, refreshTattersalls, importArqana, runArqana, refreshArqana, importHouse, runHouse, refreshHouse, importLots,
     acceptSeed, queueSeed,
   };
 }
