@@ -711,6 +711,21 @@ export function buildForecast(seasons, { now = new Date(), symbols = null, symbo
   }
   out.sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || b.runners - a.runners);
 
+  // Every sire's score season by season, for the commercial forecast to read
+  // prices against (breeding/commercial.mjs): the whole season where it is
+  // over, this season to date. Not served with the forecast itself.
+  const history = {};
+  for (const r of records) {
+    const s = [];
+    for (const st of r.stages) {
+      const stats = st.whole ?? st.toDate;
+      const p = st.whole ? parAt(st.k)?.whole : parAt(st.k)?.toDate;
+      const idx = stats.runners >= 3 ? indexes(stats, p) : null;
+      s.push([st.T, st.k, idx ? Math.round(meanOf(idx) * 1000) / 10 : null, stats.runners]);
+    }
+    history[r.key] = { sire: r.name, first: r.first, s };
+  }
+
   return {
     v: 1,
     builtAt: now.toISOString(),
@@ -725,6 +740,7 @@ export function buildForecast(seasons, { now = new Date(), symbols = null, symbo
     carry,
     symbols: symbols ? { held: true, since: symbolsSince, horses: symbolsCount ?? symbols.size } : { held: false },
     sires: out,
+    history,
   };
 }
 

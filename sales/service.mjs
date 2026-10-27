@@ -172,7 +172,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
       const v = convert(fee, ccy, "GBP", String(year));
       return v ? Math.round(v) : null;
     };
-    feeData = { at: Date.now(), feeFor: feeFinder({ history, idOf: (k) => ids.get(k)?.id ?? null, hints, toGbp }), roster: ids.size, hints: hints.size };
+    feeData = { at: Date.now(), feeFor: feeFinder({ history, idOf: (k) => ids.get(k)?.id ?? null, hints, toGbp }), roster: ids.size, hints: hints.size, hintMap: hints };
     return feeData;
   }
 
@@ -228,6 +228,10 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
         sireMedians: sireMedians(lots),
         fees: { roster: fees.roster, hints: fees.hints, lines: lines.size },
         feeFor: fees.feeFor,
+        // The market's lines and the workbooks' fees by covering year, for
+        // the commercial forecast (breeding/commercial.mjs).
+        lines: Object.fromEntries(lines),
+        hintMap: fees.hintMap ?? new Map(),
       };
       log.log?.(`[sales] index: ${lots.length} lots in ${index.tookMs} ms (${dropped} workbook lots a house also holds left out)`);
       return index;
@@ -286,6 +290,30 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
   async function dam(key) {
     const ix = await readyNow();
     return damRecord(ix.lots, nameKey(key), { sireMedians: ix.sireMedians });
+  }
+
+  /**
+   * What the commercial forecast reads: the yearling and foal tables of a
+   * region with every year, the market's cells, its lines, and the fees
+   * the workbooks give each sire by covering year, in sterling.
+   */
+  async function commercialInputs({ region = "EU" } = {}) {
+    const ix = await readyNow();
+    const fees = new Map();
+    for (const [k, fee] of ix.hintMap ?? []) {
+      const [sireKey, year] = k.split("|");
+      if (!fees.has(sireKey)) fees.set(sireKey, []);
+      fees.get(sireKey).push([Number(year), Math.round(fee)]);
+    }
+    for (const list of fees.values()) list.sort((a, b) => a[0] - b[0]);
+    return {
+      builtAt: ix.builtAt,
+      yearlings: ix.tables.get(`yearling|${region}`)?.rows ?? [],
+      foals: ix.tables.get(`foal|${region}`)?.rows ?? [],
+      cells: ix.market.cells.filter((c) => c.region === region),
+      lines: ix.lines ?? {},
+      fees,
+    };
   }
 
   async function hit({ region = null } = {}) {
@@ -658,7 +686,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
   const busy = () => Boolean(job);
 
   return {
-    ensure, build, ready, busy, market, sires, sire, dam, hit, status, figures, manifest,
+    ensure, build, ready, busy, market, sires, sire, dam, hit, commercialInputs, status, figures, manifest,
     importTattersalls, runTattersalls, refreshTattersalls, importArqana, runArqana, refreshArqana, importHouse, runHouse, refreshHouse,
     acceptSeed, queueSeed,
   };
