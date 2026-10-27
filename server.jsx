@@ -10140,6 +10140,24 @@ setTimeout(() => {
     .catch((err) => console.warn("[sales] warm-up failed:", err.message));
 }, 120_000);
 
+// The companies no house feed reads (Goffs, Osarus and the rest), back to
+// 2015, from Racing Post through parse.bot (sales/parsebot.mjs), started on
+// its own after every start. A sale of a past year already read is skipped,
+// so a backfill a restart cut short carries on where it stopped, and once
+// it is complete a start costs one listing a year. SALES_PARSEBOT_BACKFILL=0
+// turns it off; the daily refresh below keeps the current sales either way.
+setTimeout(async () => {
+  if (!process.env.PARSE_API_KEY || process.env.SALES_PARSEBOT_BACKFILL === "0") return;
+  try {
+    const svc = await sales();
+    if (svc.busy()) return console.log("[sales] parse.bot backfill: a long job is running; left to the next start");
+    const out = svc.runHouse("parsebot", { from: 2015, to: new Date().getFullYear(), skipHeld: true, pauseMs: 1500 });
+    console.log("[sales] parse.bot backfill:", out.started ? "started" : "a job is already running");
+  } catch (err) {
+    console.warn("[sales] parse.bot backfill not started:", err.message);
+  }
+}, 10 * 60_000);
+
 // The house's results kept current: every sale of the year read again at
 // 04:20, and every two hours through the day the sales still being sold.
 {

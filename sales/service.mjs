@@ -28,6 +28,7 @@ import * as inglis from "./inglis.mjs";
 import * as tattersallsireland from "./tattersallsireland.mjs";
 import * as bbag from "./bbag.mjs";
 import * as obs from "./obs.mjs";
+import * as parsebot from "./parsebot.mjs";
 
 /**
  * The houses read through one shape: `discover({ year })` lists a year's
@@ -44,8 +45,11 @@ export const FEEDS = {
   tattersallsireland: { mod: tattersallsireland, name: "Tattersalls Ireland", idOf: String },
   bbag: { mod: bbag, name: "BBAG", idOf: null },
   obs: { mod: obs, name: "OBS", idOf: (l) => String(l).replace(/^OBS/, "") },
+  // The companies none of the above reads (Goffs, Osarus, Goresbridge and the
+  // rest), from Racing Post's results through parse.bot; a label is the sale's id.
+  parsebot: { mod: parsebot, name: "Racing Post (parse.bot)", idOf: String },
 };
-/** Goffs is read by the results notebook, not from here, and sent in (importLots, sales/goffs.mjs). */
+/** Goffs is read through the parsebot feed, and can still be sent in from the results notebook (importLots, sales/goffs.mjs). */
 export const HOUSE_SOURCES = ["tattersalls", "arqana", ...Object.keys(FEEDS), "goffs"];
 import { KINDS, marketTable, marketLines, marketMedians, sireMedians, sireTable, hitTable, damRecord, feeFinder, figures, preferHouses } from "./metrics.mjs";
 import { nameKey } from "./normalise.mjs";
@@ -553,7 +557,8 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
     if (!out?.sale || !out.lots?.length) return { house, id, title: out?.title ?? info?.title ?? null, lots: 0 };
     await upsertLots(runQuery, out.lots);
     let dropped = 0;
-    for (const k of new Set(out.lots.map((l) => `${l.sale_key}|${l.year}`))) {
+    // A key that gathers several sales ("-OTHER") gives way only horse by horse (as importLots).
+    for (const k of new Set(out.lots.filter((l) => !/-OTHER$/.test(l.sale_key)).map((l) => `${l.sale_key}|${l.year}`))) {
       const [saleKey, year] = k.split("|");
       dropped += await dropSuperseded(runQuery, { saleKey, year: Number(year), source: house });
     }
