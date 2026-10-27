@@ -160,7 +160,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
         const k = nameKey(s.n);
         const prev = ids.get(k);
         const europe = (s.regions ?? []).some((r) => /GB|IRE|FR|EUR|UK|GER|ITY/.test(r));
-        if (!prev || (europe && !prev.europe)) ids.set(k, { id: s.id, europe });
+        if (!prev || (europe && !prev.europe)) ids.set(k, { id: s.id, europe, runners: Number(s.rnrs) || null });
       }
     } catch (err) {
       log.warn?.(`[sales] fee model not read: ${err.message}`);
@@ -173,7 +173,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
       const v = convert(fee, ccy, "GBP", String(year));
       return v ? Math.round(v) : null;
     };
-    feeData = { at: Date.now(), feeFor: feeFinder({ history, idOf: (k) => ids.get(k)?.id ?? null, hints, toGbp }), roster: ids.size, hints: hints.size, hintMap: hints };
+    feeData = { at: Date.now(), feeFor: feeFinder({ history, idOf: (k) => ids.get(k)?.id ?? null, hints, toGbp }), roster: ids.size, hints: hints.size, hintMap: hints, ids };
     return feeData;
   }
 
@@ -307,6 +307,10 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
       fees.get(sireKey).push([Number(year), Math.round(fee)]);
     }
     for (const list of fees.values()) list.sort((a, b) => a[0] - b[0]);
+    // His runners worldwide on the roster: how much of him Timeform's
+    // British and Irish runners are (breeding/commercial.mjs).
+    const runners = new Map();
+    for (const [k, v] of (await loadFees()).ids ?? []) if (v.runners) runners.set(k, v.runners);
     return {
       builtAt: ix.builtAt,
       yearlings: ix.tables.get(`yearling|${region}`)?.rows ?? [],
@@ -314,6 +318,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
       cells: ix.market.cells.filter((c) => c.region === region),
       lines: ix.lines ?? {},
       fees,
+      runners,
     };
   }
 

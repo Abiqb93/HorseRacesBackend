@@ -239,7 +239,7 @@ export function sireTable(lots, { type, region = null, window = 3, feeFor = () =
       const yl = ls.filter((l) => l.year === y);
       const f = figures(yl);
       const fee = yl[0]?.foaling_year ? feeFor(sireKey, yl[0].foaling_year - 1) : null;
-      byYear[y] = { offered: f.offered, sold: f.sold, median: f.median, clearance: f.clearance, fee: fee?.gbp ? Math.round(fee.gbp) : null, multiple: f.median && fee?.gbp ? round(f.median / fee.gbp, 2) : null };
+      byYear[y] = { offered: f.offered, sold: f.sold, median: f.median, average: f.average, clearance: f.clearance, fee: fee?.gbp ? Math.round(fee.gbp) : null, multiple: f.median && fee?.gbp ? round(f.median / fee.gbp, 2) : null };
     }
     const soldYears = Object.entries(byYear).filter(([, v]) => v.sold > 0).map(([y]) => Number(y));
     const first = soldYears[0] ?? null;
