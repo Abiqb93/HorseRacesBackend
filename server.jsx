@@ -16411,6 +16411,201 @@ app.get("/api/breeding/nightly", async (req, res) => {
   }
 });
 
+/* ------------------------------------------------------------------ */
+/* The stallion forecast (breeding/forecast.mjs)                       */
+/* ------------------------------------------------------------------ */
+
+// Young sires' runners at 80, 90 and 100 against the par for a sire at the
+// same stage, and next season's call. The results table is walked a month
+// at a time into a table of its own; the forecast is worked out from that
+// and kept in the population table, so a restart serves the last one at
+// once. The walk is resumable: each month is written as it is read.
+const loadForecast = () => import("./breeding/forecast.mjs");
+loadForecast()
+  .then(({ CREATE_PERIODS }) => runQuery(CREATE_PERIODS, []))
+  .catch((err) => console.warn("forecast table:", err.message));
+
+let sireForecast = null;
+let sireForecastRead = false;
+let forecastJob = null;
+let forecastLast = null;
+
+/**
+ * Each horse's latest Timeform master-rating symbol, where the scraper has
+ * kept them (timeform_symbols, written beside the results since the change
+ * that keeps them). Null when the table is not there yet.
+ */
+async function timeformSymbols() {
+  try {
+    const { horseKey } = await loadSummaries();
+    const since = new Date();
+    since.setUTCFullYear(since.getUTCFullYear() - 1);
+    const rows = await runQuery(
+      `SELECT /*+ MAX_EXECUTION_TIME(60000) */ horseName, YEAR(foalingDate) AS fy, preRaceMasterSymbol AS sym, meetingDate
+         FROM timeform_symbols
+        WHERE meetingDate >= ?
+        ORDER BY meetingDate`,
+      [since.toISOString().slice(0, 10)],
+    );
+    const out = new Map();
+    let first = null;
+    for (const r of rows) {
+      const key = horseKey(r.horseName, Number(r.fy) || 0);
+      out.set(key, String(r.sym ?? "").trim());
+      first ??= r.meetingDate;
+    }
+    return { map: out, since: first ? new Date(first).toISOString().slice(0, 10) : null };
+  } catch (err) {
+    if (!/doesn't exist|no such table|ER_NO_SUCH_TABLE/i.test(err.message)) console.warn("forecast: symbols not read:", err.message);
+    return null;
+  }
+}
+
+/** The forecast worked out again from the periods held, kept, and served from now on. */
+async function rebuildForecast() {
+  const { readSeasons, buildForecast, FORECAST_ID } = await loadForecast();
+  const { writeBaseline } = await loadSummaries();
+  const started = Date.now();
+  const seasons = await readSeasons(runQuery);
+  const symbols = await timeformSymbols();
+  const body = buildForecast(seasons, { symbols: symbols?.map ?? null, symbolsSince: symbols?.since ?? null, symbolsCount: symbols?.map?.size ?? null });
+  if (!body) return null;
+  body.tookMs = Date.now() - started;
+  sireForecast = { at: Date.now(), value: body };
+  await writeBaseline(runQuery, body, FORECAST_ID).catch((err) => console.warn("forecast not kept:", err.message));
+  console.log(`[forecast] built: ${body.sires.length} sires, seasons ${body.seasonsHeld[0]}-${body.seasonsHeld.at(-1)}, ${body.tookMs}ms`);
+  return body;
+}
+
+/**
+ * The walk, then the forecast. One at a time: a second caller gets the
+ * running job. `maxSlices` bounds the months read this time; whatever is
+ * left is read next time, newest first.
+ */
+function runForecast({ maxSlices = 14, why = "request" } = {}) {
+  if (forecastJob) return forecastJob.promise;
+  const state = { why, startedAt: new Date().toISOString(), maxSlices, progress: null };
+  const promise = Promise.all([loadForecast(), loadMating()])
+    .then(([{ walkPeriods }, { FLAT_RUN }]) =>
+      walkPeriods(runQuery, {
+        flatRun: FLAT_RUN,
+        maxSlices,
+        isTimeout: isQueryTimeoutError,
+        log: { log: (m) => console.log("[forecast]", m) },
+        progress: (p) => {
+          state.progress = p;
+        },
+      }),
+    )
+    .then(async (walk) => {
+      state.walk = { done: walk.done.length, remaining: walk.remaining, slices: walk.slices, tookMs: walk.tookMs, periods: walk.done.map((d) => d.period) };
+      const body = await rebuildForecast();
+      state.sires = body?.sires?.length ?? 0;
+      return body;
+    })
+    .catch((err) => {
+      console.error(`[forecast] ${why} failed:`, err.message);
+      state.error = err.message;
+      state.slice = err.slice ?? null;
+      return null;
+    })
+    .finally(() => {
+      state.finishedAt = new Date().toISOString();
+      forecastLast = state;
+      forecastJob = null;
+    });
+  forecastJob = { state, promise };
+  return promise;
+}
+
+/** The forecast in hand: memory, else the one kept, read once after a start. */
+async function currentForecast() {
+  if (sireForecast) return sireForecast.value;
+  if (!sireForecastRead) {
+    sireForecastRead = true;
+    try {
+      const [{ readBaseline }, { FORECAST_ID }] = await Promise.all([loadSummaries(), loadForecast()]);
+      const kept = await readBaseline(runQuery, FORECAST_ID);
+      if (kept?.sires) sireForecast = { at: kept.builtAt ?? Date.now(), value: kept };
+    } catch (err) {
+      sireForecastRead = false;
+      console.warn("forecast: kept copy not read:", err.message);
+    }
+  }
+  return sireForecast?.value ?? null;
+}
+
+/**
+ * The forecast. `sires=A|B` keeps those sires only (a mare's Matings asks
+ * for the stallions in her pool); par, the carry-over and the rules always
+ * come with it. 503 while the first walk has not finished.
+ */
+app.get("/api/breeding/forecast", async (req, res) => {
+  try {
+    const body = await currentForecast();
+    if (!body) {
+      return res.status(503).json({ error: "the forecast is being built", code: "FORECAST_BUILDING", walking: Boolean(forecastJob), progress: forecastJob?.state?.progress ?? null });
+    }
+    let sires = body.sires;
+    if (req.query.sires) {
+      const { parseSireList } = await import("./breeding/sires.mjs");
+      const want = new Set(parseSireList(req.query.sires, { max: 400 }).map((n) => n.normalize("NFD").replace(/[̀-ͯ]/g, "")));
+      sires = sires.filter((s) => want.has(s.key));
+    }
+    res.set("Cache-Control", "public, max-age=300");
+    res.json({ ...body, sires });
+  } catch (err) {
+    console.error("forecast failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/** What the walk holds and how the last run went. */
+app.get("/api/breeding/forecast/status", async (req, res) => {
+  try {
+    const { heldPeriods } = await loadForecast();
+    const held = await heldPeriods(runQuery);
+    const body = sireForecast?.value ?? null;
+    res.json({
+      now: new Date().toISOString(),
+      periods: held,
+      horses: held.reduce((a, p) => a + p.horses, 0),
+      running: forecastJob?.state ?? null,
+      last: forecastLast,
+      forecast: body ? { builtAt: body.builtAt, season: body.season, through: body.through, sires: body.sires.length, seasonsHeld: body.seasonsHeld, symbols: body.symbols, tookMs: body.tookMs } : null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/**
+ * Walk on the user's say-so: `confirm=walk`, and `slices` months at most
+ * (the backfill is about two hundred; a month takes a minute or so and
+ * slows other reads a little while it runs). `rebuild=1` works the
+ * forecast out again from what is held, reading nothing.
+ */
+app.post("/api/breeding/forecast/walk", async (req, res) => {
+  if (req.query.rebuild) {
+    rebuildForecast().catch((err) => console.warn("forecast rebuild failed:", err.message));
+    return res.status(202).json({ rebuilding: true });
+  }
+  if (req.query.confirm !== "walk") {
+    return res.status(400).json({ error: "add ?confirm=walk: this reads the results table a month at a time and slows other reads while it runs" });
+  }
+  if (forecastJob) return res.status(202).json({ walking: true, state: forecastJob.state });
+  const maxSlices = Math.max(1, Math.min(400, Number(req.query.slices) || 24));
+  runForecast({ maxSlices, why: "request" });
+  res.status(202).json({ walking: true, maxSlices, startedAt: forecastJob?.state?.startedAt ?? null });
+});
+
+// Each morning, after the scraper has written the night's results: the last
+// two months read again, and as much of the backfill as fits.
+{
+  const cron = require("node-cron");
+  cron.schedule("40 6 * * *", () => runForecast({ maxSlices: 14, why: "morning" }), { timezone: "Europe/London" });
+}
+
 // Trainer uplift moves, weekly on Monday morning -- a full walk of the
 // results table, so not worth running daily.
 {
