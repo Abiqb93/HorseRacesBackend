@@ -10158,10 +10158,22 @@ setTimeout(() => {
 // rule mode a user saved (Default only / Default + defined / Defined only)
 // could be written but never read back, so the Review List page and the daily
 // mail both fell back to "Default + defined" for everyone.
+// The same held for five more. The Review List's saved preferences
+// (user-preps-reviewlist) answered "Invalid table name." on every load, so
+// none were ever applied; and the home page asked for the user's own
+// reviewed results and got the first ten rows of everyone's, so its
+// "reviewed" marks were someone else's. The tracked-horse and notification
+// reads lost their user filter the same way, and potential stallions their
+// own query.
 const ROUTED_FURTHER_DOWN = new Set([
   "review_conditions",
   "review_rule_preferences",
   "review_rules_health",
+  "user-preps-reviewlist",
+  "reviewed_results",
+  "selected_horses",
+  "notify_horses",
+  "potential_stallion",
 ]);
 
 app.get('/api/:tableName', (req, res, next) => {
@@ -15920,6 +15932,8 @@ app.get("/api/user-preps-reviewlist", (req, res) => {
   `;
 
   db.query(sql, (err, rows) => {
+    // Nothing saved yet by anyone: no preferences, not a failure.
+    if (err?.code === "ER_NO_SUCH_TABLE") return res.json({ data: [] });
     if (err) {
       return res.status(500).json({
         error: "Database fetch failed",
