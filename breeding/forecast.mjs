@@ -12,9 +12,14 @@
  *
  * The reading, in four steps:
  *
- *   share   Of a sire's runners to date (every horse by him with a rated
- *           flat run), the share whose best Timeform figure so far is 80 or
- *           more, 90 or more, 100 or more.
+ *   share   Of a sire's runners to date in Britain and Ireland (every horse
+ *           by him with a rated flat run there), the share whose best
+ *           Timeform figure so far is 80 or more, 90 or more, 100 or more.
+ *           Britain and Ireland because Timeform rates every runner there;
+ *           elsewhere the table holds the races Timeform covers, which are
+ *           the better ones, so an American sire read on everything held
+ *           was read on the few of his runners good enough to travel (Gun
+ *           Runner: 22 of his 549 runners, 73% of them rated 80 or more).
  *   stage   Seasons since his first crop ran: stage 1 is his first crop at
  *           two, stage 2 that crop at three and his second at two, and so on.
  *   par     The average share among sires at the same stage in past seasons,
@@ -47,6 +52,13 @@ import { halveSlice, horseKey } from "./summaries.mjs";
 import { studBookName } from "./mating.mjs";
 
 export const PERIODS_TABLE = "breeding_runner_periods";
+/**
+ * The shape of a stored period. A period stored in an older shape is read
+ * again by the walk and left out of the forecast until it has been.
+ */
+export const PERIOD_VERSION = 2;
+/** The race countries where Timeform rates every runner. */
+export const HOME_COUNTRIES = ["GBR", "IRE"];
 /** The stored forecast's id in the population table (summaries.mjs). */
 export const FORECAST_ID = "sire-forecast";
 /** The first season walked. */
@@ -95,7 +107,8 @@ export const sliceSql = (flatRun, hint = "") => `
          SUM(CASE WHEN CAST(positionOfficial AS UNSIGNED) = 1 THEN 1 ELSE 0 END) AS wins,
          SUM(COALESCE(Stakes_Win, 0)) AS stakesWins,
          SUM(COALESCE(Group_Win, 0))  AS groupWins,
-         SUM(COALESCE(Group1_Win, 0)) AS group1Wins
+         SUM(COALESCE(Group1_Win, 0)) AS group1Wins,
+         SUM(CASE WHEN countryCode IN (${HOME_COUNTRIES.map((c) => `'${c}'`).join(", ")}) THEN 1 ELSE 0 END) AS homeRuns
     FROM APIData_Table2
    WHERE meetingDate >= ? AND meetingDate < ?
      AND ${flatRun}
@@ -160,7 +173,7 @@ export const taskSlices = (t) => (t.kind === "month" ? 1 : t.kind === "season" ?
 
 // A horse in a period, as an array: compact, because a season holds forty
 // thousand of them and is stored as JSON.
-export const F = { name: 0, fy: 1, sire: 2, best: 3, runs: 4, wins: 5, sw: 6, gw: 7, g1w: 8, first: 9, m80: 10, m90: 11, m100: 12 };
+export const F = { name: 0, fy: 1, sire: 2, best: 3, runs: 4, wins: 5, sw: 6, gw: 7, g1w: 8, first: 9, m80: 10, m90: 11, m100: 12, home: 13 };
 const MONTH_AT = [F.m80, F.m90, F.m100];
 
 const minMonth = (a, b) => (a && b ? Math.min(a, b) : a || b || 0);
@@ -183,6 +196,7 @@ export function monthRecords(rows = [], month, into = new Map()) {
       Number(r.group1Wins) || 0,
       month,
       ...THRESHOLDS.map((x) => (best >= x ? month : 0)),
+      Number(r.homeRuns) || 0,
     ];
     if (!rec[F.name]) continue;
     mergeInto(into, horseKey(rec[F.name], fy), rec);
@@ -198,7 +212,7 @@ export function mergeInto(map, key, rec) {
     return map;
   }
   had[F.best] = Math.max(had[F.best], rec[F.best]);
-  for (const i of [F.runs, F.wins, F.sw, F.gw, F.g1w]) had[i] += rec[i];
+  for (const i of [F.runs, F.wins, F.sw, F.gw, F.g1w, F.home]) had[i] = (had[i] ?? 0) + (rec[i] ?? 0);
   for (const i of [F.first, ...MONTH_AT]) had[i] = minMonth(had[i], rec[i]);
   if (!had[F.sire] && rec[F.sire]) had[F.sire] = rec[F.sire];
   return map;
@@ -219,7 +233,7 @@ export function encodePeriod(map, period) {
     out[F.sire] = at.get(s);
     horses.push(out);
   }
-  return { v: 1, period, sires, horses };
+  return { v: PERIOD_VERSION, period, sires, horses };
 }
 
 /** A stored period back to `Map(key -> record)`, the sire as a name again. */
@@ -239,11 +253,19 @@ export function decodePeriod(body) {
 /** Every period held: `{ period, horses, builtAt }`, without the bodies. */
 export async function heldPeriods(runQuery) {
   const rows = await runQuery(
-    `SELECT period, MAX(horses) AS horses, MAX(built_at) AS built_at, MAX(took_ms) AS took_ms, COUNT(*) AS parts
+    `SELECT period, MAX(horses) AS horses, MAX(built_at) AS built_at, MAX(took_ms) AS took_ms, COUNT(*) AS parts,
+            MAX(CASE WHEN part = 0 THEN SUBSTRING(body, 1, 16) END) AS head
        FROM ${PERIODS_TABLE} GROUP BY period ORDER BY period`,
     [],
   );
-  return rows.map((r) => ({ period: r.period, horses: Number(r.horses) || 0, builtAt: r.built_at ?? null, tookMs: r.took_ms ?? null, parts: Number(r.parts) || 0 }));
+  return rows.map((r) => ({
+    period: r.period,
+    horses: Number(r.horses) || 0,
+    builtAt: r.built_at ?? null,
+    tookMs: r.took_ms ?? null,
+    parts: Number(r.parts) || 0,
+    v: Number(/"v":(\d+)/.exec(String(r.head ?? ""))?.[1]) || 0,
+  }));
 }
 
 /** One period written in parts (a whole season is a few megabytes of JSON), replacing what was there. */
@@ -303,7 +325,7 @@ async function readMonth(runQuery, { flatRun, season, month, hint, isTimeout }) 
  */
 export async function walkPeriods(runQuery, { flatRun, now = new Date(), maxSlices = 24, hint = SLICE_HINT, pauseMs = 1500, isTimeout = () => false, log = console, progress = () => {}, firstSeason = FIRST_SEASON } = {}) {
   const started = Date.now();
-  const held = new Set((await heldPeriods(runQuery)).map((p) => p.period));
+  const held = new Set((await heldPeriods(runQuery)).filter((p) => p.v >= PERIOD_VERSION).map((p) => p.period));
   const tasks = walkPlan(now, held, { firstSeason });
   const done = [];
   let slices = 0;
@@ -346,6 +368,7 @@ export async function walkPeriods(runQuery, { flatRun, now = new Date(), maxSlic
 export async function readSeasons(runQuery) {
   const out = new Map();
   for (const p of await heldPeriods(runQuery)) {
+    if (p.v < PERIOD_VERSION) continue;
     const season = Number(p.period.slice(0, 4));
     const map = decodePeriod(await readPeriod(runQuery, p.period));
     if (!out.has(season)) out.set(season, new Map());
@@ -393,7 +416,7 @@ export function firstCrop(horses) {
  * then. Returns counts at each threshold, stakes and group winners (whole
  * seasons only: wins carry no month), and the horses themselves when asked.
  */
-export function pointStats(horses, T, cut, { keep = false, inProgress = false } = {}) {
+export function pointStats(horses, T, cut, { keep = false, inProgress = false, homeOnly = true } = {}) {
   let runners = 0;
   const n = THRESHOLDS.map(() => 0);
   let sw = 0;
@@ -407,11 +430,13 @@ export function pointStats(horses, T, cut, { keep = false, inProgress = false } 
     let gwHorse = 0;
     let runs = 0;
     let lastSeason = 0;
+    let home = false;
     for (const [season, rec] of h.seasons) {
       if (season > T) continue;
       if (season < T || (rec[F.first] && rec[F.first] <= cut)) {
         ran = true;
         lastSeason = Math.max(lastSeason, season);
+        if (rec[F.home] > 0) home = true;
       }
       if (season < T) {
         best = Math.max(best, rec[F.best]);
@@ -437,7 +462,7 @@ export function pointStats(horses, T, cut, { keep = false, inProgress = false } 
         }
       }
     }
-    if (!ran) continue;
+    if (!ran || (homeOnly && !home)) continue;
     runners += 1;
     reached.forEach((r, i) => {
       if (r) n[i] += 1;
@@ -687,6 +712,7 @@ export function buildForecast(seasons, { now = new Date(), symbols = null, symbo
     season: point.season,
     through: point.month,
     thresholds: THRESHOLDS,
+    basis: { countries: HOME_COUNTRIES, words: "runners in Britain and Ireland, where Timeform rates every runner" },
     seasonsHeld: held,
     firstSeason: dataFirst,
     rules: { minParRunners: MIN_PAR_RUNNERS, shrinkRunners: SHRINK_RUNNERS, priorHorses: PRIOR_HORSES, maxIndex: MAX_INDEX, minGradedRunners: MIN_GRADED_RUNNERS, maxStage: MAX_STAGE },
