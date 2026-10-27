@@ -3740,6 +3740,7 @@ const runApiDataTable2Query = ({
   limit,
   offset = 0,
   order = "desc",
+  withDaysOff = false,
 }) => {
   const startTime = Date.now();
 
@@ -3784,7 +3785,16 @@ const runApiDataTable2Query = ({
       rp.rpRPR AS racingPostRPR,
       rp.rpRaceID AS racingPostRaceID,
       rp.rpRaceTrack AS racingPostRaceTrack,
-      rp.rpRaceTime AS racingPostRaceTime
+      rp.rpRaceTime AS racingPostRaceTime${withDaysOff ? `,
+      -- Days since the horse's previous run held here; NULL on its first.
+      -- The horse code keeps two horses of one name apart.
+      DATEDIFF(DATE(a.meetingDate), (
+        SELECT MAX(p.meetingDate)
+        FROM APIData_Table2 p
+        WHERE p.horseName = a.horseName
+          AND p.meetingDate < DATE(a.meetingDate)
+          AND (a.horseCode IS NULL OR p.horseCode IS NULL OR p.horseCode = a.horseCode)
+      )) AS daysOff` : ""}
     FROM APIData_Table2 a
     LEFT JOIN (
       SELECT
@@ -4177,6 +4187,8 @@ app.get('/api/APIData_Table2', (req, res) => {
     limit,
     offset,
     order,
+    // One day's runners: few enough to look each one's last run up.
+    withDaysOff: Boolean(meetingDate),
   });
 });
 
@@ -9999,6 +10011,20 @@ app.get("/api/sales/dam/:key", async (req, res) => {
     res.json(await (await sales()).dam(req.params.key));
   } catch (err) {
     salesError(res, "sales dam", err);
+  }
+});
+
+/**
+ * Each runner of a race in the sale ring: `runners` is a list of
+ * { key, dam, sire, foaled } (foaled: the foaling date or year), at most
+ * 60; the answer gives each key its lots, oldest first (sales/runners.mjs).
+ */
+app.post("/api/sales/runners", async (req, res) => {
+  const list = Array.isArray(req.body?.runners) ? req.body.runners.slice(0, 60) : [];
+  try {
+    res.json(await (await sales()).runners(list.map((r) => ({ key: String(r?.key ?? ""), dam: r?.dam, sire: r?.sire, foaled: r?.foaled }))));
+  } catch (err) {
+    salesError(res, "sales runners", err);
   }
 });
 

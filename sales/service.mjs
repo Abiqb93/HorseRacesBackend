@@ -49,6 +49,7 @@ export const FEEDS = {
 export const HOUSE_SOURCES = ["tattersalls", "arqana", ...Object.keys(FEEDS), "goffs"];
 import { KINDS, marketTable, marketLines, marketMedians, sireMedians, sireTable, hitTable, damRecord, feeFinder, figures, preferHouses } from "./metrics.mjs";
 import { nameKey } from "./normalise.mjs";
+import { runnerSales } from "./runners.mjs";
 
 export const HINTS_TABLE = "sale_fee_hints";
 const BUILD_PAGE = 50_000;
@@ -291,6 +292,14 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
   async function dam(key) {
     const ix = await readyNow();
     return damRecord(ix.lots, nameKey(key), { sireMedians: ix.sireMedians });
+  }
+
+  /** Each runner's own lots (sales/runners.mjs), keyed as the caller keyed them. */
+  async function runners(list = []) {
+    const ix = await readyNow();
+    const out = {};
+    for (const r of list) if (r?.key) out[r.key] = runnerSales(ix.lots, r);
+    return { builtAt: ix.builtAt, runners: out };
   }
 
   /**
@@ -713,7 +722,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
   const busy = () => Boolean(job);
 
   return {
-    ensure, build, ready, busy, market, sires, sire, dam, hit, commercialInputs, status, figures, manifest,
+    ensure, build, ready, busy, market, sires, sire, dam, runners, hit, commercialInputs, status, figures, manifest,
     importTattersalls, runTattersalls, refreshTattersalls, importArqana, runArqana, refreshArqana, importHouse, runHouse, refreshHouse, importLots,
     acceptSeed, queueSeed,
   };
