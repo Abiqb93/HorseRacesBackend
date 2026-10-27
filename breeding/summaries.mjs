@@ -270,7 +270,7 @@ export function halveSlice({ from, to }) {
  * A horse as MySQL's GROUP BY saw it: the name compared without case or
  * accents (the table's collation), and the foaling year.
  */
-const horseKey = (name, fy) =>
+export const horseKey = (name, fy) =>
   `${String(name ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().trim()}\u0000${fy ?? ""}`;
 
 /** Each horse's best figure so far, raised by one slice's rows. */
