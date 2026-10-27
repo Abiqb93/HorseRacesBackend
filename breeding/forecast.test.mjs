@@ -66,7 +66,7 @@ test("the plan: this month and last always, open months, then settled seasons ne
 
 test("a month's rows become one record a horse; months merge into a season", () => {
   const rows = [
-    { name: "Alpha", fy: 2023, sire: "Kingman", bestMaster: 78, bestPerformance: 84, runs: 2, wins: 1, stakesWins: 0, groupWins: 0, group1Wins: 0 },
+    { name: "Alpha", fy: 2023, sire: "Kingman", bestMaster: 78, bestPerformance: 84, runs: 2, wins: 1, stakesWins: 0, groupWins: 0, group1Wins: 0, homeRuns: 2 },
     { name: "Beta", fy: 2023, sire: "Kingman", bestMaster: null, bestPerformance: 0, runs: 1, wins: 0 },
   ];
   const june = monthRecords(rows, 6);
@@ -75,16 +75,18 @@ test("a month's rows become one record a horse; months merge into a season", () 
   assert.equal(a[F.best], 84);
   assert.equal(a[F.first], 6);
   assert.deepEqual([a[F.m80], a[F.m90], a[F.m100]], [6, 0, 0]);
+  assert.equal(a[F.home], 2);
 
   const season = new Map();
   for (const [k, r] of june) mergeInto(season, k, r);
-  const sept = monthRecords([{ name: "Alpha", fy: 2023, sire: "Kingman", bestPerformance: 101, runs: 1, wins: 1, stakesWins: 1, groupWins: 1 }], 9);
+  const sept = monthRecords([{ name: "Alpha", fy: 2023, sire: "Kingman", bestPerformance: 101, runs: 1, wins: 1, stakesWins: 1, groupWins: 1, homeRuns: 0 }], 9);
   for (const [k, r] of sept) mergeInto(season, k, r);
   const s = season.get(horseKey("Alpha", 2023));
   assert.equal(s[F.best], 101);
   assert.equal(s[F.runs], 3);
   assert.equal(s[F.wins], 2);
   assert.deepEqual([s[F.first], s[F.m80], s[F.m90], s[F.m100]], [6, 6, 9, 9]);
+  assert.equal(s[F.home], 2, "runs in Britain and Ireland summed");
 
   const back = decodePeriod(JSON.parse(JSON.stringify(encodePeriod(season, "2025"))));
   assert.deepEqual(back.get(horseKey("Alpha", 2023)), s);
@@ -113,7 +115,10 @@ function fakeTable() {
     }
     if (/SELECT period, MAX\(horses\)/.test(sql)) {
       const by = new Map();
-      for (const r of rows.values()) by.set(r.period, { period: r.period, horses: r.horses, built_at: r.built_at, took_ms: r.took_ms, parts: (by.get(r.period)?.parts ?? 0) + 1 });
+      for (const r of rows.values()) {
+        const had = by.get(r.period);
+        by.set(r.period, { period: r.period, horses: r.horses, built_at: r.built_at, took_ms: r.took_ms, parts: (had?.parts ?? 0) + 1, head: r.part === 0 ? r.body.slice(0, 16) : had?.head ?? null });
+      }
       return [...by.values()].sort((a, b) => a.period.localeCompare(b.period));
     }
     throw new Error(`unexpected: ${sql.slice(0, 60)}`);
@@ -141,7 +146,7 @@ test("the walk reads the plan's months within its budget and rolls a settled sea
   const runQuery = async (sql, args) => {
     if (sql.includes("FROM APIData_Table2")) {
       asked.push(args[0]);
-      return [{ name: `Runner ${args[0]}`, fy: 2022, sire: "Test Sire", bestPerformance: 85, runs: 1, wins: 0 }];
+      return [{ name: `Runner ${args[0]}`, fy: 2022, sire: "Test Sire", bestPerformance: 85, runs: 1, wins: 0, homeRuns: 1 }];
     }
     return table(sql, args);
   };
@@ -164,8 +169,8 @@ test("first crop ignores a single stray name", () => {
 
 /** A horse in the shape buildForecast makes: its seasons in order. */
 const horse = (key, fy, seasons) => ({ key, name: key, fy, sire: "X", seasons });
-const rec = (best, { first = 6, runs = 2, sw = 0 } = {}) => {
-  const r = [`h`, 2020, "X", best, runs, 0, sw, 0, 0, first, 0, 0, 0];
+const rec = (best, { first = 6, runs = 2, sw = 0, home = 1 } = {}) => {
+  const r = [`h`, 2020, "X", best, runs, 0, sw, 0, 0, first, 0, 0, 0, home];
   [80, 90, 100].forEach((x, i) => {
     if (best >= x) r[10 + i] = first;
   });
@@ -214,9 +219,9 @@ test("the point read as current: this season from March, last season whole befor
  */
 function population({ now = 2026 } = {}) {
   const seasons = new Map();
-  const put = (T, name, fy, sire, best, first = 6) => {
+  const put = (T, name, fy, sire, best, first = 6, home = 1) => {
     if (!seasons.has(T)) seasons.set(T, new Map());
-    const r = [name, fy, sire, best, 3, best >= 90 ? 1 : 0, best >= 100 ? 1 : 0, 0, 0, first, ...[80, 90, 100].map((x) => (best >= x ? first : 0))];
+    const r = [name, fy, sire, best, 3, best >= 90 ? 1 : 0, best >= 100 ? 1 : 0, 0, 0, first, ...[80, 90, 100].map((x) => (best >= x ? first : 0)), home];
     mergeInto(seasons.get(T), horseKey(name, fy), r);
   };
   // A rating for foal i of a crop, at two and at three; `lift` raises a sire.
@@ -224,19 +229,22 @@ function population({ now = 2026 } = {}) {
     const base = 55 + ((i * 37) % 45); // 55..99 spread
     return [base + lift, base + 8 + lift];
   };
-  const sire = (name, first, lift) => {
+  const sire = (name, first, lift, { abroad = 0 } = {}) => {
     for (let fy = first; fy <= now - 2; fy += 1) {
       for (let i = 0; i < 20; i += 1) {
         const [two, three] = ratings(i + fy, lift);
         const horseName = `${name} ${fy} ${i}`;
-        put(fy + 2, horseName, fy, name, two, 7);
-        if (fy + 3 <= now) put(fy + 3, horseName, fy, name, three, 6);
+        // `abroad` of each crop ran only where Timeform rates the better races.
+        const home = i < abroad ? 0 : 1;
+        put(fy + 2, horseName, fy, name, two, 7, home);
+        if (fy + 3 <= now) put(fy + 3, horseName, fy, name, three, 6, home);
       }
     }
   };
   for (let s = 0; s < 40; s += 1) sire(`Past Sire ${s}`, 2010 + (s % 10), (s % 5) - 2);
   sire("Rising Star", 2022, 14);
   sire("Slow Burner", 2022, -14);
+  sire("Travelling Man", 2022, 0, { abroad: 15 });
   return seasons;
 }
 
@@ -264,6 +272,9 @@ test("the forecast: par by stage from past sires, the young sires graded against
   assert.equal(f.symbols.held, false);
   assert.ok(star.top.length === 3 && star.top[0].best >= star.top[2].best);
   assert.ok(!f.sires.some((s) => s.sire.startsWith("PAST SIRE") && s.stage > 10), "proven sires are not forecast");
+  const travelling = f.sires.find((s) => s.sire === "TRAVELLING MAN");
+  assert.equal(travelling.runners, 5 * 3, "only his runners in Britain and Ireland count: five a crop, three crops");
+  assert.equal(f.basis.countries.join(","), "GBR,IRE");
 });
 
 test("the forecast counts Timeform p symbols among this season's runners when they are held", () => {
@@ -277,4 +288,22 @@ test("the forecast counts Timeform p symbols among this season's runners when th
   assert.ok(star.p.horses.every((h) => h.symbol === "p"));
   assert.equal(f.sires.find((s) => s.sire === "SLOW BURNER").p.n, 0);
   assert.equal(f.symbols.since, "2026-10-28");
+});
+
+test("a period stored in an older shape is read again, and left out until it is", async () => {
+  const { rows, runQuery: table } = fakeTable();
+  rows.set("2026-03|0", { period: "2026-03", part: 0, body: JSON.stringify({ v: 1, period: "2026-03", sires: [], horses: [] }), horses: 0, took_ms: 0, built_at: new Date() });
+  const asked = [];
+  const runQuery = async (sql, args) => {
+    if (sql.includes("FROM APIData_Table2")) {
+      asked.push(args[0]);
+      return [];
+    }
+    return table(sql, args);
+  };
+  const { readSeasons } = await import("./forecast.mjs");
+  assert.equal((await readSeasons(runQuery)).size, 0, "the old shape is not read into the forecast");
+  await walkPeriods(runQuery, { flatRun: FLAT_RUN, now: day("2026-03-15"), maxSlices: 3, pauseMs: 0, firstSeason: 2026, log: {} });
+  assert.ok(asked.includes("2026-03-01"));
+  assert.match(rows.get("2026-03|0").body, /^\{"v":2,/);
 });
