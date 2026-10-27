@@ -13,7 +13,12 @@
  *
  *   move      For every past sire with five or more sold in a year and again
  *             h years later: how far his median moved beyond the market's
- *             own move over those years, on the log scale.
+ *             own move over those years, on the log scale. The market's move
+ *             is the median move among every sire sold in both years (a
+ *             same-sire index), not the change in the overall median, which
+ *             moves with which sales are held: the European yearling median
+ *             rose 39% from 2024 to 2025 on the sales held, mostly because
+ *             of which sales those were.
  *   drivers   His Timeform score at the time (the stallion forecast's
  *             index on par for his stage, breeding/forecast.mjs: 100 is
  *             par) and how far his median sat above the market's. The first
@@ -29,10 +34,14 @@
  *             judged on those two: how close it came, against a call that
  *             the median moves with the market.
  *
- * A projection is a sire's latest median, moved by the fit to 2027, 2028
- * and 2029, with the market held where it is: today's money. A sire with no
- * yearlings sold yet starts from where the market's line puts his fee, and
- * says so. The line (log price on log fee, the latest year of the kind) is
+ * A projection is a sire's latest median moved a year at a time by the
+ * one-year fit, his stage advancing and his place against the market
+ * updated each year, so the pull back towards the market works the same
+ * way at every step; the longer fits give the spread around it. The market
+ * is held where it is: today's money. (Fitted separately, the three-year
+ * fit pulled an expensive sire back less hard than the one-year fit, and
+ * Frankel, at 2.5 times par for years, rose 38% by 2029 on one and held on
+ * the other.) The line (log price on log fee, the latest year of the kind) is
  * returned as well: it is what a mare's fee sweet spot is worked out on.
  *
  * Pure: the routes hand in the sales tables and the forecast's history.
@@ -46,6 +55,7 @@ export const MIN_SOLD = 5;
 /** A stage fits its own slopes from this many pairs; fewer borrow the pooled ones. */
 export const MIN_STAGE_PAIRS = 60;
 
+const goodYear = (v, minSold = MIN_SOLD) => v && v.sold >= minSold && v.median > 0;
 const round = (v, dp = 3) => (Number.isFinite(v) ? Number(v.toFixed(dp)) : null);
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
@@ -53,9 +63,34 @@ const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : nu
 export const stageBucket = (k) => (k === null || k === undefined ? null : k <= 0 ? 0 : k >= 4 ? 4 : k);
 
 /** The market's median by year for one kind and region, from the sales market cells. */
-export function marketByYear(cells = [], type = "yearling", region = "EU") {
+export function marketByYear(cells = [], type = "yearling", region = "EU", { minSold = 0 } = {}) {
   const out = new Map();
-  for (const c of cells) if (c.type === type && c.region === region && c.median > 0) out.set(Number(c.year), Number(c.median));
+  for (const c of cells) if (c.type === type && c.region === region && c.median > 0 && (Number(c.sold) || 0) >= minSold) out.set(Number(c.year), Number(c.median));
+  return out;
+}
+
+/**
+ * The market's move from year y to y + h, as a same-sire index: the median
+ * of log(median in y + h / median in y) over every sire with enough sold in
+ * both. `Map(y -> move)`.
+ */
+export function sameSireMoves(rows, h, { minSold = MIN_SOLD } = {}) {
+  const by = new Map();
+  for (const row of rows ?? []) {
+    for (const [ys, v1] of Object.entries(row.byYear ?? {})) {
+      const y = Number(ys);
+      const v2 = row.byYear[String(y + h)] ?? row.byYear[y + h];
+      if (!goodYear(v1, minSold) || !goodYear(v2, minSold)) continue;
+      if (!by.has(y)) by.set(y, []);
+      by.get(y).push(Math.log(v2.median / v1.median));
+    }
+  }
+  const out = new Map();
+  for (const [y, xs] of by) {
+    if (xs.length < 10) continue;
+    const s = [...xs].sort((a, b) => a - b);
+    out.set(y, s[Math.floor(s.length / 2)]);
+  }
   return out;
 }
 
@@ -87,15 +122,13 @@ export function stageAt(row, hist, y) {
   return y - firstYearlings;
 }
 
-const goodYear = (v, minSold = MIN_SOLD) => v && v.sold >= minSold && v.median > 0;
-
 /**
  * The pairs a horizon is fitted on: a sire's median in year y and in y + h,
  * each with five sold, the move beyond the market's, and the two drivers.
  * A sire with runners but no Timeform score that year is left out: the
  * fit would read his silence as par.
  */
-export function pairsFor(rows, market, hist, h, { minSold = MIN_SOLD } = {}) {
+export function pairsFor(rows, market, hist, h, { minSold = MIN_SOLD, moves = sameSireMoves(rows, h, { minSold }) } = {}) {
   const out = [];
   for (const row of rows ?? []) {
     const hi = hist.get(row.sireKey) ?? null;
@@ -104,8 +137,8 @@ export function pairsFor(rows, market, hist, h, { minSold = MIN_SOLD } = {}) {
       const v2 = row.byYear[String(y + h)] ?? row.byYear[y + h];
       if (!goodYear(v1, minSold) || !goodYear(v2, minSold)) continue;
       const m1 = market.get(y);
-      const m2 = market.get(y + h);
-      if (!m1 || !m2) continue;
+      const move = moves.get(y);
+      if (!m1 || move === undefined) continue;
       const k = stageAt(row, hi, y);
       const bucket = stageBucket(k);
       if (bucket === null) continue;
@@ -118,7 +151,7 @@ export function pairsFor(rows, market, hist, h, { minSold = MIN_SOLD } = {}) {
         bucket,
         x: score ? Math.log(score / 100) : 0,
         rel: Math.log(v1.median / m1),
-        d: Math.log(v2.median / v1.median) - Math.log(m2 / m1),
+        d: Math.log(v2.median / v1.median) - move,
       });
     }
   }
@@ -238,8 +271,8 @@ export function latestLine(lines, type = "yearling", region = "EU") {
  * date), `fees` the workbook fees by sire and covering year.
  */
 export function buildCommercial({ yearlings = [], foals = [], cells = [], lines = {}, history = {}, current = [], fees = new Map(), now = new Date(), region = "EU" } = {}) {
-  const market = marketByYear(cells, "yearling", region);
-  const foalMarket = marketByYear(cells, "foal", region);
+  const market = marketByYear(cells, "yearling", region, { minSold: 200 });
+  const foalMarket = marketByYear(cells, "foal", region, { minSold: 200 });
   const hist = historyIndex(history);
   const latestYear = Math.max(...market.keys());
   const fits = {};
@@ -251,7 +284,10 @@ export function buildCommercial({ yearlings = [], foals = [], cells = [], lines 
   const test = testFit(pairsByH[1], latestYear - 1);
   const line = latestLine(lines, "yearling", region);
   const foalLine = latestLine(lines, "foal", region);
-  const lastMarket = market.get(latestYear);
+  // The market's one-year moves, same sire to same sire: what a base year
+  // before the latest is carried forward by.
+  const oneYear = sameSireMoves(yearlings, 1);
+
   const nowYear = now.getUTCFullYear();
   const targets = [nowYear + 1, nowYear + 2, nowYear + 3];
 
@@ -273,22 +309,34 @@ export function buildCommercial({ yearlings = [], foals = [], cells = [], lines 
     if (!recent.length && !f) continue;
     // The base: his latest year with three sold, else nothing to move.
     const base = [...years].reverse().find(([y, v]) => y >= latestYear - 2 && v.sold >= 3 && v.median > 0) ?? null;
-    const x = f?.score ? Math.log(f.score / 100) : hi && base ? (hi.byYear.get(base[0])?.score ? Math.log(hi.byYear.get(base[0]).score / 100) : 0) : 0;
+    // His Timeform score: this season's, else the base year's, else the last
+    // the forecast kept (it stops at eleven seasons of runners, and a proven
+    // sire read at par would be pulled down to the market's median: Sea The
+    // Stars from £205k to £102k).
+    const lastScore = hi ? [...hi.byYear.entries()].filter(([, v]) => v.score).sort((a, b) => b[0] - a[0])[0] ?? null : null;
+    const scoreUsed = f?.score ?? (base ? hi?.byYear.get(base[0])?.score : null) ?? lastScore?.[1]?.score ?? null;
+    const x = scoreUsed ? Math.log(scoreUsed / 100) : 0;
     let projected = null;
     let basis = null;
-    if (base && market.get(base[0])) {
+    if (base && market.get(base[0]) && fits[1]) {
       const [y0, v0] = base;
-      const rel = Math.log(v0.median / market.get(y0));
-      const drift = Math.log(lastMarket / market.get(y0));
+      const k0 = stageAt(row, hi, y0);
+      const level = (y) => market.get(Math.min(y, latestYear));
       basis = { kind: "yearlings", year: y0, median: v0.median, sold: v0.sold };
+      const at = new Map();
+      let m = v0.median;
+      for (let y = y0, k = k0; y < targets.at(-1); y += 1, k += 1) {
+        const g = predict(fits[1], stageBucket(k), x, Math.log(m / level(y)));
+        // Before the latest year the market's own move is known; after it, held.
+        m *= Math.exp((g?.d ?? 0) + (y < latestYear ? (oneYear.get(y) ?? 0) : 0));
+        at.set(y + 1, m);
+      }
       projected = targets.map((Y) => {
-        const h = Y - y0;
-        const fit = fits[Math.min(h, HORIZONS.at(-1))];
-        const k = stageAt(row, hi, y0);
-        const g = predict(fit, stageBucket(k), x, rel);
-        if (!g) return { year: Y, median: null };
-        const centre = v0.median * Math.exp(g.d + drift);
-        return { year: Y, median: Math.round(centre), low: g.sd ? Math.round(centre * Math.exp(-g.sd)) : null, high: g.sd ? Math.round(centre * Math.exp(g.sd)) : null };
+        const centre = at.get(Y);
+        if (!centre) return { year: Y, median: null };
+        const h = Math.min(Y - y0, HORIZONS.at(-1));
+        const sd = fits[h]?.buckets?.[stageBucket(k0)]?.sd ?? (fits[1]?.buckets?.[stageBucket(k0)]?.sd ? fits[1].buckets[stageBucket(k0)].sd * Math.sqrt(h) : null);
+        return { year: Y, median: Math.round(centre), low: sd ? Math.round(centre * Math.exp(-sd)) : null, high: sd ? Math.round(centre * Math.exp(sd)) : null };
       });
     }
     sires.push({
@@ -296,6 +344,8 @@ export function buildCommercial({ yearlings = [], foals = [], cells = [], lines 
       sire: row?.sire ?? f?.sire ?? key,
       stage: f?.stage ?? (base ? stageAt(row, hi, nowYear) : null),
       score: f?.score ?? null,
+      scoreUsed: scoreUsed ? round(scoreUsed, 1) : null,
+      scoreFrom: f?.score ? "now" : scoreUsed ? (base && hi?.byYear.get(base[0])?.score ? base[0] : lastScore?.[0] ?? null) : null,
       fee: row?.fee ?? null,
       yearlings: recent.length
         ? {
@@ -328,6 +378,7 @@ export function buildCommercial({ yearlings = [], foals = [], cells = [], lines 
     targets,
     market: {
       latestYear,
+      sameSire: Object.fromEntries([...oneYear].filter(([y]) => y >= latestYear - 6).map(([y, v]) => [y, round(Math.exp(v) - 1, 3)])),
       yearlings: Object.fromEntries([...market].filter(([y]) => y >= latestYear - 5)),
       foals: Object.fromEntries([...foalMarket].filter(([y]) => y >= latestYear - 5)),
     },
@@ -343,4 +394,4 @@ export function buildCommercial({ yearlings = [], foals = [], cells = [], lines 
   };
 }
 
-export default { HORIZONS, MIN_SOLD, stageBucket, marketByYear, historyIndex, stageAt, pairsFor, fitHorizon, testFit, latestLine, buildCommercial };
+export default { HORIZONS, MIN_SOLD, stageBucket, marketByYear, sameSireMoves, historyIndex, stageAt, pairsFor, fitHorizon, testFit, latestLine, buildCommercial };

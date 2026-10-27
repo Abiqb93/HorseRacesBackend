@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCommercial, fitHorizon, historyIndex, latestLine, marketByYear, pairsFor, stageAt, stageBucket, testFit } from "./commercial.mjs";
+import { buildCommercial, fitHorizon, historyIndex, latestLine, marketByYear, pairsFor, sameSireMoves, stageAt, stageBucket, testFit } from "./commercial.mjs";
 
 /**
  * A made-up European yearling market: the market's median rises 3% a year;
@@ -15,8 +15,8 @@ function world({ noise = 0.02 } = {}) {
   for (let y = 2014; y <= 2026; y += 1) {
     const m = 40000 * 1.03 ** (y - 2014);
     market.set(y, m);
-    cells.push({ type: "yearling", region: "EU", year: y, median: Math.round(m) });
-    cells.push({ type: "foal", region: "EU", year: y, median: Math.round(m * 0.6) });
+    cells.push({ type: "yearling", region: "EU", year: y, median: Math.round(m), sold: 2000 });
+    cells.push({ type: "foal", region: "EU", year: y, median: Math.round(m * 0.6), sold: 900 });
   }
   const yearlings = [];
   const history = {};
@@ -54,6 +54,8 @@ test("stages and the market by year read as the fit groups them", () => {
   const m = marketByYear(cells, "yearling", "EU");
   assert.equal(m.get(2014), 40000);
   assert.equal(marketByYear(cells, "foal", "EU").get(2014), 24000);
+  // A year with few sold (the foal sales not yet held) is not the market's.
+  assert.equal(marketByYear([...cells, { type: "foal", region: "EU", year: 2027, median: 2500, sold: 40 }], "foal", "EU", { minSold: 200 }).has(2027), false);
   // From the forecast's first crop where it holds him, else from his first yearlings.
   assert.equal(stageAt({}, { first: 2020 }, 2024), 3);
   assert.equal(stageAt({ byYear: { 2021: { sold: 3 }, 2022: { sold: 5 } } }, null, 2024), 3);
@@ -63,6 +65,16 @@ test("the forecast's names join the sales' names: no apostrophes, no suffix", ()
   const h = historyIndex({ "ST MARK'S BASILICA": { sire: "ST MARK'S BASILICA", first: 2021, s: [[2023, 1, 140.5, 30]] } });
   assert.ok(h.has("ST MARKS BASILICA"));
   assert.deepEqual(h.get("ST MARKS BASILICA").byYear.get(2023), { k: 1, score: 140.5, runners: 30 });
+});
+
+test("the market's move is the same sires' move, not the overall median's", () => {
+  const rows = [
+    { sireKey: "A", byYear: { 2024: { sold: 10, median: 10000 }, 2025: { sold: 10, median: 11000 } } },
+    ...Array.from({ length: 10 }, (_, i) => ({ sireKey: `B${i}`, byYear: { 2024: { sold: 8, median: 20000 }, 2025: { sold: 8, median: 22000 } } })),
+    { sireKey: "C", byYear: { 2024: { sold: 2, median: 5000 }, 2025: { sold: 9, median: 50000 } } },
+  ];
+  const moves = sameSireMoves(rows, 1);
+  assert.ok(Math.abs(Math.exp(moves.get(2024)) - 1.1) < 1e-9, "the median sire rose 10%; the one with two sold is not counted");
 });
 
 test("the fit finds what moves prices: the Timeform score up, a median that ran ahead back", () => {
@@ -107,4 +119,17 @@ test("a sire scoring well above par is projected to gain on one at par, and the 
   assert.equal(fresh.projected, null);
   assert.equal(fresh.score, 120);
   assert.ok(out.model.test.pairs > 0);
+  assert.equal(hot.scoreFrom, "now");
+
+  // A proven sire the forecast no longer scores keeps his last score, not par.
+  const proven = buildCommercial({
+    yearlings,
+    cells,
+    lines,
+    history: { ...history, "SIRE 4": { ...history["SIRE 4"], s: history["SIRE 4"].s.filter(([T]) => T <= 2022) } },
+    current: [],
+    now: new Date("2026-10-27T00:00:00Z"),
+  }).sires.find((s) => s.key === "SIRE 4");
+  assert.equal(proven.scoreUsed, 150);
+  assert.equal(proven.scoreFrom, 2022);
 });
