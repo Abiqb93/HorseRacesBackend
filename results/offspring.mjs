@@ -15,9 +15,10 @@
  * Frankel and Dubawi's names alone ran into a two-minute cap. Read by date it
  * is cheap, because a month's rows sit together. So the whole list of
  * (sire, dam, horse) is read here a month at a time, through the date index,
- * on one connection with a pause between months, and kept in memory; the
- * recent months are read again every few hours. Every answer after that is a
- * lookup in memory.
+ * on one connection with a pause between months, newest first, and kept in
+ * memory; it answers once the latest year is in, the older months filling in
+ * behind, and the recent months are read again every few hours. Every answer
+ * after that is a lookup in memory.
  */
 
 import { TABLE, nameKey } from "./indexes.mjs";
@@ -28,6 +29,10 @@ export const KINDS = { sire: "sireName", dam: "damName" };
 export const REFRESH_MS = 6 * 60 * 60 * 1000;
 /** A pause between months, so other reads are not queued behind the walk. */
 export const PAUSE_MS = 200;
+/** The list answers once this many of the latest months are read. */
+export const READY_MONTHS = 12;
+/** A month that runs longer than this is read in halves. */
+export const SLICE_CAP_MS = 120000;
 /** Names asked for in one request, per kind. */
 export const MAX_NAMES = 500;
 
@@ -36,12 +41,16 @@ const monthStart = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(),
 const addMonths = (d, n) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1));
 const asDate = (v) => (v instanceof Date ? v : new Date(String(v).replace(" ", "T") + (String(v).length <= 10 ? "T00:00:00Z" : "Z")));
 
-export function createOffspring({ runQuery, now = () => Date.now(), pauseMs = PAUSE_MS, log = console }) {
+export function createOffspring({ runQuery, now = () => Date.now(), pauseMs = PAUSE_MS, readyMonths = READY_MONTHS, log = console }) {
   const bySire = new Map(); // nameKey(sire) -> Set(horse names)
   const byDam = new Map();
-  const status = { state: "not built", horses: 0, sires: 0, dams: 0, months: 0, builtAt: null, tookMs: null, error: null };
+  const status = {
+    state: "not built", complete: false, monthsRead: 0, monthsTotal: null, reading: null,
+    slowestMonthMs: null, horses: 0, sires: 0, dams: 0, builtAt: null, tookMs: null, error: null,
+  };
   let builtAt = null;
   let building = null;
+  let firstReady = null;
 
   const add = (map, parent, horse) => {
     if (!parent || !horse) return;
@@ -51,11 +60,17 @@ export function createOffspring({ runQuery, now = () => Date.now(), pauseMs = PA
     set.add(horse);
   };
 
+  const count = () => {
+    const horses = new Set();
+    for (const set of bySire.values()) for (const h of set) horses.add(h);
+    Object.assign(status, { horses: horses.size, sires: bySire.size, dams: byDam.size });
+  };
+
   /** One slice of dates; a slice that fails is cut in two and asked again, down to a week. */
   const readSlice = async (from, to) => {
     try {
       return await runQuery(
-        `SELECT /*+ MAX_EXECUTION_TIME(300000) */ DISTINCT sireName, damName, horseName
+        `SELECT /*+ MAX_EXECUTION_TIME(${SLICE_CAP_MS}) */ DISTINCT sireName, damName, horseName
            FROM ${TABLE}
           WHERE meetingDate >= ? AND meetingDate < ?`,
         [ymd(from), ymd(to)],
@@ -68,54 +83,82 @@ export function createOffspring({ runQuery, now = () => Date.now(), pauseMs = PA
     }
   };
 
-  const walk = async (from) => {
+  /**
+   * Newest month first, so the horses running now are in hand soonest: the
+   * list answers once `readyMonths` are read and the older months fill in
+   * behind it.
+   */
+  const walk = async (from, onReady) => {
     const started = now();
     const [range] = await runQuery(`SELECT MIN(meetingDate) AS lo, MAX(meetingDate) AS hi FROM ${TABLE}`, []);
     if (!range?.lo) throw new Error(`${TABLE} holds no dates`);
     const lo = monthStart(asDate(range.lo));
-    let month = from && from > lo ? from : lo;
-    const end = addMonths(monthStart(asDate(range.hi)), 1);
-    let months = 0;
-    for (; month < end; month = addMonths(month, 1)) {
+    const first = from && from > lo ? from : lo;
+    const months = [];
+    for (let m = monthStart(asDate(range.hi)); m >= first; m = addMonths(m, -1)) months.push(m);
+    if (!from) Object.assign(status, { monthsTotal: months.length, monthsRead: 0 });
+    let read = 0;
+    for (const month of months) {
+      const t = now();
+      if (!from) status.reading = ymd(month).slice(0, 7);
       const rows = await readSlice(month, addMonths(month, 1));
       for (const r of rows) {
         add(bySire, r.sireName, r.horseName);
         add(byDam, r.damName, r.horseName);
       }
-      months += 1;
+      read += 1;
+      if (!from) {
+        status.monthsRead = read;
+        status.slowestMonthMs = Math.max(status.slowestMonthMs ?? 0, now() - t);
+        if (read === readyMonths) { count(); onReady(); }
+      }
       if (pauseMs) await new Promise((resolve) => setTimeout(resolve, pauseMs));
     }
-    builtAt = now();
-    const horses = new Set();
-    for (const set of bySire.values()) for (const h of set) horses.add(h);
-    Object.assign(status, {
-      state: "ready", horses: horses.size, sires: bySire.size, dams: byDam.size, months,
-      builtAt: new Date(builtAt).toISOString(), tookMs: now() - started, error: null,
-    });
-    log.log(`[offspring] ${months} months read: ${bySire.size} sires, ${byDam.size} dams, ${horses.size} horses, ${status.tookMs}ms`);
+    count();
+    Object.assign(status, { reading: null, tookMs: now() - started, error: null });
+    if (!from) status.complete = true;
+    onReady();
+    log.log(`[offspring] ${read} months read: ${status.sires} sires, ${status.dams} dams, ${status.horses} horses, ${now() - started}ms`);
   };
 
   /** Starts a walk unless one is running: the whole table, or from `from`. */
   const start = (from) => {
-    if (!building) {
-      if (!builtAt) status.state = "building";
-      building = walk(from)
-        .catch((err) => {
-          status.error = err.message;
-          if (!builtAt) status.state = "failed";
-          log.warn(`[offspring] not read: ${err.message}`);
-          throw err;
-        })
-        .finally(() => { building = null; });
-      building.catch(() => {});
+    if (building) return firstReady ?? building;
+    let resolveReady = null;
+    let rejectReady = null;
+    let pending = null;
+    if (!builtAt) {
+      status.state = "building";
+      pending = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+      pending.catch(() => {});
+      firstReady = pending;
     }
-    return building;
+    const onReady = () => {
+      if (builtAt) return;
+      builtAt = now();
+      Object.assign(status, { state: "ready", builtAt: new Date(builtAt).toISOString() });
+      resolveReady?.();
+    };
+    building = walk(from, onReady)
+      .catch((err) => {
+        Object.assign(status, { error: err.message, reading: null });
+        if (!builtAt) {
+          status.state = "failed";
+          rejectReady?.(err);
+        }
+        log.warn(`[offspring] not read: ${err.message}`);
+      })
+      .finally(() => { building = null; firstReady = null; });
+    return pending ?? building;
   };
 
-  /** Resolves once the list is there; a stale one answers while its latest months are read again. */
+  /** Resolves once the list answers; a stale one answers while its latest months are read again. */
   const ready = async () => {
     if (!builtAt) return start(null);
-    if (now() - builtAt > REFRESH_MS) start(addMonths(monthStart(new Date(now())), -1));
+    if (now() - builtAt > REFRESH_MS && !building) {
+      builtAt = now();
+      start(addMonths(monthStart(new Date(now())), -1));
+    }
   };
 
   /** { [name as asked]: [horse names] } for each of `names`. */
