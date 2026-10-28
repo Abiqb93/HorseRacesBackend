@@ -3740,6 +3740,7 @@ const runApiDataTable2Query = ({
   limit,
   offset = 0,
   order = "desc",
+  withDaysOff = false,
 }) => {
   const startTime = Date.now();
 
@@ -3784,7 +3785,16 @@ const runApiDataTable2Query = ({
       rp.rpRPR AS racingPostRPR,
       rp.rpRaceID AS racingPostRaceID,
       rp.rpRaceTrack AS racingPostRaceTrack,
-      rp.rpRaceTime AS racingPostRaceTime
+      rp.rpRaceTime AS racingPostRaceTime${withDaysOff ? `,
+      -- Days since the horse's previous run held here; NULL on its first.
+      -- The horse code keeps two horses of one name apart.
+      DATEDIFF(DATE(a.meetingDate), (
+        SELECT MAX(p.meetingDate)
+        FROM APIData_Table2 p
+        WHERE p.horseName = a.horseName
+          AND p.meetingDate < DATE(a.meetingDate)
+          AND (a.horseCode IS NULL OR p.horseCode IS NULL OR p.horseCode = a.horseCode)
+      )) AS daysOff` : ""}
     FROM APIData_Table2 a
     LEFT JOIN (
       SELECT
@@ -4177,6 +4187,8 @@ app.get('/api/APIData_Table2', (req, res) => {
     limit,
     offset,
     order,
+    // One day's runners: few enough to look each one's last run up.
+    withDaysOff: Boolean(meetingDate),
   });
 });
 
@@ -10002,6 +10014,20 @@ app.get("/api/sales/dam/:key", async (req, res) => {
   }
 });
 
+/**
+ * Each runner of a race in the sale ring: `runners` is a list of
+ * { key, dam, sire, foaled } (foaled: the foaling date or year), at most
+ * 60; the answer gives each key its lots, oldest first (sales/runners.mjs).
+ */
+app.post("/api/sales/runners", async (req, res) => {
+  const list = Array.isArray(req.body?.runners) ? req.body.runners.slice(0, 60) : [];
+  try {
+    res.json(await (await sales()).runners(list.map((r) => ({ key: String(r?.key ?? ""), dam: r?.dam, sire: r?.sire, foaled: r?.foaled }))));
+  } catch (err) {
+    salesError(res, "sales runners", err);
+  }
+});
+
 app.get("/api/sales/hit", async (req, res) => {
   try {
     res.json(await (await sales()).hit({ region: salesRegion(req.query.region) }));
@@ -10113,6 +10139,24 @@ setTimeout(() => {
     .then((svc) => svc.build())
     .catch((err) => console.warn("[sales] warm-up failed:", err.message));
 }, 120_000);
+
+// The companies no house feed reads (Goffs, Osarus and the rest), back to
+// 2015, from Racing Post through parse.bot (sales/parsebot.mjs), started on
+// its own after every start. A sale of a past year already read is skipped,
+// so a backfill a restart cut short carries on where it stopped, and once
+// it is complete a start costs one listing a year. SALES_PARSEBOT_BACKFILL=0
+// turns it off; the daily refresh below keeps the current sales either way.
+setTimeout(async () => {
+  if (!process.env.PARSE_API_KEY || process.env.SALES_PARSEBOT_BACKFILL === "0") return;
+  try {
+    const svc = await sales();
+    if (svc.busy()) return console.log("[sales] parse.bot backfill: a long job is running; left to the next start");
+    const out = svc.runHouse("parsebot", { from: 2015, to: new Date().getFullYear(), skipHeld: true, pauseMs: 1500 });
+    console.log("[sales] parse.bot backfill:", out.started ? "started" : "a job is already running");
+  } catch (err) {
+    console.warn("[sales] parse.bot backfill not started:", err.message);
+  }
+}, 10 * 60_000);
 
 // The house's results kept current: every sale of the year read again at
 // 04:20, and every two hours through the day the sales still being sold.
