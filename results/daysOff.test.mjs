@@ -28,6 +28,21 @@ test("a missing index is added online on a connection of its own that gives up o
   assert.match(own[1], /ALTER TABLE APIData_Table2 ADD INDEX idx_days_off \(horseName, horseCode, meetingDate\), ALGORITHM=INPLACE, LOCK=NONE/);
 });
 
+test("the night's build waits a minute for the table's lock, the day's two seconds", async () => {
+  const { NIGHT_LOCK_WAIT_SECONDS } = await import("./indexes.mjs");
+  const waits = async (lockWaitSeconds) => {
+    let built = false;
+    const own = [];
+    const runQuery = async () => statistics(built ? { [INDEX_NAME]: ["horseName", "horseCode", "meetingDate"] } : {});
+    const withConnection = async (fn) => fn(async (sql) => { own.push(sql); if (/ALTER TABLE/.test(sql)) built = true; return []; });
+    await ensureDaysOffIndex({ runQuery, withConnection, log: quiet, lockWaitSeconds });
+    return own[0];
+  };
+  assert.equal(NIGHT_LOCK_WAIT_SECONDS, 60);
+  assert.match(await waits(NIGHT_LOCK_WAIT_SECONDS), /lock_wait_timeout = 60$/);
+  assert.match(await waits(undefined), /lock_wait_timeout = 2$/);
+});
+
 test("an index already there is not built again, and one another start finished first counts", async () => {
   const there = async () => statistics({ [INDEX_NAME]: ["horseName", "horseCode", "meetingDate"] });
   const never = async () => { throw new Error("should not connect"); };

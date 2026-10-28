@@ -3760,7 +3760,7 @@ const withOwnConnection = async (fn) => {
 const API_INDEX_RETRY_MS = 10 * 60 * 1000;
 const API_INDEX_ATTEMPTS = 36;
 
-const ensureApiIndexes = async () => {
+const ensureApiIndexes = async ({ lockWaitSeconds } = {}) => {
   const [{ ensureIndex }, { INDEX_NAME, INDEX_COLUMNS }] = await Promise.all([loadIndexes(), loadDaysOff()]);
   const wanted = {
     daysOff: { name: INDEX_NAME, columns: INDEX_COLUMNS },
@@ -3772,7 +3772,7 @@ const ensureApiIndexes = async () => {
     st.attempts += 1;
     st.state = "building";
     try {
-      const { index } = await ensureIndex({ runQuery, withConnection: withOwnConnection, name, columns });
+      const { index } = await ensureIndex({ runQuery, withConnection: withOwnConnection, name, columns, lockWaitSeconds });
       Object.assign(st, { name: index, state: "ready", error: null, since: new Date().toISOString() });
     } catch (err) {
       Object.assign(st, { state: "failed", error: err.message, since: new Date().toISOString() });
@@ -3784,6 +3784,18 @@ const ensureApiIndexes = async () => {
 };
 
 setTimeout(() => ensureApiIndexes().catch((err) => console.warn("[indexes] not checked:", err.message)), 5000);
+
+// An index still missing is built at night as well, when the table is quiet
+// and a wait of a minute for its lock holds up nobody (indexes.mjs); the
+// night's try starts the daytime count again, so a bad day never ends them.
+{
+  const cron = require("node-cron");
+  cron.schedule("10 3 * * *", async () => {
+    const { NIGHT_LOCK_WAIT_SECONDS } = await loadIndexes();
+    for (const st of Object.values(apiIndexes)) if (st.state !== "ready") st.attempts = 0;
+    await ensureApiIndexes({ lockWaitSeconds: NIGHT_LOCK_WAIT_SECONDS }).catch((err) => console.warn("[indexes] night build:", err.message));
+  }, { timezone: "Europe/London" });
+}
 
 const attachDaysOff = async (rows) => {
   const { attachDaysOff: attach } = await loadDaysOff();
