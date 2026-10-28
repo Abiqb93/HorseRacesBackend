@@ -3732,52 +3732,52 @@ const getApiDataPaging = (req) => {
 
 /**
  * Each runner's days since its previous run held in APIData_Table2, as
- * `daysOff` (null on a first run). One grouped query per 250 horses, on the
- * (horseName, meetingDate) index: a lookup per runner inside the day's query
- * took the race-day route past two minutes on the live table (28 October
- * 2026). The horse code keeps two horses of one name apart. Bounded in time:
- * if it fails or runs long the rows go out without it, never the page.
+ * `daysOff` (null on a first run), for a single day's runners. The lookup
+ * needs an index on (horseName, horseCode, meetingDate); it is added a few
+ * seconds after start where missing and, until it is there, rows go out
+ * without days off rather than wait minutes for them. See results/daysOff.mjs.
  */
-const attachDaysOff = async (rows) => {
-  // The calendar day as the driver read it (in the server's own time zone).
-  const day = (v) => {
-    const d = v instanceof Date ? v : new Date(v);
-    return Number.isNaN(d.getTime()) ? null : Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
-  };
-  const starts = rows.map((r) => day(r.meetingDate)).filter((t) => t !== null);
-  const names = [...new Set(rows.map((r) => r.horseName).filter(Boolean))];
-  if (!starts.length || !names.length) return;
-  const before = new Date(Math.max(...starts)).toISOString().slice(0, 10);
-  const last = new Map();
+const loadDaysOff = () => import("./results/daysOff.mjs");
+
+const daysOffIndex = { name: null, state: "checking", error: null, attempts: 0, since: new Date().toISOString() };
+
+/** fn gets a query function on one connection of its own, closed after. */
+const withOwnConnection = async (fn) => {
+  const conn = await new Promise((resolve, reject) => db.getConnection((err, c) => (err ? reject(err) : resolve(c))));
   try {
-    for (let i = 0; i < names.length; i += 250) {
-      const chunk = names.slice(i, i + 250);
-      const found = await runQuery(
-        `SELECT /*+ MAX_EXECUTION_TIME(5000) */ horseName, horseCode, MAX(meetingDate) AS lastRun
-           FROM APIData_Table2
-          WHERE horseName IN (${chunk.map(() => "?").join(",")}) AND meetingDate < ?
-          GROUP BY horseName, horseCode`,
-        [...chunk, before],
-      );
-      for (const f of found) {
-        const list = last.get(f.horseName) ?? [];
-        list.push({ code: f.horseCode, at: day(f.lastRun) });
-        last.set(f.horseName, list);
-      }
-    }
-  } catch (err) {
-    console.warn("[APIData_Table2] days off not added:", err.message);
-    return;
-  }
-  for (const r of rows) {
-    const today = day(r.meetingDate);
-    const runs = (last.get(r.horseName) ?? []).filter(
-      (x) => x.at !== null && x.at < today && (r.horseCode == null || x.code == null || String(x.code) === String(r.horseCode)),
-    );
-    const prev = runs.length ? Math.max(...runs.map((x) => x.at)) : null;
-    r.daysOff = prev === null || today === null ? null : Math.round((today - prev) / 86_400_000);
+    return await fn((sql, params) => new Promise((resolve, reject) =>
+      conn.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)))));
+  } finally {
+    // Closed rather than released: its session settings go with it.
+    conn.destroy();
   }
 };
+
+const DAYS_OFF_INDEX_RETRY_MS = 10 * 60 * 1000;
+const DAYS_OFF_INDEX_ATTEMPTS = 6;
+
+const ensureDaysOffIndex = async () => {
+  daysOffIndex.attempts += 1;
+  daysOffIndex.state = "building";
+  try {
+    const { ensureDaysOffIndex: ensure } = await loadDaysOff();
+    const { index } = await ensure({ runQuery, withConnection: withOwnConnection });
+    Object.assign(daysOffIndex, { name: index, state: "ready", error: null, since: new Date().toISOString() });
+  } catch (err) {
+    Object.assign(daysOffIndex, { state: "failed", error: err.message, since: new Date().toISOString() });
+    console.warn(`[days off] index not ready (attempt ${daysOffIndex.attempts}): ${err.message}`);
+    if (daysOffIndex.attempts < DAYS_OFF_INDEX_ATTEMPTS) setTimeout(ensureDaysOffIndex, DAYS_OFF_INDEX_RETRY_MS);
+  }
+};
+
+setTimeout(ensureDaysOffIndex, 5000);
+
+const attachDaysOff = async (rows) => {
+  const { attachDaysOff: attach } = await loadDaysOff();
+  return attach(rows, { runQuery, index: daysOffIndex.name });
+};
+
+app.get('/api/APIData_Table2/days-off-status', (req, res) => res.json(daysOffIndex));
 
 const runApiDataTable2Query = ({
   res,
@@ -3908,7 +3908,7 @@ const runApiDataTable2Query = ({
       return res.status(500).json({ error: "Database error", details: err.message });
     }
 
-    if (withDaysOff) await attachDaysOff(rows);
+    if (withDaysOff) await attachDaysOff(rows).catch((e) => console.warn("[days off] not added:", e.message));
 
     return res.status(200).json({
       data: rows,
