@@ -29,6 +29,7 @@ import {
   isServerToolResult, citedSources, WEB_SEARCH_MAX_USES, WEB_FETCH_MAX_USES,
 } from "./web.mjs";
 import { loadDataset, describeShapeText, flattenGroups } from "./datasets.mjs";
+import { salesHistory, SALE_KINDS, SALE_REGIONS } from "./salesTool.mjs";
 
 export const MODEL = "claude-opus-5";
 
@@ -78,6 +79,7 @@ const SITE_PAGES = [
   ["Find Prospects", "/dashboard/FindProspects", "Search the prospects index"],
   ["Race Prospects", "/dashboard/RaceProspects", "Horses matched to target races"],
   ["Sales", "/dashboard/sales", "Sales catalogues and results"],
+  ["Sales Market", "/dashboard/SalesMarket", "Every lot of every sale held, read as a market: foals, yearlings, 2yos and HIT by year and region, and each sire's figures against his fee"],
   ["Horse Profile", "/dashboard/HorseProfile", "Search for a horse; an individual horse is at /dashboard/horse/<NAME>"],
   ["Stallions", "/dashboard/Stallions", "The stallion directory with crop, stage and fee columns"],
   ["Expected Precocity", "/dashboard/ExpectedPrecocity", "The Sire Precocity Index and its four categories"],
@@ -265,6 +267,35 @@ export const TOOLS = [
         },
       },
       required: ["name"],
+    },
+  },
+  {
+    name: "sales_history",
+    description:
+      "Sale results: every lot of every foal, yearling, two-year-old and horses-in-training sale held " +
+      "(Tattersalls, Goffs, Arqana, Keeneland, Fasig-Tipton, Inglis, Magic Millions, Tattersalls Ireland, BBAG, OBS " +
+      "and the rest), worked into the same figures the Sales Market page shows. Use this for anything about what " +
+      "horses made at auction - a sire's yearlings or foals by year, a mare's produce in the ring, how a sale or a " +
+      "year's market went, which sires sold well against their fee. " +
+      'view "sire": one sire\'s figures by kind and year (offered, sold, clearance, median, average, top, fee, price over fee) and his dearest lots. ' +
+      'view "dam": every lot out of one mare, each against her sire\'s median. ' +
+      'view "sires": a kind\'s sire table, ranked. ' +
+      'view "market": a kind\'s market by year and region, and the sales of one year.',
+    input_schema: {
+      type: "object",
+      properties: {
+        view: { type: "string", enum: ["sire", "dam", "sires", "market"], description: "What to read. Defaults to sire if a sire is given, dam if a dam is, else market." },
+        sire: { type: "string", description: 'For view "sire": the sire\'s name, e.g. "Dubawi". Country suffix optional.' },
+        dam: { type: "string", description: 'For view "dam": the mare\'s name.' },
+        kind: { type: "string", enum: SALE_KINDS, description: "foal, yearling, 2yo (breeze-ups) or hit (horses in training). Omit for every kind." },
+        region: { type: "string", enum: SALE_REGIONS, description: "EU (Britain, Ireland, France, Germany), US, AUS or NZ. Omit for every region." },
+        year: { type: "integer", description: "Only this sale year: the lots listed (sire, dam) or the sales listed (market)." },
+        sort: { type: "string", enum: ["aggregate", "median", "premium", "multiple", "vsMarket", "sold", "trend"], description: 'For view "sires": the ranking. premium is against his fee\'s line; multiple is price over fee.' },
+        order: { type: "string", enum: ["desc", "asc"], description: 'For view "sires": desc (default) for the best, asc for the worst.' },
+        min_sold: { type: "integer", description: 'For view "sires": leave out sires with fewer lots sold in the window. Default 5.' },
+        limit: { type: "integer", description: "How many lots (sire view, default 25, at most 100) or sires (sires view, default 25, at most 100)." },
+      },
+      required: [],
     },
   },
   {
@@ -526,7 +557,7 @@ async function describeDataset(name) {
  * than exceptions: a rejected query is something the model should read and
  * correct, not something that should end the conversation.
  */
-export async function runTool({ name, input }, { db, allowedTables, userId }) {
+export async function runTool({ name, input }, { db, allowedTables, userId, sales }) {
   try {
     if (name === "list_tables") {
       const tables = describeTables(allowedTables);
@@ -638,6 +669,10 @@ export async function runTool({ name, input }, { db, allowedTables, userId }) {
       };
     }
 
+    if (name === "sales_history") {
+      return await salesHistory(input || {}, sales);
+    }
+
     if (name === "list_site_pages") {
       return {
         content: JSON.stringify({
@@ -717,6 +752,8 @@ Get to the answer in few steps. list_tables gives you every table with a one-lin
 Then describe_table it, because the column names and date formats here are genuinely not guessable - dates appear both as "2026-09-08" and as "Tuesday 8  September 2026" (with a double space), horse names carry country suffixes, and several tables hold the same concept under different column names. Look at the example rows.
 
 The published datasets are laid out for pages, not for questions. Before the first get_dataset on a file in this conversation, describe_dataset it: the result says where the rows are and what a row holds. Then take what you need in one call - a path to the array, a select to filter and sort it, and the fields you will use. The sectional board, for instance, is windows.w7 for the last seven days across every cohort at once; never read it one cohort at a time.
+
+Sale prices come from sales_history. It holds every lot of every foal, yearling, two-year-old and horses-in-training sale the platform has read, back years, across Europe, America and Australasia, with the medians, clearance and price-over-fee figures the Sales Market page shows. Ask it before saying the platform does not hold a sale result, and before going to the web for one. The foalSale_* tables are a single older foal catalogue, not the sales record. For what sales_history does not cover (buyers, vendors, one sale's lots in order), the same lots are in the sale_lots table.
 
 Aggregate in SQL. You get ${ROW_CAP} rows back at most, so COUNT, SUM, AVG and GROUP BY belong in the query, not in your head.
 
@@ -943,6 +980,8 @@ export async function runTurn({
   // button sets it through the route.
   answerNow = () => false,
   maxSteps = MAX_STEPS,
+  // The sales service, for sales_history (server.jsx passes its own).
+  sales,
 }) {
   const today = new Date().toISOString().slice(0, 10);
   const working = [...messages];
@@ -998,7 +1037,7 @@ export async function runTurn({
       calls.map(async (call) => {
         emit("tool", { id: call.id, name: call.name, input: call.input });
         const started = Date.now();
-        const out = await runTool(call, { db, allowedTables, userId });
+        const out = await runTool(call, { db, allowedTables, userId, sales });
         emit("tool_done", {
           id: call.id,
           name: call.name,

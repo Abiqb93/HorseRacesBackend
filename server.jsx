@@ -17175,6 +17175,10 @@ const AI_EXTRA_TABLES = [
   // The broodmare band, and the tables the mating reports are written from
   "my_mares", "mare_seasons", "mating_plans", "mare_foals",
   "nick_stats", "horse_parents",
+  // Sale results: every lot of every sale held (sales/store.mjs). The
+  // assistant reads the summary figures through sales_history; the table is
+  // here for buyers, vendors and one sale's lots.
+  "sale_lots",
 ];
 
 const aiAllowedTables = () => [...new Set([...validTables, ...AI_EXTRA_TABLES])];
@@ -17327,6 +17331,9 @@ app.post("/api/ai/chat", express.json({ limit: "2mb" }), async (req, res) => {
       emit: send,
       signal: abort.signal,
       answerNow: () => turn.answerNow,
+      // The same service /api/sales/* reads, so sales_history's figures are
+      // the Sales Market page's.
+      sales,
     });
     // `limit` says the closing call was made without tools, and why: the step
     // budget, or the user asking for the answer now. The page says so.

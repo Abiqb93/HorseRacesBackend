@@ -125,11 +125,23 @@ export const TABLE_NOTES = {
     "a hole, not a zero.",
 
   // --- sales ----------------------------------------------------------------
-  foalSale_Dashboard: "Foal sale dashboard rows.",
-  foalSale_Pedigree: "Foal sale pedigrees.",
-  foalSale_StallionStats: "Stallion statistics for the foal sale.",
-  foalSale_Sales: "Foal sale results.",
-  foalSale_StudFeeAnalysis: "Stud fee analysis for the foal sale.",
+  // One older foal catalogue, kept for the Foal Sales page. Not the sales
+  // record: on 28 October 2026 the assistant took these for "the only sales
+  // tables we hold" and said there were no yearling results by sire.
+  foalSale_Dashboard: "One older foal sale catalogue's dashboard rows. Not the sales record: use sales_history or sale_lots for sale results.",
+  foalSale_Pedigree: "Pedigrees for that one older foal catalogue.",
+  foalSale_StallionStats: "Stallion statistics for that one older foal catalogue.",
+  foalSale_Sales: "That one older foal catalogue's lots. Not the sales record: use sales_history or sale_lots for sale results.",
+  foalSale_StudFeeAnalysis: "Stud fee analysis for that one older foal catalogue.",
+
+  // --- sale results --------------------------------------------------------
+  sale_lots:
+    "Every lot of every foal, yearling, 2yo and horses-in-training sale held, one row per lot: sale_key, sale_name, company, " +
+    "region (EU/US/AUS/NZ), year, sale_type (foal, yearling, 2yo, hit), lot, horse, sire, sire_key, dam, dam_key, sex, foaling_year, " +
+    "vendor, buyer, status (sold, not sold, withdrawn, catalogued), after_sale, price, currency, price_gbp. " +
+    "sire_key and dam_key are the name in capitals with the country suffix and punctuation removed ('DUBAWI'). " +
+    "Indexed on (sire_key, sale_type, year), (dam_key), (sale_key, year) and (sale_type, region, year): filter on those. " +
+    "sales_history gives the summary figures; use this table for buyers, vendors and one sale's lots.",
 };
 
 /**
@@ -145,6 +157,8 @@ export const LARGE_TABLES = [
   // Four hundred thousand rows of parentage and eighty thousand crosses. Both
   // answer an indexed lookup instantly and neither survives a GROUP BY.
   "horse_parents", "nick_stats",
+  // Hundreds of thousands of lots. Indexed by sire, dam, sale and kind.
+  "sale_lots",
 ];
 
 /** Every table, each with its note where one is established. */
