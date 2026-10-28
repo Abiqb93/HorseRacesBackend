@@ -17538,9 +17538,10 @@ app.post("/api/arion/search", async (req, res) => {
   // year and country come from whichever page linked here. A name is not a
   // horse — Arion holds two Starspangledbanners — so they say which one is
   // meant; the whole list still comes back for the user to choose from.
-  const { kind, name, sire, dam, year, country } = req.body ?? {};
+  // sireToken is the sire chosen from a mating's list of sires, to go on to his dams.
+  const { kind, name, sire, dam, year, country, sireToken } = req.body ?? {};
   try {
-    return res.json(await client.search({ kind, name, sire, dam, year: Number(year) || null, country: String(country ?? "").slice(0, 8) }));
+    return res.json(await client.search({ kind, name, sire, dam, year: Number(year) || null, country: String(country ?? "").slice(0, 8), sireToken: sireToken ? String(sireToken).slice(0, 40) : null }));
   } catch (err) {
     return arionFail(res, err);
   }
