@@ -700,7 +700,7 @@ let pedigreeRelay = null;
 app.get("/api/hitsales/pedigree", async (req, res) => {
   const mod = await loadPedigreeRelay();
   const url = mod.pedigreeUrl(req.query.url);
-  if (!url) return res.status(400).json({ error: "Not a catalogue pedigree page: only Tattersalls' and Arqana's catalogue pages are relayed." });
+  if (!url) return res.status(400).json({ error: mod.REFUSED });
   pedigreeRelay ??= mod.createRelay();
   try {
     const page = await pedigreeRelay(url);
