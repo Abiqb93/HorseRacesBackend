@@ -8743,6 +8743,114 @@ app.get("/api/breeding/juvenile-sires", async (req, res) => {
  * the mare asked about, `secondDam` her dam, `thirdDam` her granddam. So
  * `siblings` is the second dam's produce and `thirdDamProduce` the third's.
  */
+const loadAges = () => import("./breeding/ages.mjs");
+const loadUplift = () => import("./breeding/uplift.mjs");
+
+/**
+ * Stakes rates by the sire's age at the cover and the mare's age at foaling,
+ * over every runner in the database whose dam raced here (and whose sire did,
+ * for his age). One grouped read of the whole table, so the first caller
+ * starts it and is told it is being measured, as the juvenile list is; the
+ * answer is kept for six hours. With `sire`, his runners alone, read on the
+ * request. Asked for by the Prudenzia write-up (23 October 2026: "What is the
+ * optimal combination of sire age x mare age").
+ */
+const AGE_SINCE = "2008-01-01";
+const AGE_TTL_MS = 6 * 60 * 60 * 1000;
+let ageGridCache = null;
+let ageGridInFlight = null;
+const ageGridSireCache = new Map();
+
+function measureAgeGrid() {
+  if (ageGridInFlight) return ageGridInFlight;
+  ageGridInFlight = (async () => {
+    const { ageGridSql, ageGridArgs, ageGrid } = await loadAges();
+    const rows = await runQuery(ageGridSql({ hint: "/*+ MAX_EXECUTION_TIME(170000) */" }), ageGridArgs({ since: AGE_SINCE }));
+    const body = {
+      ...ageGrid(rows),
+      since: AGE_SINCE,
+      basis:
+        "Every runner on the flat in our database foaled since 2008. The grid holds those whose dam raced here, so her age at foaling is known, " +
+        "with the sire's age at the cover where he raced here too, else under unknownSire; population counts every runner, ages known or not. " +
+        "stakesIndex is a cell's stakes winners against the sum of its runners' sires' own stakes rates (100 = par). " +
+        "Stakes is Listed and above; rates are per runner, not per foal.",
+      generatedAt: new Date().toISOString(),
+    };
+    ageGridCache = { at: Date.now(), body };
+    return body;
+  })()
+    .catch((err) => {
+      console.error("age grid failed:", err.message);
+      return null;
+    })
+    .finally(() => {
+      ageGridInFlight = null;
+    });
+  return ageGridInFlight;
+}
+
+app.get("/api/breeding/age-effects", async (req, res) => {
+  const { studBookName } = await loadMating();
+  const sire = req.query.sire ? studBookName(req.query.sire) : null;
+  try {
+    if (sire) {
+      const hit = ageGridSireCache.get(sire);
+      if (hit && Date.now() - hit.at < AGE_TTL_MS) return res.json({ ...hit.body, cached: true });
+      const { ageGridSql, ageGridArgs, ageGrid } = await loadAges();
+      const rows = await runQuery(ageGridSql({ sire, hint: "/*+ MAX_EXECUTION_TIME(60000) */" }), ageGridArgs({ since: AGE_SINCE, sire }));
+      const body = { sire, ...ageGrid(rows), since: AGE_SINCE, generatedAt: new Date().toISOString() };
+      ageGridSireCache.set(sire, { at: Date.now(), body });
+      return res.json(body);
+    }
+    if (ageGridCache && Date.now() - ageGridCache.at < AGE_TTL_MS) return res.json({ ...ageGridCache.body, cached: true });
+    const job = measureAgeGrid();
+    const first = await Promise.race([job, new Promise((r) => setTimeout(() => r("waiting"), 20000))]);
+    if (first && first !== "waiting") return res.json(first);
+    if (first === null) return res.status(500).json({ error: "the grid could not be read" });
+    res.status(202).json({ status: "measuring", retryAfter: 30 });
+  } catch (err) {
+    if (isQueryTimeout(err)) return res.status(504).json({ error: "timed out", sire });
+    console.error("age effects failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/**
+ * A stallion's uplift: his runners against the same mares' other foals by
+ * other sires, and with `damsire` the same over that sire's daughters, which
+ * is the cross's uplift. Kept for six hours per question.
+ */
+const upliftCache = new Map();
+app.get("/api/breeding/sire-uplift", async (req, res) => {
+  const { studBookName } = await loadMating();
+  const sire = studBookName(req.query.sire);
+  const damsire = req.query.damsire ? studBookName(req.query.damsire) : null;
+  if (!sire) return res.status(400).json({ error: "sire is required" });
+  const key = `${sire}|${damsire ?? ""}`;
+  const hit = upliftCache.get(key);
+  if (hit && Date.now() - hit.at < AGE_TTL_MS) return res.json({ ...hit.body, cached: true });
+  try {
+    const { upliftSql, upliftArgs, upliftSummary } = await loadUplift();
+    const rows = await runQuery(upliftSql({ damsire, hint: "/*+ MAX_EXECUTION_TIME(90000) */" }), upliftArgs({ since: AGE_SINCE, sire, damsire }));
+    const body = {
+      asked: { sire, damsire },
+      ...upliftSummary(rows),
+      since: AGE_SINCE,
+      basis:
+        "Each of his rated runners in our database against the mean best rating of the dam's other foals by other sires that raced here; " +
+        "uplift is the mean of those differences. With a damsire, his runners out of that sire's daughters only.",
+      generatedAt: new Date().toISOString(),
+    };
+    if (upliftCache.size > 2000) upliftCache.clear();
+    upliftCache.set(key, { at: Date.now(), body });
+    res.json(body);
+  } catch (err) {
+    if (isQueryTimeout(err)) return res.status(504).json({ error: "timed out", sire, damsire });
+    console.error("sire uplift failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
 app.get("/api/breeding/family", async (req, res) => {
   const { studBookName, pickOwnRow } = await loadMating();
   const dam = studBookName(req.query.dam);
