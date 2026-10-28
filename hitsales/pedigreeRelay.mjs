@@ -10,9 +10,10 @@
  *
  * This fetches one catalogue page from the sale house and hands it on
  * `inline`, with the site's CORS (server.jsx). It relays nothing else. The
- * address must be https, on Tattersalls' or Arqana's own host, in the folder
- * each keeps its catalogue pages in, and a .pdf (or Tattersalls' .jpg of the
- * same page); no query, no fragment, no port, no credentials. A redirect is
+ * address must be https, on a sale house's own host (Tattersalls, Arqana,
+ * Keeneland, Fasig-Tipton), in the folder each keeps its catalogue pages in,
+ * and a .pdf (or Tattersalls' .jpg of the same page); no query, no fragment,
+ * no port, no credentials. A redirect is
  * refused rather than followed, so the relay can only ever have fetched the
  * address it checked.
  *
@@ -26,6 +27,12 @@ export const SOURCES = [
   { house: "tattersalls", host: "www.tattersalls.com", path: /^\/cat\/[a-z0-9_-]+\/\d{4}\/[a-z0-9_-]+\.(pdf|jpg)$/i },
   // https://www.arqana.com/upload/pedigrees/vente414/fra/6.pdf
   { house: "arqana", host: "www.arqana.com", path: /^\/upload\/pedigrees\/[a-z0-9_-]+\/(?:[a-z]{2,3}\/)?[a-z0-9_-]+\.pdf$/i },
+  // the breeding-stock and US sales' pages, paged through and packed as the HIT sales' are (28 October 2026:
+  // "Ensure that all the functionality we build for the tattersalls HIT sale is added to these sales"):
+  // https://secure.keeneland.com/sales/k326/pdfs/1.pdf
+  { house: "keeneland", host: "secure.keeneland.com", path: /^\/sales\/[a-z0-9_-]+\/pdfs\/[a-z0-9_-]+\.pdf$/i },
+  // https://www.fasigtipton.com/catalogs/2026/1102/1.pdf
+  { house: "fasig-tipton", host: "www.fasigtipton.com", path: /^\/catalogs\/\d{4}\/[a-z0-9_-]+\/[a-z0-9_-]+\.pdf$/i },
 ];
 
 const TYPES = { pdf: "application/pdf", jpg: "image/jpeg" };

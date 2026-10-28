@@ -12,6 +12,24 @@ test("the catalogue pages of Tattersalls and Arqana are relayed, as they are add
   assert.equal(pedigreeUrl("https://www.arqana.com/upload/pedigrees/vente414/6.pdf")?.pathname, "/upload/pedigrees/vente414/6.pdf");
 });
 
+test("and the breeding-stock and US sales' pages: Keeneland's and Fasig-Tipton's, as they are addressed", () => {
+  for (const ok of [
+    "https://secure.keeneland.com/sales/k326/pdfs/1.pdf",
+    "https://secure.keeneland.com/sales/k626/pdfs/4130.pdf",
+    "https://www.fasigtipton.com/catalogs/2026/1102/211.pdf",
+  ]) assert.equal(pedigreeUrl(ok)?.href, ok);
+  for (const bad of [
+    "https://keeneland.com/sales/k326/pdfs/1.pdf",
+    "https://secure.keeneland.com/sales/k326/1.pdf",
+    "https://secure.keeneland.com/sales/k326/pdfs/1.jpg",
+    "https://secure.keeneland.com/sales/k326/pdfs/../../x/1.pdf",
+    "https://fasigtipton.com/catalogs/2026/1102/1.pdf",
+    "https://www.fasigtipton.com/catalogs/26/1102/1.pdf",
+    "https://www.fasigtipton.com/showcase/K26D/1.pdf",
+    "https://www.fasigtipton.com/catalogs/2026/1102/1.pdf?download=1",
+  ]) assert.equal(pedigreeUrl(bad), null, bad);
+});
+
 test("nothing else is: another host, another folder, another kind of file, or anything but a plain https address", () => {
   for (const bad of [
     "http://www.tattersalls.com/cat/autumnhit/2026/379.pdf",
