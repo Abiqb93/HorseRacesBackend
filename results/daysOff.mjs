@@ -17,84 +17,23 @@
  * minutes on 26 October) does not hold the page.
  */
 
-export const TABLE = "APIData_Table2";
+import { TABLE, findIndex, ensureIndex, nameKey } from "./indexes.mjs";
+
 export const INDEX_NAME = "idx_days_off";
 export const INDEX_COLUMNS = ["horseName", "horseCode", "meetingDate"];
 
 /** How long a response waits for days off before going out without them. */
 export const DAYS_OFF_WAIT_MS = 4000;
 
-/** How long the index build waits for the table's lock before trying later. */
-export const LOCK_WAIT_SECONDS = 2;
-
 /** Days off are read for this many horses a query. */
 export const CHUNK = 250;
 
-/**
- * The name of an index whose leading columns are horseName, horseCode,
- * meetingDate in full (no prefix: a prefix cannot answer from the index), or
- * null. Any name will do, so an index someone added by hand counts.
- */
-export async function findDaysOffIndex(runQuery) {
-  const rows = await runQuery(
-    `SELECT INDEX_NAME AS name, SEQ_IN_INDEX AS seq, COLUMN_NAME AS col, SUB_PART AS part
-       FROM INFORMATION_SCHEMA.STATISTICS
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
-      ORDER BY INDEX_NAME, SEQ_IN_INDEX`,
-    [TABLE],
-  );
-  const byIndex = new Map();
-  for (const r of rows ?? []) {
-    const list = byIndex.get(r.name) ?? [];
-    list[Number(r.seq) - 1] = r.part == null ? String(r.col).toLowerCase() : null;
-    byIndex.set(r.name, list);
-  }
-  const want = INDEX_COLUMNS.map((c) => c.toLowerCase());
-  for (const [name, cols] of byIndex) {
-    if (want.every((c, i) => cols[i] === c)) return name;
-  }
-  return null;
-}
+/** The index the lookup needs, by whatever name it has, or null. */
+export const findDaysOffIndex = (runQuery) => findIndex(runQuery, INDEX_COLUMNS);
 
-/**
- * Make sure the index is there, adding it where it is missing.
- *
- * Added online (INPLACE, LOCK=NONE), so the scraper's inserts carry on while
- * it builds. The build still needs the table's metadata lock for a moment at
- * each end, and while it waits for one every later read of the table queues
- * behind it, so it gives up after LOCK_WAIT_SECONDS rather than hold the site
- * up behind a long read; the caller tries again later.
- *
- * `withConnection(fn)` hands fn a query function on one connection of its
- * own, so the lock wait set here touches no other query.
- */
-export async function ensureDaysOffIndex({ runQuery, withConnection, log = console }) {
-  const found = await findDaysOffIndex(runQuery);
-  if (found) return { index: found, added: false };
-
-  log.log(`[days off] adding ${INDEX_NAME} (${INDEX_COLUMNS.join(", ")}) to ${TABLE}`);
-  const started = Date.now();
-  try {
-    await withConnection(async (query) => {
-      await query(`SET SESSION lock_wait_timeout = ${LOCK_WAIT_SECONDS}`, []);
-      await query(
-        `ALTER TABLE ${TABLE} ADD INDEX ${INDEX_NAME} (${INDEX_COLUMNS.join(", ")}), ALGORITHM=INPLACE, LOCK=NONE`,
-        [],
-      );
-    });
-  } catch (err) {
-    // A build an earlier start began can finish first.
-    if (!/Duplicate key name/i.test(err.message)) throw err;
-  }
-  const index = await findDaysOffIndex(runQuery);
-  if (!index) throw new Error(`${INDEX_NAME} not found after it was added`);
-  log.log(`[days off] ${index} ready in ${Math.round((Date.now() - started) / 1000)}s`);
-  return { index, added: true };
-}
-
-/** A name as the table's collation compares it: no case, no accents. */
-const nameKey = (name) =>
-  String(name).normalize("NFD").replace(/\p{M}/gu, "").trim().toLowerCase();
+/** Make sure the index is there, adding it where it is missing (see indexes.mjs). */
+export const ensureDaysOffIndex = ({ runQuery, withConnection, log = console }) =>
+  ensureIndex({ runQuery, withConnection, name: INDEX_NAME, columns: INDEX_COLUMNS, log });
 
 /** The calendar day as the driver read it (in the server's own time zone). */
 const dayOf = (v) => {
