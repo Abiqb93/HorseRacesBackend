@@ -3731,20 +3731,18 @@ const getApiDataPaging = (req) => {
 };
 
 /**
- * Indexes on APIData_Table2 that let two reads answer from the index alone
- * (results/indexes.mjs): each runner's days off on a single day's results
- * (results/daysOff.mjs), and the names of a tracked sire's or dam's horses
- * (results/offspring.mjs). Each is added a few seconds after start where
- * missing, one at a time, and tried again every ten minutes while the table is
- * too busy to take it. Until one is there, days off are left off and the names
- * are read the slow way, a few at a time.
+ * The index on APIData_Table2 that lets each runner's days off on a single
+ * day's results answer from the index alone (results/indexes.mjs,
+ * results/daysOff.mjs). It is added a few seconds after start where missing,
+ * and tried again every ten minutes while the table is too busy to take it.
+ * Until it is there, days off are left off.
  */
 const loadDaysOff = () => import("./results/daysOff.mjs");
 const loadIndexes = () => import("./results/indexes.mjs");
 const loadOffspring = () => import("./results/offspring.mjs");
 
 const indexState = () => ({ name: null, state: "checking", error: null, attempts: 0, since: new Date().toISOString() });
-const apiIndexes = { daysOff: indexState(), sire: indexState(), dam: indexState() };
+const apiIndexes = { daysOff: indexState() };
 const daysOffIndex = apiIndexes.daysOff;
 
 /** fn gets a query function on one connection of its own, closed after. */
@@ -3763,11 +3761,9 @@ const API_INDEX_RETRY_MS = 10 * 60 * 1000;
 const API_INDEX_ATTEMPTS = 36;
 
 const ensureApiIndexes = async () => {
-  const [{ ensureIndex }, { INDEX_NAME, INDEX_COLUMNS }, { KINDS }] = await Promise.all([loadIndexes(), loadDaysOff(), loadOffspring()]);
+  const [{ ensureIndex }, { INDEX_NAME, INDEX_COLUMNS }] = await Promise.all([loadIndexes(), loadDaysOff()]);
   const wanted = {
     daysOff: { name: INDEX_NAME, columns: INDEX_COLUMNS },
-    sire: KINDS.sire.index,
-    dam: KINDS.dam.index,
   };
   let again = false;
   for (const [key, { name, columns }] of Object.entries(wanted)) {
@@ -3795,16 +3791,21 @@ const attachDaysOff = async (rows) => {
 };
 
 app.get('/api/APIData_Table2/days-off-status', (req, res) => res.json(daysOffIndex));
-app.get('/api/APIData_Table2/index-status', (req, res) => res.json(apiIndexes));
 
+// Each sire's and dam's horses, read a month at a time into memory
+// (results/offspring.mjs), starting twenty seconds after start.
 let offspring = null;
 const getOffspring = async () => {
   if (!offspring) {
     const { createOffspring } = await loadOffspring();
-    offspring = createOffspring({ runQuery, indexFor: (kind) => apiIndexes[kind]?.name ?? null });
+    offspring = createOffspring({ runQuery });
   }
   return offspring;
 };
+setTimeout(() => getOffspring().then((o) => o.start(null)).catch(() => {}), 20000);
+
+app.get('/api/APIData_Table2/index-status', async (req, res) =>
+  res.json({ ...apiIndexes, offspring: offspring ? offspring.status() : { state: "not started" } }));
 
 // The horses each named sire and dam has had run, names only:
 // /api/APIData_Table2/offspring?sire=Frankel&sire=Dubawi&dam=Kind
