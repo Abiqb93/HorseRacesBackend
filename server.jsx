@@ -3731,15 +3731,21 @@ const getApiDataPaging = (req) => {
 };
 
 /**
- * Each runner's days since its previous run held in APIData_Table2, as
- * `daysOff` (null on a first run), for a single day's runners. The lookup
- * needs an index on (horseName, horseCode, meetingDate); it is added a few
- * seconds after start where missing and, until it is there, rows go out
- * without days off rather than wait minutes for them. See results/daysOff.mjs.
+ * Indexes on APIData_Table2 that let two reads answer from the index alone
+ * (results/indexes.mjs): each runner's days off on a single day's results
+ * (results/daysOff.mjs), and the names of a tracked sire's or dam's horses
+ * (results/offspring.mjs). Each is added a few seconds after start where
+ * missing, one at a time, and tried again every ten minutes while the table is
+ * too busy to take it. Until one is there, days off are left off and the names
+ * are read the slow way, a few at a time.
  */
 const loadDaysOff = () => import("./results/daysOff.mjs");
+const loadIndexes = () => import("./results/indexes.mjs");
+const loadOffspring = () => import("./results/offspring.mjs");
 
-const daysOffIndex = { name: null, state: "checking", error: null, attempts: 0, since: new Date().toISOString() };
+const indexState = () => ({ name: null, state: "checking", error: null, attempts: 0, since: new Date().toISOString() });
+const apiIndexes = { daysOff: indexState(), sire: indexState(), dam: indexState() };
+const daysOffIndex = apiIndexes.daysOff;
 
 /** fn gets a query function on one connection of its own, closed after. */
 const withOwnConnection = async (fn) => {
@@ -3753,24 +3759,35 @@ const withOwnConnection = async (fn) => {
   }
 };
 
-const DAYS_OFF_INDEX_RETRY_MS = 10 * 60 * 1000;
-const DAYS_OFF_INDEX_ATTEMPTS = 6;
+const API_INDEX_RETRY_MS = 10 * 60 * 1000;
+const API_INDEX_ATTEMPTS = 36;
 
-const ensureDaysOffIndex = async () => {
-  daysOffIndex.attempts += 1;
-  daysOffIndex.state = "building";
-  try {
-    const { ensureDaysOffIndex: ensure } = await loadDaysOff();
-    const { index } = await ensure({ runQuery, withConnection: withOwnConnection });
-    Object.assign(daysOffIndex, { name: index, state: "ready", error: null, since: new Date().toISOString() });
-  } catch (err) {
-    Object.assign(daysOffIndex, { state: "failed", error: err.message, since: new Date().toISOString() });
-    console.warn(`[days off] index not ready (attempt ${daysOffIndex.attempts}): ${err.message}`);
-    if (daysOffIndex.attempts < DAYS_OFF_INDEX_ATTEMPTS) setTimeout(ensureDaysOffIndex, DAYS_OFF_INDEX_RETRY_MS);
+const ensureApiIndexes = async () => {
+  const [{ ensureIndex }, { INDEX_NAME, INDEX_COLUMNS }, { KINDS }] = await Promise.all([loadIndexes(), loadDaysOff(), loadOffspring()]);
+  const wanted = {
+    daysOff: { name: INDEX_NAME, columns: INDEX_COLUMNS },
+    sire: KINDS.sire.index,
+    dam: KINDS.dam.index,
+  };
+  let again = false;
+  for (const [key, { name, columns }] of Object.entries(wanted)) {
+    const st = apiIndexes[key];
+    if (st.state === "ready" || st.attempts >= API_INDEX_ATTEMPTS) continue;
+    st.attempts += 1;
+    st.state = "building";
+    try {
+      const { index } = await ensureIndex({ runQuery, withConnection: withOwnConnection, name, columns });
+      Object.assign(st, { name: index, state: "ready", error: null, since: new Date().toISOString() });
+    } catch (err) {
+      Object.assign(st, { state: "failed", error: err.message, since: new Date().toISOString() });
+      console.warn(`[indexes] ${name} not ready (attempt ${st.attempts}): ${err.message}`);
+      if (st.attempts < API_INDEX_ATTEMPTS) again = true;
+    }
   }
+  if (again) setTimeout(ensureApiIndexes, API_INDEX_RETRY_MS);
 };
 
-setTimeout(ensureDaysOffIndex, 5000);
+setTimeout(() => ensureApiIndexes().catch((err) => console.warn("[indexes] not checked:", err.message)), 5000);
 
 const attachDaysOff = async (rows) => {
   const { attachDaysOff: attach } = await loadDaysOff();
@@ -3778,6 +3795,36 @@ const attachDaysOff = async (rows) => {
 };
 
 app.get('/api/APIData_Table2/days-off-status', (req, res) => res.json(daysOffIndex));
+app.get('/api/APIData_Table2/index-status', (req, res) => res.json(apiIndexes));
+
+let offspring = null;
+const getOffspring = async () => {
+  if (!offspring) {
+    const { createOffspring } = await loadOffspring();
+    offspring = createOffspring({ runQuery, indexFor: (kind) => apiIndexes[kind]?.name ?? null });
+  }
+  return offspring;
+};
+
+// The horses each named sire and dam has had run, names only:
+// /api/APIData_Table2/offspring?sire=Frankel&sire=Dubawi&dam=Kind
+// gives { sires: { Frankel: [...], Dubawi: [...] }, dams: { Kind: [...] } }.
+app.get('/api/APIData_Table2/offspring', async (req, res) => {
+  const list = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]).map(String);
+  const sires = list(req.query.sire);
+  const dams = list(req.query.dam);
+  if (!sires.length && !dams.length) {
+    return res.status(400).json({ error: "Name at least one sire or dam: ?sire=...&dam=..." });
+  }
+  try {
+    const o = await getOffspring();
+    const [s, d] = await Promise.all([o.lookup("sire", sires), o.lookup("dam", dams)]);
+    return res.json({ sires: s, dams: d });
+  } catch (err) {
+    console.error("[offspring]", err.message);
+    return res.status(503).json({ error: "Could not read the horses just now; try again.", details: err.message });
+  }
+});
 
 const runApiDataTable2Query = ({
   res,
