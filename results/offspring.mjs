@@ -10,99 +10,123 @@
  * open home page, and the pool's ten connections went with them: sign-in
  * took 9 s and a one-row lookup 35 s while they ran.
  *
- * Here the read is the names alone, on an index of (sireName, horseName) or
- * (damName, horseName) once it is there, each name's answer kept for twelve
- * hours, and at most DB_SLOTS of these reads run at once across every request,
- * so however many pages ask, most of the pool stays free for everything else.
+ * Read by sire, the answer is slow however it is asked: a sire's runners are
+ * scattered across a table written a day at a time, and the same morning
+ * Frankel and Dubawi's names alone ran into a two-minute cap. Read by date it
+ * is cheap, because a month's rows sit together. So the whole list of
+ * (sire, dam, horse) is read here a month at a time, through the date index,
+ * on one connection with a pause between months, and kept in memory; the
+ * recent months are read again every few hours. Every answer after that is a
+ * lookup in memory.
  */
 
 import { TABLE, nameKey } from "./indexes.mjs";
 
-export const KINDS = {
-  sire: { column: "sireName", index: { name: "idx_sire_horse", columns: ["sireName", "horseName"] } },
-  dam: { column: "damName", index: { name: "idx_dam_horse", columns: ["damName", "horseName"] } },
-};
+export const KINDS = { sire: "sireName", dam: "damName" };
 
-export const CACHE_MS = 12 * 60 * 60 * 1000;
-export const DB_SLOTS = 2;
-export const BATCH = 100;
+/** How often the latest two months are read again. */
+export const REFRESH_MS = 6 * 60 * 60 * 1000;
+/** A pause between months, so other reads are not queued behind the walk. */
+export const PAUSE_MS = 200;
 /** Names asked for in one request, per kind. */
 export const MAX_NAMES = 500;
 
-/** Up to `slots` tasks at a time; the rest wait their turn. */
-export const createGate = (slots) => {
-  let active = 0;
-  const waiting = [];
-  const next = () => {
-    if (active >= slots || !waiting.length) return;
-    active += 1;
-    const { task, resolve, reject } = waiting.shift();
-    task().then(resolve, reject).finally(() => { active -= 1; next(); });
+const ymd = (d) => d.toISOString().slice(0, 10);
+const monthStart = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+const addMonths = (d, n) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1));
+const asDate = (v) => (v instanceof Date ? v : new Date(String(v).replace(" ", "T") + (String(v).length <= 10 ? "T00:00:00Z" : "Z")));
+
+export function createOffspring({ runQuery, now = () => Date.now(), pauseMs = PAUSE_MS, log = console }) {
+  const bySire = new Map(); // nameKey(sire) -> Set(horse names)
+  const byDam = new Map();
+  const status = { state: "not built", horses: 0, sires: 0, dams: 0, months: 0, builtAt: null, tookMs: null, error: null };
+  let builtAt = null;
+  let building = null;
+
+  const add = (map, parent, horse) => {
+    if (!parent || !horse) return;
+    const key = nameKey(parent);
+    let set = map.get(key);
+    if (!set) map.set(key, (set = new Set()));
+    set.add(horse);
   };
-  return (task) => new Promise((resolve, reject) => { waiting.push({ task, resolve, reject }); next(); });
-};
 
-/**
- * `indexFor(kind)` gives the name of the kind's index when it is there, or
- * null; the read is forced onto it when there is one.
- */
-export function createOffspring({ runQuery, indexFor = () => null, now = () => Date.now(), slots = DB_SLOTS }) {
-  const gate = createGate(slots);
-  const cache = new Map(); // "sire:frankel" -> { at, horses }
-  const pending = new Map(); // "sire:frankel" -> Promise<horses>
-
-  const read = (kind, names) => gate(async () => {
-    const { column } = KINDS[kind];
-    const index = indexFor(kind);
-    const rows = await runQuery(
-      `SELECT /*+ MAX_EXECUTION_TIME(120000) */ DISTINCT ${column} AS parent, horseName
-         FROM ${TABLE}${index ? ` FORCE INDEX (\`${index}\`)` : ""}
-        WHERE ${column} IN (${names.map(() => "?").join(",")})`,
-      names,
-    );
-    const found = new Map(names.map((n) => [nameKey(n), new Set()]));
-    for (const r of rows) {
-      if (r.horseName) found.get(nameKey(r.parent))?.add(r.horseName);
+  /** One slice of dates; a slice that fails is cut in two and asked again, down to a week. */
+  const readSlice = async (from, to) => {
+    try {
+      return await runQuery(
+        `SELECT /*+ MAX_EXECUTION_TIME(300000) */ DISTINCT sireName, damName, horseName
+           FROM ${TABLE}
+          WHERE meetingDate >= ? AND meetingDate < ?`,
+        [ymd(from), ymd(to)],
+      );
+    } catch (err) {
+      const span = to - from;
+      if (span <= 7 * 86_400_000) throw err;
+      const mid = new Date(from.getTime() + Math.floor(span / 2 / 86_400_000) * 86_400_000);
+      return [...(await readSlice(from, mid)), ...(await readSlice(mid, to))];
     }
-    return found;
-  });
+  };
+
+  const walk = async (from) => {
+    const started = now();
+    const [range] = await runQuery(`SELECT MIN(meetingDate) AS lo, MAX(meetingDate) AS hi FROM ${TABLE}`, []);
+    if (!range?.lo) throw new Error(`${TABLE} holds no dates`);
+    const lo = monthStart(asDate(range.lo));
+    let month = from && from > lo ? from : lo;
+    const end = addMonths(monthStart(asDate(range.hi)), 1);
+    let months = 0;
+    for (; month < end; month = addMonths(month, 1)) {
+      const rows = await readSlice(month, addMonths(month, 1));
+      for (const r of rows) {
+        add(bySire, r.sireName, r.horseName);
+        add(byDam, r.damName, r.horseName);
+      }
+      months += 1;
+      if (pauseMs) await new Promise((resolve) => setTimeout(resolve, pauseMs));
+    }
+    builtAt = now();
+    const horses = new Set();
+    for (const set of bySire.values()) for (const h of set) horses.add(h);
+    Object.assign(status, {
+      state: "ready", horses: horses.size, sires: bySire.size, dams: byDam.size, months,
+      builtAt: new Date(builtAt).toISOString(), tookMs: now() - started, error: null,
+    });
+    log.log(`[offspring] ${months} months read: ${bySire.size} sires, ${byDam.size} dams, ${horses.size} horses, ${status.tookMs}ms`);
+  };
+
+  /** Starts a walk unless one is running: the whole table, or from `from`. */
+  const start = (from) => {
+    if (!building) {
+      if (!builtAt) status.state = "building";
+      building = walk(from)
+        .catch((err) => {
+          status.error = err.message;
+          if (!builtAt) status.state = "failed";
+          log.warn(`[offspring] not read: ${err.message}`);
+          throw err;
+        })
+        .finally(() => { building = null; });
+      building.catch(() => {});
+    }
+    return building;
+  };
+
+  /** Resolves once the list is there; a stale one answers while its latest months are read again. */
+  const ready = async () => {
+    if (!builtAt) return start(null);
+    if (now() - builtAt > REFRESH_MS) start(addMonths(monthStart(new Date(now())), -1));
+  };
 
   /** { [name as asked]: [horse names] } for each of `names`. */
   const lookup = async (kind, names) => {
     if (!KINDS[kind]) throw new Error(`unknown kind ${kind}`);
-    const asked = [...new Set(names.map((n) => String(n).trim()).filter(Boolean))].slice(0, MAX_NAMES);
-    const t = now();
-    const missing = [];
-    for (const n of asked) {
-      const key = `${kind}:${nameKey(n)}`;
-      const hit = cache.get(key);
-      if ((hit && t - hit.at < CACHE_MS) || pending.has(key)) continue;
-      missing.push(n);
-    }
-    const byKey = new Map();
-    for (const n of missing) byKey.set(nameKey(n), n);
-    const unique = [...byKey.values()];
-    for (let i = 0; i < unique.length; i += BATCH) {
-      const batch = unique.slice(i, i + BATCH);
-      const done = read(kind, batch);
-      for (const n of batch) {
-        const key = `${kind}:${nameKey(n)}`;
-        const one = done.then((found) => {
-          const horses = [...(found.get(nameKey(n)) ?? [])].sort();
-          cache.set(key, { at: now(), horses });
-          return horses;
-        }).finally(() => pending.delete(key));
-        one.catch(() => {});
-        pending.set(key, one);
-      }
-    }
-    const out = {};
-    await Promise.all(asked.map(async (n) => {
-      const key = `${kind}:${nameKey(n)}`;
-      out[n] = pending.has(key) ? await pending.get(key) : cache.get(key).horses;
-    }));
-    return out;
+    const asked = [...new Set((names || []).map((n) => String(n).trim()).filter(Boolean))].slice(0, MAX_NAMES);
+    if (!asked.length) return {};
+    await ready();
+    const map = kind === "sire" ? bySire : byDam;
+    return Object.fromEntries(asked.map((n) => [n, [...(map.get(nameKey(n)) ?? [])].sort()]));
   };
 
-  return { lookup };
+  return { lookup, start, status: () => ({ ...status }) };
 }
