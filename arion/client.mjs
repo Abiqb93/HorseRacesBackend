@@ -855,25 +855,38 @@ export function createClient({
      * search that found it, not a control on a page that will be gone by the
      * time a report is asked for.
      */
-    search: ({ kind = "named", name = "", sire = "", dam = "", year = null, country = "" } = {}) =>
+    search: ({ kind = "named", name = "", sire = "", dam = "", year = null, country = "", sireToken = null } = {}) =>
       serial(async () => {
         tidy();
+        // A mating whose sire Arion could not settle comes back as a list of
+        // sires; the one the user chooses from it is sent back as
+        // `sireToken`, and the same search runs on to that sire's dams.
+        let sireIs = null;
+        let values = { kind, name, sire, dam };
+        if (sireToken) {
+          const was = picks.get(String(sireToken));
+          if (!was || was.stage !== "sire") throw new ArionError("That list of sires has expired; search again", { status: 410, code: "expired" });
+          sireIs = was.horse;
+          values = { ...was.values, dam: String(dam ?? "").trim() || was.values.dam };
+        }
         const browser = await loadBrowser();
-        const values = { kind, name, sire, dam };
-        const answer = await browser.searchHorses({ env, ...values });
+        const answer = await browser.searchHorses({ env, ...values, sireIs });
         const horses = answer.candidates;
         if (!horses || !horses.length) {
           return {
             candidates: [],
             found: false,
             stage: answer.stage,
+            sire: answer.sire ? answer.sire.label : null,
             reason: horses === null ? "no-dialog" : "none",
             text:
               horses === null
                 ? "Arion answered the search without its usual list of horses."
                 : answer.stage === "sire"
-                  ? `Arion holds no sire called ${sire}.`
-                  : "Arion holds no horse by that name.",
+                  ? `Arion holds no sire called ${values.sire}.`
+                  : answer.stage === "dam"
+                    ? `Arion lists no mare called ${values.dam} to put to ${answer.sire?.label ?? values.sire}.`
+                    : "Arion holds no horse by that name.",
           };
         }
         // If the page knew a year or a country, say which one it means; the
@@ -887,7 +900,14 @@ export function createClient({
         const narrowed =
           answer.stage === "sire"
             ? { one: null, among: horses }
-            : browser.pickCandidate(horses, { name: kind === "theoretical" ? dam : name, year, country });
+            : browser.pickCandidate(horses, { name: values.kind === "theoretical" ? values.dam : name, year, country });
+        // The sires of that name, each a token that runs the search on to its
+        // dams: the user can see which sire was settled on and take another.
+        const sireRow = (horse) => {
+          const t = token();
+          picks.set(t, { kind: "candidate", stage: "sire", values, horse, sire: null, at: now() });
+          return { token: t, label: horse.label, cells: horse.cells, chosen: Boolean(answer.sire) && horse.label === answer.sire.label };
+        };
         return {
           found: true,
           // Which list this is. "sire" means Arion is still asking which
@@ -895,10 +915,12 @@ export function createClient({
           // the sire is settled and these are the mares.
           stage: answer.stage,
           sire: answer.sire ? answer.sire.label : null,
+          sires: answer.stage === "dam" ? (answer.sires ?? []).map(sireRow) : [],
           best: narrowed.one ? narrowed.one.label : null,
           candidates: horses.map((horse) => {
+            if (answer.stage === "sire") return { ...sireRow(horse), best: false };
             const t = token();
-            picks.set(t, { kind: "candidate", values, horse, sire: answer.sire ?? null, at: now() });
+            picks.set(t, { kind: "candidate", stage: answer.stage, values, horse, sire: answer.sire ?? null, at: now() });
             return { token: t, label: horse.label, cells: horse.cells, best: narrowed.one === horse };
           }),
         };
@@ -925,6 +947,11 @@ export function createClient({
         if (!pick) throw new ArionError("That search has expired; search again", { status: 410, code: "expired" });
         if (pick.kind !== "candidate") {
           throw new ArionError("Arion has not confirmed which horse that is, so there is nothing to make; search again and pick one from its list", { status: 400, code: "input" });
+        }
+        // A sire from a mating's first list is not a mating: made as it was,
+        // it came back as a report on the sire alone, with no file.
+        if (pick.stage === "sire") {
+          throw new ArionError("That is the sire: choose him, then the dam, and the report is made for the mating", { status: 400, code: "stage" });
         }
         const r = reports.find((x) => x.id === reportId);
         if (!r) throw new ArionError("Unknown report", { status: 400, code: "input" });

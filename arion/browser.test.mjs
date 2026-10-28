@@ -30,6 +30,7 @@ import {
   idOf,
   isHorseRow,
   pickCandidate,
+  pickSire,
   pickChromium,
   sameReport,
   searchKey,
@@ -241,6 +242,32 @@ test("the Wathnan mare is told from the other Lady Vivians", () => {
   // the bare name leaves three of them, and does not guess
   assert.equal(pickCandidate(rows, { name: "Lady Vivian" }).one, null);
   assert.equal(pickCandidate(rows, { name: "Lady Vivian" }).among.length, 3);
+});
+
+test("a mating's sire is the one horse of that name Arion marks at stud", () => {
+  // the seven Blue Points a live search for Blue Point x Prudenzia listed
+  const rows = [
+    asCandidate(["Blue Point", "TUR", "2022", "Powerscourt", "Gianna", "R"], "a"),
+    asCandidate(["Blue Point", "KOR", "2021", "Old Fashioned", "Blue Geranium", "R"], "b"),
+    asCandidate(["Blue Point", "SDA", "2020", "Point of Entry", "Vacationing", "R"], "c"),
+    asCandidate(["Blue Point", "URU", "2016", "Teeth of the Dog", "Robaccia", "R"], "d"),
+    asCandidate(["Blue Point", "IRE", "2014", "Shamardal", "Scarlett Rose", "S"], "e"),
+    asCandidate(["Blue Point", "JPN", "1994", "Baillamont", "Ruwiyda", ""], "f"),
+    asCandidate(["Blue Point", "SAF", "1994", "Crown Collection", "Northern Rose", ""], "g"),
+  ];
+  const got = pickSire(rows, { name: "Blue Point" });
+  assert.equal(got.one?.label, "Blue Point (IRE) 2014");
+  assert.equal(got.among.length, 7, "the others stay on offer");
+  // as any horse, the name alone would have asked
+  assert.equal(pickCandidate(rows, { name: "Blue Point" }).one, null);
+
+  // two at stud is still the user's choice, and so is a name Arion does not hold
+  const two = [...rows, asCandidate(["Blue Point", "AUS", "2010", "Danehill Dancer", "Point Taken", "S"], "h")];
+  assert.equal(pickSire(two, { name: "Blue Point" }).one, null);
+  assert.equal(pickSire(two, { name: "Blue Point" }).among.length, 8);
+  assert.equal(pickSire(rows, { name: "Blue Pointer" }).one, null);
+  // a single horse of the name is taken as before, at stud or not
+  assert.equal(pickSire(rows.slice(0, 1), { name: "Blue Point" }).one?.country, "TUR");
 });
 
 /* ------------------------------------------------------------------------ */

@@ -599,6 +599,44 @@ test("a mating is a dialog in two steps: the sire first, then the mares", async 
     "the file the user keeps and sends on names both parents, not just the mare");
 });
 
+test("a sire chosen from Arion's list of them runs the search on to his dams", async () => {
+  // Arion could not settle the sire, so it listed them; a report made from
+  // that list came back as a report on the sire alone, with no file.
+  const browser = fakeBrowser();
+  browser.mod.searchHorses = async (args) => {
+    browser.calls.push({ searchHorses: args });
+    return args.sireIs ? { stage: "dam", sire: args.sireIs, sires: LIVE_HORSES, candidates: LIVE_DAMS } : { stage: "sire", sire: null, candidates: LIVE_HORSES };
+  };
+  const c = createClient({ fetch: fakeArion().fetch, env: ENV, loadBrowser: browser.load });
+  const std = c.status().reports.find((r) => r.label === "Standard pedigree");
+
+  const sires = await c.search({ kind: "theoretical", sire: "Starspangledbanner", dam: "Lady Vivian", year: 2022, country: "IRE" });
+  assert.equal(sires.stage, "sire");
+  await assert.rejects(c.report({ token: sires.candidates[1].token, reportId: std.id }), (e) => e.code === "stage" && e.status === 400,
+    "a sire on his own is not a mating, and nothing is made");
+  assert.equal(browser.calls.filter((x) => x.makeReport).length, 0);
+
+  const dams = await c.search({ sireToken: sires.candidates[1].token, year: 2022, country: "IRE" });
+  const asked = browser.calls.filter((x) => x.searchHorses).at(-1).searchHorses;
+  assert.equal(asked.kind, "theoretical");
+  assert.equal(asked.sire, "Starspangledbanner");
+  assert.equal(asked.dam, "Lady Vivian", "the dam asked for the first time is kept");
+  assert.equal(asked.sireIs.label, "Starspangledbanner (AUS) 2006");
+  assert.equal(dams.stage, "dam");
+  assert.equal(dams.sire, "Starspangledbanner (AUS) 2006");
+  assert.equal(dams.best, "Lady Vivian (IRE) 2022");
+  assert.deepEqual(dams.sires.map((x) => x.chosen), [false, true], "the sires of that name come back, the chosen one marked");
+
+  const made = await c.report({ token: dams.candidates[0].token, reportId: std.id });
+  assert.equal(made.horse, "Starspangledbanner (AUS) 2006 × Lady Vivian (IRE) 2022");
+  assert.equal(browser.calls.find((x) => x.makeReport).makeReport.sire.country, "AUS");
+
+  // another sire of the name, from the dams' list, goes back through the same search
+  const other = await c.search({ sireToken: dams.sires[0].token });
+  assert.equal(other.sire, "Starspangledbanner (SAF) 2008");
+  await assert.rejects(c.search({ sireToken: "nope" }), (e) => e.status === 410 && e.code === "expired");
+});
+
 test("a list that did not reach the end of Arion's pager says so", async () => {
   // Two runs minutes apart once came back with 426 rows and 50, the second a
   // strict subset of the first, and nothing in either said which was whole.

@@ -1009,7 +1009,9 @@ export const sameHorse = (a, b) => Boolean(a) && Boolean(b) && a.name === b.name
 export async function matingDialog(page, { sire = "", dam = "", sireIs = null } = {}) {
   const sires = (await runSearch(page, { kind: "theoretical", sire, dam })) ?? [];
   if (!sires.length) return { stage: "sire", candidates: [] };
-  const chosen = sireIs ? { one: sires.find((h) => sameHorse(h, sireIs)) ?? null, among: sires } : pickCandidate(sires, { name: sire });
+  const byName = pickSire(sires, { name: sire });
+  // `sireIs` is the sire the user chose from that list on an earlier search.
+  const chosen = sireIs ? { one: sires.find((h) => sameHorse(h, sireIs)) ?? null, among: byName.among } : byName;
   // Arion's own list could not be narrowed to one sire, so the user picks.
   if (!chosen.one) return { stage: "sire", candidates: chosen.among };
   await page.click(`#${chosen.one.link}`, { timeout: 20000 });
@@ -1017,7 +1019,21 @@ export async function matingDialog(page, { sire = "", dam = "", sireIs = null } 
   // are still there to be read. A fixed pause read them on the live site and
   // passed a list of sires off as the mares — Starspangledbanner (AUS) 2006,
   // Star Spangled Day, … — with Lady Vivian nowhere in it.
-  return { stage: "dam", sire: chosen.one, candidates: await refilled(page, sires) };
+  return { stage: "dam", sire: chosen.one, sires: chosen.among, candidates: await refilled(page, sires) };
+}
+
+/**
+ * The sire of a mating, from Arion's first list: by name, as any horse, and
+ * when several share the name, the one Arion marks at stud ("S" in its last
+ * column). Arion holds seven horses called Blue Point and one of them is a
+ * sire; asking the user to choose among the other six is what left a report
+ * made for Blue Point alone. Two at stud, or none, is still the user's call.
+ */
+export function pickSire(rows, { name = "" } = {}) {
+  const byName = pickCandidate(rows, { name });
+  if (byName.one || byName.matched === false) return byName;
+  const atStud = byName.among.filter((h) => String(h.sex ?? "").toUpperCase() === "S");
+  return atStud.length === 1 ? { one: atStud[0], among: byName.among } : byName;
 }
 
 /** Does the dialog still list just the horses it listed before? An empty one has not been refilled yet. */
