@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { pedigreeUrl, inlineHeaders, createRelay } from "./pedigreeRelay.mjs";
+import { pedigreeUrl, inlineHeaders, createRelay, REFUSED } from "./pedigreeRelay.mjs";
 
 const TATTS = "https://www.tattersalls.com/cat/autumnhit/2026/379.pdf";
 const ARQANA = "https://www.arqana.com/upload/pedigrees/vente414/fra/6.pdf";
@@ -28,6 +28,10 @@ test("and the breeding-stock and US sales' pages: Keeneland's and Fasig-Tipton's
     "https://www.fasigtipton.com/showcase/K26D/1.pdf",
     "https://www.fasigtipton.com/catalogs/2026/1102/1.pdf?download=1",
   ]) assert.equal(pedigreeUrl(bad), null, bad);
+});
+
+test("an address refused is told which houses' pages are relayed", () => {
+  assert.equal(REFUSED, "Not a catalogue pedigree page: only the catalogue pages of Tattersalls, Arqana, Keeneland and Fasig-Tipton are relayed.");
 });
 
 test("nothing else is: another host, another folder, another kind of file, or anything but a plain https address", () => {

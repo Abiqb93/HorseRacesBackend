@@ -35,6 +35,13 @@ export const SOURCES = [
   { house: "fasig-tipton", host: "www.fasigtipton.com", path: /^\/catalogs\/\d{4}\/[a-z0-9_-]+\/[a-z0-9_-]+\.pdf$/i },
 ];
 
+/** What a refused address is told: the houses whose pages are relayed, from SOURCES, so the two never disagree. */
+const HOUSE_NAMES = { tattersalls: "Tattersalls", arqana: "Arqana", keeneland: "Keeneland", "fasig-tipton": "Fasig-Tipton" };
+export const REFUSED = (() => {
+  const names = SOURCES.map((x) => HOUSE_NAMES[x.house] || x.house);
+  return `Not a catalogue pedigree page: only the catalogue pages of ${names.slice(0, -1).join(", ")} and ${names.at(-1)} are relayed.`;
+})();
+
 const TYPES = { pdf: "application/pdf", jpg: "image/jpeg" };
 const MAX_PAGE_BYTES = 10 * 1024 * 1024;
 
