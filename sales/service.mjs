@@ -28,6 +28,7 @@ import * as inglis from "./inglis.mjs";
 import * as tattersallsireland from "./tattersallsireland.mjs";
 import * as bbag from "./bbag.mjs";
 import * as obs from "./obs.mjs";
+import * as parsebot from "./parsebot.mjs";
 
 /**
  * The houses read through one shape: `discover({ year })` lists a year's
@@ -44,10 +45,15 @@ export const FEEDS = {
   tattersallsireland: { mod: tattersallsireland, name: "Tattersalls Ireland", idOf: String },
   bbag: { mod: bbag, name: "BBAG", idOf: null },
   obs: { mod: obs, name: "OBS", idOf: (l) => String(l).replace(/^OBS/, "") },
+  // The companies none of the above reads (Goffs, Osarus, Goresbridge and the
+  // rest), from Racing Post's results through parse.bot; a label is the sale's id.
+  parsebot: { mod: parsebot, name: "Racing Post (parse.bot)", idOf: String },
 };
-export const HOUSE_SOURCES = ["tattersalls", "arqana", ...Object.keys(FEEDS)];
+/** Goffs is read through the parsebot feed, and can still be sent in from the results notebook (importLots, sales/goffs.mjs). */
+export const HOUSE_SOURCES = ["tattersalls", "arqana", ...Object.keys(FEEDS), "goffs"];
 import { KINDS, marketTable, marketLines, marketMedians, sireMedians, sireTable, hitTable, damRecord, feeFinder, figures, preferHouses } from "./metrics.mjs";
 import { nameKey } from "./normalise.mjs";
+import { runnerSales } from "./runners.mjs";
 
 export const HINTS_TABLE = "sale_fee_hints";
 const BUILD_PAGE = 50_000;
@@ -159,7 +165,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
         const k = nameKey(s.n);
         const prev = ids.get(k);
         const europe = (s.regions ?? []).some((r) => /GB|IRE|FR|EUR|UK|GER|ITY/.test(r));
-        if (!prev || (europe && !prev.europe)) ids.set(k, { id: s.id, europe });
+        if (!prev || (europe && !prev.europe)) ids.set(k, { id: s.id, europe, runners: Number(s.rnrs) || null });
       }
     } catch (err) {
       log.warn?.(`[sales] fee model not read: ${err.message}`);
@@ -172,7 +178,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
       const v = convert(fee, ccy, "GBP", String(year));
       return v ? Math.round(v) : null;
     };
-    feeData = { at: Date.now(), feeFor: feeFinder({ history, idOf: (k) => ids.get(k)?.id ?? null, hints, toGbp }), roster: ids.size, hints: hints.size };
+    feeData = { at: Date.now(), feeFor: feeFinder({ history, idOf: (k) => ids.get(k)?.id ?? null, hints, toGbp }), roster: ids.size, hints: hints.size, hintMap: hints, ids };
     return feeData;
   }
 
@@ -228,6 +234,10 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
         sireMedians: sireMedians(lots),
         fees: { roster: fees.roster, hints: fees.hints, lines: lines.size },
         feeFor: fees.feeFor,
+        // The market's lines and the workbooks' fees by covering year, for
+        // the commercial forecast (breeding/commercial.mjs).
+        lines: Object.fromEntries(lines),
+        hintMap: fees.hintMap ?? new Map(),
       };
       log.log?.(`[sales] index: ${lots.length} lots in ${index.tookMs} ms (${dropped} workbook lots a house also holds left out)`);
       return index;
@@ -288,6 +298,43 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
     return damRecord(ix.lots, nameKey(key), { sireMedians: ix.sireMedians });
   }
 
+  /** Each runner's own lots (sales/runners.mjs), keyed as the caller keyed them. */
+  async function runners(list = []) {
+    const ix = await readyNow();
+    const out = {};
+    for (const r of list) if (r?.key) out[r.key] = runnerSales(ix.lots, r);
+    return { builtAt: ix.builtAt, runners: out };
+  }
+
+  /**
+   * What the commercial forecast reads: the yearling and foal tables of a
+   * region with every year, the market's cells, its lines, and the fees
+   * the workbooks give each sire by covering year, in sterling.
+   */
+  async function commercialInputs({ region = "EU" } = {}) {
+    const ix = await readyNow();
+    const fees = new Map();
+    for (const [k, fee] of ix.hintMap ?? []) {
+      const [sireKey, year] = k.split("|");
+      if (!fees.has(sireKey)) fees.set(sireKey, []);
+      fees.get(sireKey).push([Number(year), Math.round(fee)]);
+    }
+    for (const list of fees.values()) list.sort((a, b) => a[0] - b[0]);
+    // His runners worldwide on the roster: how much of him Timeform's
+    // British and Irish runners are (breeding/commercial.mjs).
+    const runners = new Map();
+    for (const [k, v] of (await loadFees()).ids ?? []) if (v.runners) runners.set(k, v.runners);
+    return {
+      builtAt: ix.builtAt,
+      yearlings: ix.tables.get(`yearling|${region}`)?.rows ?? [],
+      foals: ix.tables.get(`foal|${region}`)?.rows ?? [],
+      cells: ix.market.cells.filter((c) => c.region === region),
+      lines: ix.lines ?? {},
+      fees,
+      runners,
+    };
+  }
+
   async function hit({ region = null } = {}) {
     const ix = await readyNow();
     return { ...(ix.hit.get(region ?? "ALL") ?? { rows: [], years: [] }), builtAt: ix.builtAt };
@@ -343,7 +390,15 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
    * A list of sales read one at a time in the background, the index rebuilt
    * at the end. One job at a time; asking again while one runs reports it.
    */
-  function runJob(house, items, importOne, { pauseMs = 500, meta = {}, skip = null } = {}) {
+  /**
+   * One sale's import, given up after `ms`: a fetch or a write that never
+   * returns would otherwise hold the job, and every job after it, for good.
+   */
+  const bounded = (work, ms, what) =>
+    Promise.race([work, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what}: no answer in ${Math.round(ms / 1000)} s`)), ms).unref?.())]);
+
+  function runJob(house, items, importOne, { pauseMs = 500, meta = {}, skip = null, itemTimeoutMs: limit } = {}) {
+    const itemTimeoutMs = limit ?? 10 * 60_000;
     if (job) return { running: true, state: job.state };
     const state = { house, ...meta, startedAt: new Date().toISOString(), done: 0, total: Array.isArray(items) ? items.length : null, skipped: 0, results: [] };
     job = { state };
@@ -359,7 +414,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
           continue;
         }
         try {
-          const r = await importOne(item);
+          const r = await bounded(importOne(item), itemTimeoutMs, String(item?.id ?? item));
           if (r.lots) state.results.push(r);
         } catch (err) {
           state.results.push({ item: item?.id ?? item, error: err.message });
@@ -507,7 +562,8 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
     if (!out?.sale || !out.lots?.length) return { house, id, title: out?.title ?? info?.title ?? null, lots: 0 };
     await upsertLots(runQuery, out.lots);
     let dropped = 0;
-    for (const k of new Set(out.lots.map((l) => `${l.sale_key}|${l.year}`))) {
+    // A key that gathers several sales ("-OTHER") gives way only horse by horse (as importLots).
+    for (const k of new Set(out.lots.filter((l) => !/-OTHER$/.test(l.sale_key)).map((l) => `${l.sale_key}|${l.year}`))) {
       const [saleKey, year] = k.split("|");
       dropped += await dropSuperseded(runQuery, { saleKey, year: Number(year), source: house });
     }
@@ -521,8 +577,34 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
     return { house, id, title: out.title, key: out.sale.key, year: out.sale.year, lots: out.lots.length, sold, catalogued, replaced: dropped, verdict: rec?.verdict ?? null };
   }
 
+  /**
+   * A house's lots read elsewhere and sent in (Goffs: the results
+   * notebook's CSV, read by sales/goffs.mjs), written as a feed's are. The
+   * workbook's rows of a sale-year give way to them, except under a key
+   * that gathers several sales ("-OTHER"), where only the horses they hold
+   * give way (the index's preferHouses). The index is rebuilt behind.
+   */
+  async function importLots(source, lots, sales = []) {
+    await upsertLots(runQuery, lots);
+    let dropped = 0;
+    for (const k of new Set(lots.filter((l) => !/-OTHER$/.test(l.sale_key)).map((l) => `${l.sale_key}|${l.year}`))) {
+      const [saleKey, year] = k.split("|");
+      dropped += await dropSuperseded(runQuery, { saleKey, year: Number(year), source });
+    }
+    for (const s of sales) {
+      if (!s.lots) continue;
+      await logImport(runQuery, {
+        source, saleKey: s.key, saleLabel: s.label, year: s.year, lots: s.lots, sold: s.sold,
+        note: [s.title, s.leftOut ? `${s.leftOut} left out` : null].filter(Boolean).join("; "),
+      });
+    }
+    // After any build already under way, which would not hold these lots.
+    if (lots.length) Promise.resolve(building).catch(() => {}).then(() => build()).catch((err) => log.warn?.(`[sales] index not rebuilt: ${err.message}`));
+    return { source, lots: lots.length, sold: lots.filter((l) => l.status === "sold").length, replaced: dropped, rebuilding: lots.length > 0 };
+  }
+
   /** A house's sales found year by year and read one at a time, in the background. */
-  function runHouse(house, { from, to, pauseMs = 1000, skipHeld = false } = {}) {
+  function runHouse(house, { from, to, pauseMs = 1000, skipHeld = false, itemTimeoutMs } = {}) {
     const feed = feeds[house];
     if (!feed) throw new Error(`no feed for ${house}`);
     const find = async (state) => {
@@ -537,7 +619,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
       return all;
     };
     return runJob(house, find, (entry) => importHouse(house, entry.id, entry), {
-      pauseMs, meta: { from, to }, skip: skipHeld && feed.idOf ? heldLabels(house, feed.idOf) : null,
+      pauseMs, meta: { from, to }, skip: skipHeld && feed.idOf ? heldLabels(house, feed.idOf) : null, itemTimeoutMs,
     });
   }
 
@@ -646,9 +728,12 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
     return { accepted: true, queued: true, part: part.name };
   }
 
+  /** Whether a long job is writing: the scheduled refreshes wait for the next run rather than write beside it. */
+  const busy = () => Boolean(job);
+
   return {
-    ensure, build, ready, market, sires, sire, dam, hit, status, figures, manifest,
-    importTattersalls, runTattersalls, refreshTattersalls, importArqana, runArqana, refreshArqana, importHouse, runHouse, refreshHouse,
+    ensure, build, ready, busy, market, sires, sire, dam, runners, hit, commercialInputs, status, figures, manifest,
+    importTattersalls, runTattersalls, refreshTattersalls, importArqana, runArqana, refreshArqana, importHouse, runHouse, refreshHouse, importLots,
     acceptSeed, queueSeed,
   };
 }

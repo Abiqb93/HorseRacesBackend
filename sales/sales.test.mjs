@@ -367,3 +367,28 @@ test("a page's request while the first index is built is answered at once, not h
   const m = await svc.market({ type: "yearling", region: "EU" });
   assert.deepEqual(m.cells, []);
 });
+
+test("a sale that never answers is given up on, and the job goes on to the next", async () => {
+  const { createSalesService } = await import("./service.mjs");
+  const read = [];
+  const feed = {
+    idOf: String,
+    mod: {
+      discover: async () => [{ id: "HANGS", key: "K" }, { id: "FINE", key: "K" }],
+      fetchSale: (id) => {
+        read.push(id);
+        if (id === "HANGS") return new Promise(() => {});
+        return Promise.resolve({ id, title: id, sale: { key: "K", year: 2025 }, lots: [lot({ source: "fake", sale_key: "K", sale_label: id })] });
+      },
+    },
+  };
+  const svc = createSalesService({ runQuery: async () => [], fetchImpl: async () => ({ ok: false, status: 404, json: async () => ({}) }), log: {}, feeds: { fake: feed } });
+  svc.runHouse("fake", { from: 2025, to: 2025, pauseMs: 0, itemTimeoutMs: 50 });
+  assert.equal(svc.busy(), true, "the scheduled refreshes see the job and wait");
+  for (let i = 0; i < 400 && !(await svc.status({ quick: true })).lastJob; i += 1) await new Promise((r) => setTimeout(r, 10));
+  const last = (await svc.status({ quick: true })).lastJob;
+  assert.deepEqual(read, ["HANGS", "FINE"]);
+  assert.match(last.results.find((r) => r.item === "HANGS").error, /no answer in 0 s/);
+  assert.equal(last.results.find((r) => r.id === "FINE").lots, 1);
+  assert.equal(svc.busy(), false);
+});

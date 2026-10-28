@@ -212,7 +212,8 @@ export async function fetchResults(code, { fetchImpl = fetch } = {}) {
     }
     return res;
   };
-  await get(`https://secure.tattersalls.com/4DCGI/Sale/${code}/Main`);
+  // Read for its cookie; its body is read to the end so the connection is let go.
+  await (await get(`https://secure.tattersalls.com/4DCGI/Sale/${code}/Main`)).arrayBuffer().catch(() => null);
   const res = await get(`https://secure.tattersalls.com/4DCGI/Sale/${code}/Catalogue`);
   if (!res.ok) throw new Error(`Tattersalls ${code}: HTTP ${res.status}`);
   const html = await res.text();

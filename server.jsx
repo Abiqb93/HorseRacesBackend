@@ -96,7 +96,7 @@ app.get("/api/version", (req, res) => res.json({ marker: "france-2cb2e46-trigger
 
 app.get("/api/env-status", (req, res) => {
   const names = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT",
-    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN", "ML_SERVICE_URL"];
+    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN", "ML_SERVICE_URL", "SALES_IMPORT_TOKEN"];
   res.json({ set: Object.fromEntries(names.map((n) => [n, Boolean(process.env[n])])) });
 });
 
@@ -104,7 +104,7 @@ app.get("/api/env-status", (req, res) => {
 // only, never values. Lets us verify the Railway variable configuration.
 app.get("/api/env-status", (req, res) => {
   const names = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT",
-    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN", "ML_SERVICE_URL"];
+    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN", "ML_SERVICE_URL", "SALES_IMPORT_TOKEN"];
   res.json({ set: Object.fromEntries(names.map((n) => [n, Boolean(process.env[n])])) });
 });
 
@@ -3740,6 +3740,7 @@ const runApiDataTable2Query = ({
   limit,
   offset = 0,
   order = "desc",
+  withDaysOff = false,
 }) => {
   const startTime = Date.now();
 
@@ -3784,7 +3785,16 @@ const runApiDataTable2Query = ({
       rp.rpRPR AS racingPostRPR,
       rp.rpRaceID AS racingPostRaceID,
       rp.rpRaceTrack AS racingPostRaceTrack,
-      rp.rpRaceTime AS racingPostRaceTime
+      rp.rpRaceTime AS racingPostRaceTime${withDaysOff ? `,
+      -- Days since the horse's previous run held here; NULL on its first.
+      -- The horse code keeps two horses of one name apart.
+      DATEDIFF(DATE(a.meetingDate), (
+        SELECT MAX(p.meetingDate)
+        FROM APIData_Table2 p
+        WHERE p.horseName = a.horseName
+          AND p.meetingDate < DATE(a.meetingDate)
+          AND (a.horseCode IS NULL OR p.horseCode IS NULL OR p.horseCode = a.horseCode)
+      )) AS daysOff` : ""}
     FROM APIData_Table2 a
     LEFT JOIN (
       SELECT
@@ -4177,6 +4187,8 @@ app.get('/api/APIData_Table2', (req, res) => {
     limit,
     offset,
     order,
+    // One day's runners: few enough to look each one's last run up.
+    withDaysOff: Boolean(meetingDate),
   });
 });
 
@@ -10048,8 +10060,9 @@ app.post("/api/bookings/:userId/roll", express.json(), async (req, res) => {
 // them. Foals, yearlings, two-year-olds and horses in training; the sale
 // houses' own results keep it current (Tattersalls, Arqana, Tattersalls
 // Ireland, BBAG, Keeneland, Fasig-Tipton, OBS, Magic Millions and Inglis),
-// and the workbooks seed the years before and the houses that cannot be
-// read (Goffs, Goffs UK, New Zealand Bloodstock; the seed route below).
+// Goffs and Goffs UK are sent in from the results notebook (the import route
+// below), and the workbooks seed the years before and the houses that cannot
+// be read (New Zealand Bloodstock; the seed route below).
 // ---------------------------------------------------------------------------
 
 let salesService = null;
@@ -10109,6 +10122,20 @@ app.get("/api/sales/dam/:key", async (req, res) => {
   }
 });
 
+/**
+ * Each runner of a race in the sale ring: `runners` is a list of
+ * { key, dam, sire, foaled } (foaled: the foaling date or year), at most
+ * 60; the answer gives each key its lots, oldest first (sales/runners.mjs).
+ */
+app.post("/api/sales/runners", async (req, res) => {
+  const list = Array.isArray(req.body?.runners) ? req.body.runners.slice(0, 60) : [];
+  try {
+    res.json(await (await sales()).runners(list.map((r) => ({ key: String(r?.key ?? ""), dam: r?.dam, sire: r?.sire, foaled: r?.foaled }))));
+  } catch (err) {
+    salesError(res, "sales runners", err);
+  }
+});
+
 app.get("/api/sales/hit", async (req, res) => {
   try {
     res.json(await (await sales()).hit({ region: salesRegion(req.query.region) }));
@@ -10158,6 +10185,37 @@ app.post("/api/sales/fetch", async (req, res) => {
 });
 
 /**
+ * A house's results read elsewhere and sent in. Goffs and Goffs UK
+ * (`house=goffs`): the CSV the results notebook writes (goffs_sale_results.ipynb,
+ * read by sales/goffs.mjs); goffs.com turns this server away, so its results
+ * are read wherever the site answers. `year` is the year for a sale whose
+ * year the file does not give; `dryRun=1` reads the file and says what it
+ * would write without writing it. Off unless SALES_IMPORT_TOKEN is set, and
+ * then only with that token in x-sales-token: the rows are read as the market.
+ */
+app.post("/api/sales/import", express.text({ type: () => true, limit: "40mb" }), async (req, res) => {
+  const expected = process.env.SALES_IMPORT_TOKEN;
+  if (!expected) return res.status(503).json({ error: "imports are off: SALES_IMPORT_TOKEN is not set" });
+  const given = Buffer.from(String(req.get("x-sales-token") ?? ""));
+  const want = Buffer.from(expected);
+  if (given.length !== want.length || !crypto.timingSafeEqual(given, want)) return res.status(401).json({ error: "x-sales-token required" });
+  const house = String(req.query.house ?? "").toLowerCase();
+  if (house !== "goffs") return res.status(400).json({ error: "house=goffs is the only import so far" });
+  try {
+    const { fromNotebookCsv } = await import("./sales/goffs.mjs");
+    const read = fromNotebookCsv(typeof req.body === "string" ? req.body : "", { year: Number(req.query.year) || null });
+    const bySale = read.sales.map(({ title, key, year, lots, sold, leftOut }) => ({ title, key, year, lots, sold, leftOut }));
+    const summary = { rows: read.rows, lots: read.lots.length, sales: bySale, problems: read.problems };
+    if (!read.lots.length) return res.status(422).json({ error: "no lots read", ...summary });
+    if (req.query.dryRun === "1") return res.json({ dryRun: true, ...summary });
+    const written = await (await sales()).importLots("goffs", read.lots, read.sales);
+    res.json({ ...summary, ...written });
+  } catch (err) {
+    salesError(res, "sales import", err);
+  }
+});
+
+/**
  * A part of the workbook seed, accepted only if its fingerprint is in
  * sales/seed-manifest.json, and loaded in the background (a part takes
  * longer than a request may stay open); the status shows how each went.
@@ -10190,6 +10248,24 @@ setTimeout(() => {
     .catch((err) => console.warn("[sales] warm-up failed:", err.message));
 }, 120_000);
 
+// The companies no house feed reads (Goffs, Osarus and the rest), back to
+// 2015, from Racing Post through parse.bot (sales/parsebot.mjs), started on
+// its own after every start. A sale of a past year already read is skipped,
+// so a backfill a restart cut short carries on where it stopped, and once
+// it is complete a start costs one listing a year. SALES_PARSEBOT_BACKFILL=0
+// turns it off; the daily refresh below keeps the current sales either way.
+setTimeout(async () => {
+  if (!process.env.PARSE_API_KEY || process.env.SALES_PARSEBOT_BACKFILL === "0") return;
+  try {
+    const svc = await sales();
+    if (svc.busy()) return console.log("[sales] parse.bot backfill: a long job is running; left to the next start");
+    const out = svc.runHouse("parsebot", { from: 2015, to: new Date().getFullYear(), skipHeld: true, pauseMs: 1500 });
+    console.log("[sales] parse.bot backfill:", out.started ? "started" : "a job is already running");
+  } catch (err) {
+    console.warn("[sales] parse.bot backfill not started:", err.message);
+  }
+}, 10 * 60_000);
+
 // The house's results kept current: every sale of the year read again at
 // 04:20, and every two hours through the day the sales still being sold.
 {
@@ -10200,6 +10276,7 @@ setTimeout(() => {
       const now = new Date();
       const years = now.getMonth() <= 1 ? [now.getFullYear() - 1, now.getFullYear()] : [now.getFullYear()];
       const svc = await sales();
+      if (svc.busy()) return console.log("[sales] daily: a long job is running; left to the next run");
       const { FEEDS } = await import("./sales/service.mjs");
       const out = [...(await svc.refreshTattersalls({ years })), ...(await svc.refreshArqana({ years }))];
       for (const house of Object.keys(FEEDS)) {
@@ -10213,6 +10290,7 @@ setTimeout(() => {
   cron.schedule("10 10-22/2 * * *", async () => {
     try {
       const svc = await sales();
+      if (svc.busy()) return;
       const years = [new Date().getFullYear()];
       const { FEEDS } = await import("./sales/service.mjs");
       const out = [...(await svc.refreshTattersalls({ years, live: true })), ...(await svc.refreshArqana({ years, live: true }))];
@@ -10232,10 +10310,22 @@ setTimeout(() => {
 // rule mode a user saved (Default only / Default + defined / Defined only)
 // could be written but never read back, so the Review List page and the daily
 // mail both fell back to "Default + defined" for everyone.
+// The same held for five more. The Review List's saved preferences
+// (user-preps-reviewlist) answered "Invalid table name." on every load, so
+// none were ever applied; and the home page asked for the user's own
+// reviewed results and got the first ten rows of everyone's, so its
+// "reviewed" marks were someone else's. The tracked-horse and notification
+// reads lost their user filter the same way, and potential stallions their
+// own query.
 const ROUTED_FURTHER_DOWN = new Set([
   "review_conditions",
   "review_rule_preferences",
   "review_rules_health",
+  "user-preps-reviewlist",
+  "reviewed_results",
+  "selected_horses",
+  "notify_horses",
+  "potential_stallion",
 ]);
 
 app.get('/api/:tableName', (req, res, next) => {
@@ -15994,6 +16084,8 @@ app.get("/api/user-preps-reviewlist", (req, res) => {
   `;
 
   db.query(sql, (err, rows) => {
+    // Nothing saved yet by anyone: no preferences, not a failure.
+    if (err?.code === "ER_NO_SUCH_TABLE") return res.json({ data: [] });
     if (err) {
       return res.status(500).json({
         error: "Database fetch failed",
@@ -16516,6 +16608,241 @@ app.get("/api/breeding/nightly", async (req, res) => {
     res.status(500).json({ error: "database error", detail: err.message });
   }
 });
+
+/* ------------------------------------------------------------------ */
+/* The stallion forecast (breeding/forecast.mjs)                       */
+/* ------------------------------------------------------------------ */
+
+// Young sires' runners at 80, 90 and 100 against the par for a sire at the
+// same stage, and next season's call. The results table is walked a month
+// at a time into a table of its own; the forecast is worked out from that
+// and kept in the population table, so a restart serves the last one at
+// once. The walk is resumable: each month is written as it is read.
+const loadForecast = () => import("./breeding/forecast.mjs");
+loadForecast()
+  .then(({ CREATE_PERIODS }) => runQuery(CREATE_PERIODS, []))
+  .catch((err) => console.warn("forecast table:", err.message));
+
+let sireForecast = null;
+let sireForecastRead = false;
+let forecastJob = null;
+let forecastLast = null;
+
+/**
+ * Each horse's latest Timeform master-rating symbol, where the scraper has
+ * kept them (timeform_symbols, written beside the results since the change
+ * that keeps them). Null when the table is not there yet.
+ */
+async function timeformSymbols() {
+  try {
+    const { horseKey } = await loadSummaries();
+    const since = new Date();
+    since.setUTCFullYear(since.getUTCFullYear() - 1);
+    const rows = await runQuery(
+      `SELECT /*+ MAX_EXECUTION_TIME(60000) */ horseName, YEAR(foalingDate) AS fy, preRaceMasterSymbol AS sym, meetingDate
+         FROM timeform_symbols
+        WHERE meetingDate >= ?
+        ORDER BY meetingDate`,
+      [since.toISOString().slice(0, 10)],
+    );
+    const out = new Map();
+    let first = null;
+    for (const r of rows) {
+      const key = horseKey(r.horseName, Number(r.fy) || 0);
+      out.set(key, String(r.sym ?? "").trim());
+      first ??= r.meetingDate;
+    }
+    return { map: out, since: first ? new Date(first).toISOString().slice(0, 10) : null };
+  } catch (err) {
+    if (!/doesn't exist|no such table|ER_NO_SUCH_TABLE/i.test(err.message)) console.warn("forecast: symbols not read:", err.message);
+    return null;
+  }
+}
+
+/** The forecast worked out again from the periods held, kept, and served from now on. */
+async function rebuildForecast() {
+  const { readSeasons, buildForecast, FORECAST_ID } = await loadForecast();
+  const { writeBaseline } = await loadSummaries();
+  const started = Date.now();
+  const seasons = await readSeasons(runQuery);
+  const symbols = await timeformSymbols();
+  const body = buildForecast(seasons, { symbols: symbols?.map ?? null, symbolsSince: symbols?.since ?? null, symbolsCount: symbols?.map?.size ?? null });
+  if (!body) return null;
+  body.tookMs = Date.now() - started;
+  sireForecast = { at: Date.now(), value: body };
+  await writeBaseline(runQuery, body, FORECAST_ID).catch((err) => console.warn("forecast not kept:", err.message));
+  console.log(`[forecast] built: ${body.sires.length} sires, seasons ${body.seasonsHeld[0]}-${body.seasonsHeld.at(-1)}, ${body.tookMs}ms`);
+  return body;
+}
+
+/**
+ * The walk, then the forecast. One at a time: a second caller gets the
+ * running job. `maxSlices` bounds the months read this time; whatever is
+ * left is read next time, newest first.
+ */
+function runForecast({ maxSlices = 14, why = "request" } = {}) {
+  if (forecastJob) return forecastJob.promise;
+  const state = { why, startedAt: new Date().toISOString(), maxSlices, progress: null };
+  const promise = Promise.all([loadForecast(), loadMating()])
+    .then(([{ walkPeriods }, { FLAT_RUN }]) =>
+      walkPeriods(runQuery, {
+        flatRun: FLAT_RUN,
+        maxSlices,
+        isTimeout: isQueryTimeoutError,
+        log: { log: (m) => console.log("[forecast]", m) },
+        progress: (p) => {
+          state.progress = p;
+        },
+      }),
+    )
+    .then(async (walk) => {
+      state.walk = { done: walk.done.length, remaining: walk.remaining, slices: walk.slices, tookMs: walk.tookMs, periods: walk.done.map((d) => d.period) };
+      const body = await rebuildForecast();
+      state.sires = body?.sires?.length ?? 0;
+      return body;
+    })
+    .catch((err) => {
+      console.error(`[forecast] ${why} failed:`, err.message);
+      state.error = err.message;
+      state.slice = err.slice ?? null;
+      return null;
+    })
+    .finally(() => {
+      state.finishedAt = new Date().toISOString();
+      forecastLast = state;
+      forecastJob = null;
+    });
+  forecastJob = { state, promise };
+  return promise;
+}
+
+/** The forecast in hand: memory, else the one kept, read once after a start. */
+async function currentForecast() {
+  if (sireForecast) return sireForecast.value;
+  if (!sireForecastRead) {
+    sireForecastRead = true;
+    try {
+      const [{ readBaseline }, { FORECAST_ID }] = await Promise.all([loadSummaries(), loadForecast()]);
+      const kept = await readBaseline(runQuery, FORECAST_ID);
+      if (kept?.sires) sireForecast = { at: kept.builtAt ?? Date.now(), value: kept };
+    } catch (err) {
+      sireForecastRead = false;
+      console.warn("forecast: kept copy not read:", err.message);
+    }
+  }
+  return sireForecast?.value ?? null;
+}
+
+/**
+ * The forecast. `sires=A|B` keeps those sires only (a mare's Matings asks
+ * for the stallions in her pool); par, the carry-over and the rules always
+ * come with it. 503 while the first walk has not finished.
+ */
+app.get("/api/breeding/forecast", async (req, res) => {
+  try {
+    const body = await currentForecast();
+    if (!body) {
+      return res.status(503).json({ error: "the forecast is being built", code: "FORECAST_BUILDING", walking: Boolean(forecastJob), progress: forecastJob?.state?.progress ?? null });
+    }
+    let sires = body.sires;
+    if (req.query.sires) {
+      const { parseSireList } = await import("./breeding/sires.mjs");
+      const want = new Set(parseSireList(req.query.sires, { max: 400 }).map((n) => n.normalize("NFD").replace(/[̀-ͯ]/g, "")));
+      sires = sires.filter((s) => want.has(s.key));
+    }
+    res.set("Cache-Control", "public, max-age=300");
+    // The season-by-season history is the commercial forecast's input, not the page's.
+    const { history, ...rest } = body;
+    res.json({ ...rest, sires, ...(req.query.history === "1" ? { history } : {}) });
+  } catch (err) {
+    console.error("forecast failed:", err.message);
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/** What the walk holds and how the last run went. */
+app.get("/api/breeding/forecast/status", async (req, res) => {
+  try {
+    const { heldPeriods } = await loadForecast();
+    const held = await heldPeriods(runQuery);
+    const body = sireForecast?.value ?? null;
+    res.json({
+      now: new Date().toISOString(),
+      periods: held,
+      horses: held.reduce((a, p) => a + p.horses, 0),
+      running: forecastJob?.state ?? null,
+      last: forecastLast,
+      forecast: body ? { builtAt: body.builtAt, season: body.season, through: body.through, sires: body.sires.length, seasonsHeld: body.seasonsHeld, symbols: body.symbols, tookMs: body.tookMs } : null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: "database error", detail: err.message });
+  }
+});
+
+/**
+ * Walk on the user's say-so: `confirm=walk`, and `slices` months at most
+ * (the backfill is about two hundred; a month takes a minute or so and
+ * slows other reads a little while it runs). `rebuild=1` works the
+ * forecast out again from what is held, reading nothing.
+ */
+app.post("/api/breeding/forecast/walk", async (req, res) => {
+  if (req.query.rebuild) {
+    rebuildForecast().catch((err) => console.warn("forecast rebuild failed:", err.message));
+    return res.status(202).json({ rebuilding: true });
+  }
+  if (req.query.confirm !== "walk") {
+    return res.status(400).json({ error: "add ?confirm=walk: this reads the results table a month at a time and slows other reads while it runs" });
+  }
+  if (forecastJob) return res.status(202).json({ walking: true, state: forecastJob.state });
+  const maxSlices = Math.max(1, Math.min(400, Number(req.query.slices) || 24));
+  runForecast({ maxSlices, why: "request" });
+  res.status(202).json({ walking: true, maxSlices, startedAt: forecastJob?.state?.startedAt ?? null });
+});
+
+/**
+ * The commercial forecast (breeding/commercial.mjs): where each sire's
+ * European yearling prices are heading, fitted on how past sires' prices
+ * moved with their Timeform scores, and the market's line a mare's fee
+ * sweet spot is read on. Worked out from the sales index and the stallion
+ * forecast in memory, kept until either is rebuilt.
+ */
+let commercialCache = null;
+app.get("/api/breeding/commercial", async (req, res) => {
+  try {
+    const inputs = await (await sales()).commercialInputs({ region: "EU" });
+    const forecast = await currentForecast();
+    if (!forecast) return res.status(503).json({ error: "the stallion forecast is being built", code: "FORECAST_BUILDING" });
+    const stamp = `${inputs.builtAt}|${forecast.builtAt}`;
+    if (commercialCache?.stamp !== stamp) {
+      const { buildCommercial } = await import("./breeding/commercial.mjs");
+      const t0 = Date.now();
+      const body = buildCommercial({
+        yearlings: inputs.yearlings,
+        foals: inputs.foals,
+        cells: inputs.cells,
+        lines: inputs.lines,
+        history: forecast.history ?? {},
+        current: forecast.sires ?? [],
+        fees: inputs.fees,
+        runners: inputs.runners,
+      });
+      body.tookMs = Date.now() - t0;
+      body.inputs = { sales: inputs.builtAt, forecast: forecast.builtAt, historyHeld: Boolean(forecast.history) };
+      commercialCache = { stamp, body };
+    }
+    res.set("Cache-Control", "public, max-age=300");
+    res.json(commercialCache.body);
+  } catch (err) {
+    salesError(res, "commercial forecast", err);
+  }
+});
+
+// Each morning, after the scraper has written the night's results: the last
+// two months read again, and as much of the backfill as fits.
+{
+  const cron = require("node-cron");
+  cron.schedule("40 6 * * *", () => runForecast({ maxSlices: 14, why: "morning" }), { timezone: "Europe/London" });
+}
 
 // Trainer uplift moves, weekly on Monday morning -- a full walk of the
 // results table, so not worth running daily.
