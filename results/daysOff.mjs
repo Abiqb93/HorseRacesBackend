@@ -32,8 +32,8 @@ export const CHUNK = 250;
 export const findDaysOffIndex = (runQuery) => findIndex(runQuery, INDEX_COLUMNS);
 
 /** Make sure the index is there, adding it where it is missing (see indexes.mjs). */
-export const ensureDaysOffIndex = ({ runQuery, withConnection, log = console }) =>
-  ensureIndex({ runQuery, withConnection, name: INDEX_NAME, columns: INDEX_COLUMNS, log });
+export const ensureDaysOffIndex = ({ runQuery, withConnection, log = console, lockWaitSeconds }) =>
+  ensureIndex({ runQuery, withConnection, name: INDEX_NAME, columns: INDEX_COLUMNS, log, lockWaitSeconds });
 
 /** The calendar day as the driver read it (in the server's own time zone). */
 const dayOf = (v) => {

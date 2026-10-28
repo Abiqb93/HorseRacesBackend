@@ -15,6 +15,15 @@ export const TABLE = "APIData_Table2";
 export const LOCK_WAIT_SECONDS = 2;
 
 /**
+ * How long the night's build waits. In the day the table is seldom free for
+ * two seconds together (the race-day query alone takes twelve), so a build
+ * can lose every daytime try: on 28 October it failed for that reason the
+ * morning it was deployed. At night nobody is reading, and a minute's wait
+ * holds up no page.
+ */
+export const NIGHT_LOCK_WAIT_SECONDS = 60;
+
+/**
  * The name of an index whose leading columns are `columns`, in order and in
  * full (no prefix: a prefix cannot answer from the index), or null. Any name
  * will do, so an index someone added by hand counts.
@@ -52,7 +61,7 @@ export async function findIndex(runQuery, columns) {
  * `withConnection(fn)` hands fn a query function on one connection of its
  * own, so the lock wait set here touches no other query.
  */
-export async function ensureIndex({ runQuery, withConnection, name, columns, log = console }) {
+export async function ensureIndex({ runQuery, withConnection, name, columns, log = console, lockWaitSeconds = LOCK_WAIT_SECONDS }) {
   const found = await findIndex(runQuery, columns);
   if (found) return { index: found, added: false };
 
@@ -60,7 +69,7 @@ export async function ensureIndex({ runQuery, withConnection, name, columns, log
   const started = Date.now();
   try {
     await withConnection(async (query) => {
-      await query(`SET SESSION lock_wait_timeout = ${LOCK_WAIT_SECONDS}`, []);
+      await query(`SET SESSION lock_wait_timeout = ${Math.max(1, Math.round(Number(lockWaitSeconds) || LOCK_WAIT_SECONDS))}`, []);
       await query(
         `ALTER TABLE ${TABLE} ADD INDEX ${name} (${columns.join(", ")}), ALGORITHM=INPLACE, LOCK=NONE`,
         [],
