@@ -3880,13 +3880,14 @@ app.get('/api/home/dashboard', async (req, res) => {
   if (!user) return res.status(400).json({ error: "Missing user" });
   try {
     const b = await homeBuilder();
-    const body = await b.read(user);
+    const body = await b.readText(user);
     if (!body) {
       b.rebuildSoon(user);
       return res.status(404).json({ error: "Not built yet" });
     }
     res.set("Cache-Control", "no-store");
-    return res.json(body);
+    // Sent as stored: it is JSON already, and parsing it to send it again cost time.
+    return res.type("application/json").send(body);
   } catch (err) {
     console.error("[home] read:", err.message);
     return res.status(503).json({ error: "Could not read the lists just now.", details: err.message });

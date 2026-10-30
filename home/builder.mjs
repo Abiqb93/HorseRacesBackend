@@ -51,6 +51,10 @@ export const londonDay = (at = new Date(), offset = 0) => {
  */
 export function createHomeBuilder({ runQuery, fetchJson, offspring, clock = () => new Date(), log = console }) {
   let globals = null; // { day, at, feeds, results, shares }
+  // Each user's stored lists as JSON text, kept once built or first read: the
+  // database read of the 600 KB row and the parse and re-stringify took a
+  // second and more of every page's wait (30 October 2026).
+  const kept = new Map();
   let round = null;
   const timers = new Map();
   const status = { lastRound: null, lastRoundWhy: null, lastRoundMs: null, users: 0, failed: [], building: false, error: null };
@@ -114,6 +118,7 @@ export function createHomeBuilder({ runQuery, fetchJson, offspring, clock = () =
          ON DUPLICATE KEY UPDATE day = VALUES(day), built_at = VALUES(built_at), took_ms = VALUES(took_ms), body = VALUES(body)`,
       [String(userId), g.day, builtAt, Date.now() - started, body],
     );
+    kept.set(String(userId), body);
   };
 
   /** Every user's lists, from feeds read once for the round. */
@@ -169,11 +174,21 @@ export function createHomeBuilder({ runQuery, fetchJson, offspring, clock = () =
     }, DEBOUNCE_MS));
   };
 
+  /** The stored lists for `userId` as JSON text, or null. */
+  const readText = async (userId) => {
+    const key = String(userId);
+    if (kept.has(key)) return kept.get(key);
+    await ensureTable();
+    const rows = await runQuery(`SELECT body FROM ${TABLE} WHERE user_id = ? LIMIT 1`, [key]);
+    const body = rows?.[0]?.body ?? null;
+    if (body) kept.set(key, body);
+    return body;
+  };
+
   /** The stored lists for `userId`, or null. */
   const read = async (userId) => {
-    await ensureTable();
-    const rows = await runQuery(`SELECT body FROM ${TABLE} WHERE user_id = ? LIMIT 1`, [String(userId)]);
-    return rows?.[0]?.body ? JSON.parse(rows[0].body) : null;
+    const body = await readText(userId);
+    return body ? JSON.parse(body) : null;
   };
 
   /** Whether today's round has run, for a start part-way through the day. */
@@ -183,5 +198,5 @@ export function createHomeBuilder({ runQuery, fetchJson, offspring, clock = () =
     return Number(rows?.[0]?.n) > 0;
   };
 
-  return { buildAll, buildUser, rebuildSoon, read, builtToday, status: () => ({ ...status }) };
+  return { buildAll, buildUser, rebuildSoon, read, readText, builtToday, status: () => ({ ...status }) };
 }
