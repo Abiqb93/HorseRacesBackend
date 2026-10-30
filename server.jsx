@@ -10530,15 +10530,29 @@ setTimeout(() => {
 // so a backfill a restart cut short carries on where it stopped, and once
 // it is complete a start costs one listing a year. SALES_PARSEBOT_BACKFILL=0
 // turns it off; the daily refresh below keeps the current sales either way.
+//
+// BloodHorse's sales (sales/bloodhorse.mjs) follow the same way once that
+// one is done, one long job at a time: SALES_BLOODHORSE_BACKFILL=0 turns
+// that backfill off.
+const salesBackfills = [
+  { house: "parsebot", off: "SALES_PARSEBOT_BACKFILL", label: "parse.bot" },
+  { house: "bloodhorse", off: "SALES_BLOODHORSE_BACKFILL", label: "BloodHorse" },
+];
 setTimeout(async () => {
-  if (!process.env.PARSE_API_KEY || process.env.SALES_PARSEBOT_BACKFILL === "0") return;
+  if (!process.env.PARSE_API_KEY) return;
   try {
     const svc = await sales();
-    if (svc.busy()) return console.log("[sales] parse.bot backfill: a long job is running; left to the next start");
-    const out = svc.runHouse("parsebot", { from: 2015, to: new Date().getFullYear(), skipHeld: true, pauseMs: 1500 });
-    console.log("[sales] parse.bot backfill:", out.started ? "started" : "a job is already running");
+    for (const { house, off, label } of salesBackfills) {
+      if (process.env[off] === "0") continue;
+      // Wait for whatever long job is running (the one before, a manual run) to finish, up to a day.
+      for (let waited = 0; svc.busy() && waited < 24 * 60; waited += 2) await new Promise((r) => setTimeout(r, 2 * 60_000));
+      if (svc.busy()) return console.log(`[sales] ${label} backfill: a long job is still running; left to the next start`);
+      const out = svc.runHouse(house, { from: 2015, to: new Date().getFullYear(), skipHeld: true, pauseMs: 1500 });
+      console.log(`[sales] ${label} backfill:`, out.started ? "started" : "a job is already running");
+      await new Promise((r) => setTimeout(r, 60_000));
+    }
   } catch (err) {
-    console.warn("[sales] parse.bot backfill not started:", err.message);
+    console.warn("[sales] backfill not started:", err.message);
   }
 }, 10 * 60_000);
 

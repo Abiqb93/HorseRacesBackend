@@ -29,6 +29,7 @@ import * as tattersallsireland from "./tattersallsireland.mjs";
 import * as bbag from "./bbag.mjs";
 import * as obs from "./obs.mjs";
 import * as parsebot from "./parsebot.mjs";
+import * as bloodhorse from "./bloodhorse.mjs";
 
 /**
  * The houses read through one shape: `discover({ year })` lists a year's
@@ -48,10 +49,17 @@ export const FEEDS = {
   // The companies none of the above reads (Goffs, Osarus, Goresbridge and the
   // rest), from Racing Post's results through parse.bot; a label is the sale's id.
   parsebot: { mod: parsebot, name: "Racing Post (parse.bot)", idOf: String },
+  // The sales none of the above or the workbooks hold (Japan, New Zealand,
+  // Saudi Arabia, the American state sales), from BloodHorse through
+  // parse.bot, in US dollars; a label is the sale's id. Not a house: its lot
+  // stands only where no other source holds the horse (LAST_RESORT).
+  bloodhorse: { mod: bloodhorse, name: "BloodHorse (parse.bot)", idOf: String },
 };
+/** Sources read only where nothing else holds the horse (metrics.mjs lastResort). */
+export const LAST_RESORT = new Set(["bloodhorse"]);
 /** Goffs is read through the parsebot feed, and can still be sent in from the results notebook (importLots, sales/goffs.mjs). */
-export const HOUSE_SOURCES = ["tattersalls", "arqana", ...Object.keys(FEEDS), "goffs"];
-import { KINDS, marketTable, marketLines, marketMedians, sireMedians, sireTable, hitTable, damRecord, feeFinder, figures, preferHouses, oneLotOnce } from "./metrics.mjs";
+export const HOUSE_SOURCES = ["tattersalls", "arqana", ...Object.keys(FEEDS).filter((k) => !LAST_RESORT.has(k)), "goffs"];
+import { KINDS, marketTable, marketLines, marketMedians, sireMedians, sireTable, hitTable, damRecord, feeFinder, figures, preferHouses, oneLotOnce, lastResort } from "./metrics.mjs";
 import { nameKey } from "./normalise.mjs";
 import { runnerSales } from "./runners.mjs";
 
@@ -213,7 +221,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
       // A horse a house's results hold is read from them, not a workbook too;
       // and a lot a feed lists on two pages of one sale is read once.
       const preferred = preferHouses(raw, new Set(HOUSE_SOURCES));
-      const { lots, dropped: twice } = oneLotOnce(preferred.lots);
+      const { lots, dropped: twice } = oneLotOnce(lastResort(preferred.lots, LAST_RESORT).lots);
       const dropped = preferred.dropped;
       const fees = await loadFees();
       const lines = marketLines(lots, fees.feeFor);
