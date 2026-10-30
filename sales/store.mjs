@@ -109,29 +109,42 @@ export async function upsertLots(runQuery, lots, { batch = 500 } = {}) {
 
 /** A sale-year read from the house itself replaces any workbook's reading of it. */
 /**
- * A sale read again replaces its own rows. The lot's identity includes its
- * sale key, so when the rule that files a sale changes (sales/goffs.mjs: the
- * Autumn Sale's yearlings), reading it again would otherwise leave its old
- * rows standing beside the new ones and count those horses twice. For each
- * sale label in `lots`, this drops that source's rows of the label and year
- * under any key the new reading did not use.
+ * A horse a sale's new reading files differently leaves no row behind under
+ * its old filing.
+ *
+ * A lot's identity includes its sale key, so when the rule that files a sale
+ * changes (sales/goffs.mjs: the Autumn Sale's yearlings, moved from GOF-HIT to
+ * GOF-AUT), reading the sale again writes the horse under its new identity and
+ * would leave the old row standing beside it. For each sale label in `lots`,
+ * this drops that source's rows of the label and year that hold the same lot
+ * and dam as a lot just read but a different identity.
+ *
+ * Matching by sale key alone was not enough: the Autumn Sale's first day keeps
+ * GOF-HIT for its horses in training, so on 30 October 2026 its 112 yearlings
+ * of 2025 were left under GOF-HIT as well as written under GOF-AUT. A lot that
+ * is simply missing from a reading is left alone: a short page is not a reason
+ * to delete anything.
  */
 export async function dropRekeyed(runQuery, { source, lots }) {
   const bySale = new Map();
   for (const l of lots) {
-    if (!l.sale_label || !l.year) continue;
+    if (!l.sale_label || !l.year || l.lot === null || l.lot === undefined || !l.dam_key) continue;
     const k = `${l.sale_label}\u0000${l.year}`;
-    (bySale.get(k) ?? bySale.set(k, new Set()).get(k)).add(l.sale_key);
+    (bySale.get(k) ?? bySale.set(k, []).get(k)).push(l);
   }
   let dropped = 0;
-  for (const [k, keys] of bySale) {
+  for (const [k, sale] of bySale) {
     const [label, year] = k.split("\u0000");
-    const list = [...keys];
-    const done = await runQuery(
-      `DELETE FROM ${LOTS_TABLE} WHERE source = ? AND sale_label = ? AND year = ? AND sale_key NOT IN (${list.map(() => "?").join(", ")})`,
-      [source, label, Number(year), ...list],
-    );
-    dropped += Number(done?.affectedRows ?? 0);
+    for (let i = 0; i < sale.length; i += 400) {
+      const part = sale.slice(i, i + 400);
+      const done = await runQuery(
+        `DELETE FROM ${LOTS_TABLE} WHERE source = ? AND sale_label = ? AND year = ?
+           AND (lot, dam_key) IN (${part.map(() => "(?, ?)").join(", ")})
+           AND lot_hash NOT IN (${part.map(() => "?").join(", ")})`,
+        [source, label, Number(year), ...part.flatMap((l) => [String(l.lot), l.dam_key]), ...part.map(lotHash)],
+      );
+      dropped += Number(done?.affectedRows ?? 0);
+    }
   }
   return dropped;
 }

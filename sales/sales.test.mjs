@@ -413,19 +413,49 @@ test("a lot listed on two pages of one sale is read once, by the reading that sa
   assert.equal(oneLotOnce([day1, { ...day2, source: "goffs" }]).dropped, 0);
 });
 
-test("a sale read again under a new key drops its rows under the old one, and only those", async () => {
-  const calls = [];
-  const runQuery = async (sql, params) => { calls.push({ sql, params }); return { affectedRows: 3 }; };
-  const lots = [
-    { sale_label: "3/2025-11-03", year: 2025, sale_key: "GOF-HIT" },
-    { sale_label: "3/2025-11-03", year: 2025, sale_key: "GOF-AUT" },
-    { sale_label: "3/2025-11-04", year: 2025, sale_key: "GOF-AUT" },
-    { sale_label: null, year: 2025, sale_key: "GOF-OTHER" },
+test("a horse the new reading files under another key loses its old row; nothing else does", async () => {
+  // The table as it stood on 30 October 2026: the Autumn Sale's first day of
+  // 2025, its yearling under GOF-HIT, then read again with the yearling under
+  // GOF-AUT. The DELETE is run against these rows the way MySQL would.
+  const label = "3/2025-11-03";
+  const row = (sale_key, lot, dam_key, extra = {}) => {
+    const l = { source: "parsebot", sale_label: label, year: 2025, sale_key, lot, dam_key, ...extra };
+    return { ...l, lot_hash: lotHash(l) };
+  };
+  let table = [
+    row("GOF-HIT", "12", "MUM"), // a horse in training, filed as it was
+    row("GOF-HIT", "210", "YEARLING DAM"), // the yearling, under its old filing
+    row("GOF-AUT", "210", "YEARLING DAM"), // ... and its new one
+    row("GOF-HIT", "300", "NOT IN THIS READING"), // missing from the new page: kept
+    row("GOF-HIT", "210", "YEARLING DAM", { source: "goffs" }), // another source: kept
+    row("GOF-HIT", "210", "YEARLING DAM", { sale_label: "3/2025-11-04" }), // another page: kept
   ];
-  const dropped = await dropRekeyed(runQuery, { source: "parsebot", lots });
-  assert.equal(calls.length, 2, "one statement a sale; a lot with no label is left alone");
-  assert.match(calls[0].sql, /DELETE FROM sale_lots WHERE source = \? AND sale_label = \? AND year = \? AND sale_key NOT IN \(\?, \?\)/);
-  assert.deepEqual(calls[0].params, ["parsebot", "3/2025-11-03", 2025, "GOF-HIT", "GOF-AUT"]);
-  assert.deepEqual(calls[1].params, ["parsebot", "3/2025-11-04", 2025, "GOF-AUT"]);
-  assert.equal(dropped, 6);
+  const runQuery = async (sql, params) => {
+    assert.match(sql, /^DELETE FROM sale_lots WHERE source = \? AND sale_label = \? AND year = \?/);
+    const [source, sl, year, ...rest] = params;
+    const pairs = [];
+    const n = (sql.split("lot_hash NOT IN")[0].match(/\(\?, \?\)/g) || []).length;
+    for (let i = 0; i < n; i++) pairs.push(`${rest[2 * i]}|${rest[2 * i + 1]}`);
+    const keep = new Set(rest.slice(2 * n));
+    const before = table.length;
+    table = table.filter((r) => !(r.source === source && r.sale_label === sl && r.year === year && pairs.includes(`${r.lot}|${r.dam_key}`) && !keep.has(r.lot_hash)));
+    return { affectedRows: before - table.length };
+  };
+  const reading = [
+    { sale_label: label, year: 2025, sale_key: "GOF-HIT", lot: "12", dam_key: "MUM" },
+    { sale_label: label, year: 2025, sale_key: "GOF-AUT", lot: "210", dam_key: "YEARLING DAM" },
+    { sale_label: null, year: 2025, sale_key: "GOF-OTHER", lot: "1", dam_key: "X" },
+  ];
+  const dropped = await dropRekeyed(runQuery, { source: "parsebot", lots: reading });
+  assert.equal(dropped, 1);
+  assert.deepEqual(
+    table.map((r) => `${r.source} ${r.sale_label} ${r.sale_key} ${r.lot}`),
+    [
+      "parsebot 3/2025-11-03 GOF-HIT 12",
+      "parsebot 3/2025-11-03 GOF-AUT 210",
+      "parsebot 3/2025-11-03 GOF-HIT 300",
+      "goffs 3/2025-11-03 GOF-HIT 210",
+      "parsebot 3/2025-11-04 GOF-HIT 210",
+    ],
+  );
 });
