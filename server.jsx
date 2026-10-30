@@ -10553,6 +10553,12 @@ setTimeout(async () => {
       // Wait for whatever long job is running (the one before, a manual run) to finish, up to a day.
       for (let waited = 0; svc.busy() && waited < 24 * 60; waited += 2) await new Promise((r) => setTimeout(r, 2 * 60_000));
       if (svc.busy()) return console.log(`[sales] ${label} backfill: a long job is still running; left to the next start`);
+      if (house === "bloodhorse") {
+        // Jumps sales read before the feed left them out (30 October 2026) go before it resumes.
+        const { pruneJumps } = await import("./sales/bloodhorse.mjs");
+        const gone = await pruneJumps(runQuery).catch((err) => (console.warn("[sales] BloodHorse jumps rows not removed:", err.message), 0));
+        if (gone) console.log(`[sales] BloodHorse: ${gone} rows of jumps sales removed`);
+      }
       const out = svc.runHouse(house, { from: 2015, to: new Date().getFullYear(), skipHeld: true, pauseMs: 1500 });
       console.log(`[sales] ${label} backfill:`, out.started ? "started" : "a job is already running");
       await new Promise((r) => setTimeout(r, 60_000));

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isGap, companyOf, regionOf, saleOf, kindOf, outcomeOf, parseLots, idOfLink, discover, fetchSale } from "./bloodhorse.mjs";
+import { isGap, isJumps, companyOf, regionOf, saleOf, kindOf, outcomeOf, parseLots, idOfLink, discover, fetchSale, pruneJumps } from "./bloodhorse.mjs";
 import { lastResort, damRecord } from "./metrics.mjs";
 
 // As BloodHorse gave them through parse.bot (30 October 2026).
@@ -13,6 +13,9 @@ const JRHA = { ...saleOf({ name: "JRHA Select Yearling & Foal Sale 2025", code: 
 
 test("only the sales no other feed reads are this feed's", () => {
   for (const n of ["JRHA Select Yearling & Foal Sale 2025", "New Zealand Bloodstock Karaka Yearling Sale 2025 (Books 1 & 2)", "Jockey Club of Saudi Arabia Yearling Sale 2025", "Minnesota Thoroughbred Association Yearling & Mixed Sale 2025"]) assert.equal(isGap(n), true, n);
+  for (const n of ["Brightwells Bloodstock 2015 Cheltenham January Bloodstock Sale", "Goffs UK Doncaster Spring Store Sale 2016", "Tattersalls Cheltenham Festival Sale 2025"]) assert.equal(isJumps(n), true, `${n}: a jumps sale`);
+  for (const n of ["Brightwells Bloodstock 2015 Ascot April Select 2 Year Old Breeze-Up Sale", "Brightwells 2016 Ascot Horses in Training Sale"]) assert.deepEqual([isJumps(n), isGap(n)], [false, true], `${n}: a flat sale of a jumps house`);
+  assert.equal(isGap("Doncaster Bloodstock Sales 2015 Breeze Up Sale"), false, "Goffs UK's old name: the Racing Post feed's");
   for (const n of ["Keeneland September Yearling Sale 2025", "Fasig-Tipton Saratoga Sale 2025", "Tattersalls October Yearling Sale Book 1 2025", "Goffs Ireland Orby Sale 2025 (Book 1)", "Arqana August Yearling Sale 2025", "Ocala Breeders' Sales Co. Winter Mixed Sale 2025", "Baden-Baden Sales and Racing Festival 2025", "Osarus September Yearling Sale 2025", "Canadian Thoroughbred Horse Society Yearling Sale 2025"]) assert.equal(isGap(n), false, n);
 });
 
@@ -68,6 +71,14 @@ test("a BloodHorse lot stands only where no other source holds the horse", () =>
 test("a dam's record gives each lot's year of birth", () => {
   const rec = damRecord([{ dam_key: "MECHA CORTA", sale_type: "yearling", year: 2025, sale_name: "JRHA Select Yearling & Foal Sale", foaling_year: 2024, status: "sold", price_gbp: 1438780, region: "JPN" }], "MECHA CORTA");
   assert.equal(rec.lots[0].foaled, 2024);
+});
+
+test("rows of jumps sales read earlier are removed, and only this feed's", async () => {
+  let sql = null;
+  const gone = await pruneJumps(async (s) => ((sql = s), { affectedRows: 354 }));
+  assert.equal(gone, 354);
+  assert.match(sql, /^DELETE FROM sale_lots WHERE source = 'bloodhorse' AND \(/);
+  assert.match(sql, /REGEXP 'brightwells\|cheltenham' AND LOWER\(sale_name\) NOT REGEXP 'flat\|yearling\|foal\|breeze/, "a jumps house's flat sales stay");
 });
 
 const answer = (data) => ({ ok: true, status: 200, text: async () => JSON.stringify({ status: "success", data }) });

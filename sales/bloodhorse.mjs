@@ -31,10 +31,36 @@ const BASE = `https://api.parse.bot/scraper/${SCRAPER}`;
 const RESULTS = "https://www.bloodhorse.com/horse-racing/thoroughbred-sales/results";
 
 /** The companies another feed reads, by the start of BloodHorse's sale names; left to those feeds. */
-export const READ_ELSEWHERE = /^(keeneland|fasig|tattersalls|goffs|arqana|inglis|magic millions|ocala|obs\b|baden|bbag|osarus|canadian thoroughbred|california|texas|washington|ltba|louisiana|emirates|sga\b|auctav|thoroughbid|goresbridge)/i;
+export const READ_ELSEWHERE = /^(keeneland|fasig|tattersalls|goffs|doncaster bloodstock|arqana|inglis|magic millions|ocala|obs\b|baden|bbag|osarus|canadian thoroughbred|california|texas|washington|ltba|louisiana|emirates|sga\b|auctav|thoroughbid|goresbridge)/i;
 
-/** Whether a sale is this feed's: one no other feed reads. */
-export const isGap = (name) => Boolean(String(name ?? "").trim()) && !READ_ELSEWHERE.test(String(name).trim());
+/**
+ * National Hunt sales: stores and pointers are none of the market's kinds,
+ * so they are left out here as the Racing Post feed leaves them out. A sale
+ * is jumps by its name (National Hunt, point-to-point, store), or by its
+ * house (Brightwells, Cheltenham) unless the name says flat: Brightwells'
+ * Ascot breeze-ups and horses-in-training sales were flat sales.
+ */
+const JUMPS_NAME = /national hunt|\bn\.?h\.?\b|point[- ]to[- ]point|\bp2p\b|\bstore\b|\bjumps?\b/i;
+const JUMPS_HOUSE = /brightwells|cheltenham/i;
+const FLAT = /flat|yearling|foal|breeze|2yo|two[- ]year|in training|racing age/i;
+export const isJumps = (name) => {
+  const s = String(name ?? "");
+  return JUMPS_NAME.test(s) || (JUMPS_HOUSE.test(s) && !FLAT.test(s));
+};
+
+/** The same rule as the database matches it, for the rows read before jumps sales were left out. */
+export const JUMPS_WHERE =
+  "(LOWER(sale_name) REGEXP 'national hunt|point[- ]to[- ]point|p2p| store|jump'"
+  + " OR (LOWER(sale_name) REGEXP 'brightwells|cheltenham' AND LOWER(sale_name) NOT REGEXP 'flat|yearling|foal|breeze|2yo|two[- ]year|in training|racing age'))";
+
+/** Rows of jumps sales this feed read before it left them out, removed; how many went. */
+export async function pruneJumps(runQuery) {
+  const done = await runQuery(`DELETE FROM sale_lots WHERE source = 'bloodhorse' AND ${JUMPS_WHERE}`, []);
+  return done?.affectedRows ?? 0;
+}
+
+/** Whether a sale is this feed's: one no other feed reads, and not a jumps sale. */
+export const isGap = (name) => Boolean(String(name ?? "").trim()) && !READ_ELSEWHERE.test(String(name).trim()) && !isJumps(name);
 
 /** The company that held a sale, from its name: the name the index matches horses by (metrics.mjs houseOf). */
 const COMPANIES = [
