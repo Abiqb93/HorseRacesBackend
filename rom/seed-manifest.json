@@ -63,8 +63,8 @@
       "kind": "coverings",
       "year": 2020,
       "rows": 19603,
-      "bytes": 538122,
-      "sha256": "551950846cb83e3a440703fe370680a909bba78c813a80db70d0e5803de08efe"
+      "bytes": 556359,
+      "sha256": "8a45ea0e6ccb2e83a4f2bc586593c87e006762e60e0f783d48c69f796b239ee6"
     },
     {
       "name": "rom-2021",
