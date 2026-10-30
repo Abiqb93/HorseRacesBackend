@@ -2621,7 +2621,13 @@ app.get('/api/ConfirmationsTracking', (req, res) => {
 });
 
 
-app.use(express.json()); 
+// Every JSON body from here down is read here first, before a route's own
+// express.json() sees it, so this limit is the one that holds: at the
+// default 100 KB it answered 413 to the mating plan's drafting request and
+// to every other route below that declares more (up to 8 MB, the bookings
+// import). A route below that declares less is held to this too; the
+// hit-sales settings, which keep to 64–256 KB, are registered above it.
+app.use(express.json({ limit: "8mb" }));
 
 // A change to what a user tracks, or a result they mark reviewed, rebuilds
 // their home page lists a few seconds later (home/builder.mjs). The deletes by
