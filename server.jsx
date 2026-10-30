@@ -10342,6 +10342,94 @@ app.post("/api/sales/rebuild", async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Return of Mares: every stallion's book in Britain and Ireland year by year,
+// what was in it and what came of it (rom/). The user's files are sent in as
+// seed parts, each accepted only if its fingerprint is in
+// rom/seed-manifest.json; nothing is read without them.
+// ---------------------------------------------------------------------------
+
+let romService = null;
+async function rom() {
+  if (!romService) {
+    const { createRomService } = await import("./rom/service.mjs");
+    romService = createRomService({ runQuery, log: { log: (m) => console.log(m), warn: (m) => console.warn(m) } });
+  }
+  return romService;
+}
+const romError = (res, what, err) => {
+  if (err.code === "ROM_EMPTY") return res.status(503).set("Retry-After", "60").json({ error: "empty", detail: err.message });
+  console.error(`[rom] ${what} failed:`, err.message);
+  res.status(500).json({ error: `${what} failed`, detail: err.message });
+};
+
+app.get("/api/rom/status", async (req, res) => {
+  try {
+    res.json(await (await rom()).status());
+  } catch (err) {
+    romError(res, "status", err);
+  }
+});
+
+app.get("/api/rom/books", async (req, res) => {
+  try {
+    res.json(await (await rom()).books());
+  } catch (err) {
+    romError(res, "books", err);
+  }
+});
+
+app.get("/api/rom/stallion", async (req, res) => {
+  const name = String(req.query.name ?? "").slice(0, 80);
+  if (!name.trim()) return res.status(400).json({ error: "name required" });
+  try {
+    const out = await (await rom()).stallion(name);
+    if (!out) return res.status(404).json({ error: "not in the Return of Mares", name });
+    res.json(out);
+  } catch (err) {
+    romError(res, "stallion", err);
+  }
+});
+
+// Several stallions at once, as a mating plan reads them: `names` split by
+// "|", and `msire` her sire, for each stallion's record with mares by him.
+app.get("/api/rom/stallions", async (req, res) => {
+  const names = String(req.query.names ?? "").split("|").map((n) => n.trim().slice(0, 80)).filter(Boolean).slice(0, 40);
+  if (!names.length) return res.status(400).json({ error: "names required" });
+  try {
+    res.json(await (await rom()).stallions(names, { msire: req.query.msire ? String(req.query.msire).slice(0, 80) : null }));
+  } catch (err) {
+    romError(res, "stallions", err);
+  }
+});
+
+app.get("/api/rom/mare", async (req, res) => {
+  const name = String(req.query.name ?? "").slice(0, 80);
+  if (!name.trim()) return res.status(400).json({ error: "name required" });
+  try {
+    res.json(await (await rom()).mare(name, Number(req.query.yob) || null));
+  } catch (err) {
+    romError(res, "mare", err);
+  }
+});
+
+/** A part of the seed, accepted only if its fingerprint is in rom/seed-manifest.json. */
+app.post("/api/rom/seed", express.raw({ type: "*/*", limit: "12mb" }), async (req, res) => {
+  try {
+    const out = await (await rom()).acceptSeed(Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body ?? ""));
+    if (!out.accepted) return res.status(403).json({ error: "not a part of the seed", ...out });
+    res.status(202).json(out);
+  } catch (err) {
+    romError(res, "seed", err);
+  }
+});
+
+setTimeout(() => {
+  rom()
+    .then((svc) => svc.build())
+    .catch((err) => console.warn("[rom] warm-up failed:", err.message));
+}, 100_000);
+
 // The index built a couple of minutes after a start, so the first page to
 // ask does not wait for three hundred thousand lots to be read.
 setTimeout(() => {
