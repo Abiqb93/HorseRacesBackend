@@ -87,6 +87,24 @@ test("flat or jumps: by the foals' flat runners, else by the mares' jumps racing
   assert.equal(codeOf({ years: { 2021: { q: { nhN: 20, nh: 0 } } } }, 2019), "flat");
 });
 
+test("a flat sire whose books are now jumps mares reads as jumps; a new one by his mares' sires", () => {
+  const rows = coverings();
+  // the jumps sire's daughters, so their sire reads as jumps
+  const add = (n, r) => {
+    for (let i = 0; i < n; i += 1) rows.push({ mare: `${r.st} ${r.y} ${i}`, myob: 2012, ...r });
+  };
+  // Turned Sire: his foals ran on the flat; his last books are jumps mares
+  for (const y of [2016, 2017]) add(60, { y, st: "Turned Sire (GB)", msire: "Galileo (IRE)", mf: "W", ran: 1, r95: 0, r105: 0, r115: 0 });
+  for (const y of [2020, 2021]) add(60, { y, st: "Turned Sire (GB)", msire: "Jumps Sire (GER)", mf: "Unr", mnh: "W" });
+  // New Jumper: one book, no classes, every mare by the jumps sire
+  add(40, { y: 2021, st: "New Jumper (IRE)", msire: "Jumps Sire (GER)" });
+  const ix = buildIndex(rows);
+  assert.equal(ix.stallions.get("turned sire").code, "jumps");
+  assert.equal(ix.stallions.get("new jumper").code, "jumps");
+  assert.equal(ix.stallions.get("flat sire").code, "flat", "a flat sire with flat mares stays flat");
+  assert.deepEqual(ix.stallions.get("turned sire").recent, { racedOverJumps: 1, byJumpsSires: 1 });
+});
+
 test("a mare counts as proven once her 95+ foal was old enough to show it", () => {
   const ix = buildIndex(coverings());
   // Prudenzia's 2017 foal was 95+: proven at her 2020 covering, not at 2016's

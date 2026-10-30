@@ -119,6 +119,46 @@ export function codeOf(s, resultsThrough) {
 }
 
 /**
+ * What a stallion is now, from the mares he covers now. His foals' flat
+ * runners say what he was: Golden Horn's ran on the flat, and his books are
+ * jumps mares today. And a stallion new to stud has no foals to read, nor,
+ * in the latest return, his mares' classes. So his last two books are read
+ * too: how many of the mares are by jumps sires (sires read as jumps by their
+ * own foals), and how many raced over jumps themselves.
+ *
+ * Jumps at half the mares by jumps sires, or three in ten raced over jumps;
+ * flat and jumps at a fifth, or one in eight; flat where neither shows.
+ */
+export function recode(stallions, rows) {
+  const recent = new Map();
+  for (const r of rows) {
+    if (!r.st || !r.msire) continue;
+    const k = nameKey(r.st);
+    const s = stallions.get(k);
+    if (!s) continue;
+    const active = Object.keys(s.years).map(Number);
+    const last = Math.max(...active);
+    if (r.y < last - 1) continue;
+    const mc = stallions.get(nameKey(r.msire))?.code;
+    if (mc !== "flat" && mc !== "jumps") continue;
+    const t = recent.get(k) ?? recent.set(k, { n: 0, jumps: 0 }).get(k);
+    t.n += 1;
+    if (mc === "jumps") t.jumps += 1;
+  }
+  for (const s of stallions.values()) {
+    const years = Object.keys(s.years).map(Number).sort((a, b) => b - a);
+    const withNh = years.map((y) => s.years[y].q).find((q) => q.nhN >= 20);
+    const raced = withNh ? withNh.nh / withNh.nhN : null;
+    const t = recent.get(s.key);
+    const bred = t && t.n >= 20 ? t.jumps / t.n : null;
+    s.recent = { racedOverJumps: raced, byJumpsSires: bred };
+    if ((bred ?? 0) >= 0.5 || (raced ?? 0) >= 0.3) s.code = "jumps";
+    else if ((bred ?? 0) >= 0.2 || (raced ?? 0) >= 0.12) s.code = "mixed";
+    else if (s.code === "unknown" && (bred !== null || raced !== null)) s.code = "flat";
+  }
+}
+
+/**
  * Everything the pages read, from the coverings.
  *
  * Returns { years, resultsThrough, firstRunners, totals, stallions, crosses, mares }
@@ -226,6 +266,7 @@ export function buildIndex(rows) {
     }
     s.code = codeOf(s, resultsThrough);
   }
+  recode(stallions, rows);
 
   return { years, resultsThrough, firstRunners, typicalRan: typical, totals: totalsOf(years, stallions), stallions, crosses, mares, names };
 }
