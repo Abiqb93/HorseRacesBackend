@@ -93,3 +93,20 @@ test("London's day, including the hour after midnight in summer when UTC is stil
   assert.equal(londonDay(new Date("2026-12-14T23:30:00Z")), "2026-12-14");
   assert.equal(londonDay(new Date("2026-03-01T10:00:00Z"), -2), "2026-02-27");
 });
+
+test("stored lists are kept once built or first read, and a rebuild replaces the kept copy", async () => {
+  const s = setup();
+  let reads = 0;
+  const runQuery = async (sql, params) => { if (/SELECT body/.test(sql)) reads += 1; return s.runQuery(sql, params); };
+  const b = createHomeBuilder({ ...s, runQuery, clock, log: quiet });
+  await b.buildAll("test");
+  const text = await b.readText("Tom");
+  assert.equal(JSON.parse(text).userId, "Tom");
+  assert.equal(reads, 0);
+  // A fresh builder (a restart) reads the database once, then keeps it.
+  const after = createHomeBuilder({ ...s, runQuery, clock, log: quiet });
+  assert.equal(await after.readText("Tom"), text);
+  assert.equal(await after.readText("Tom"), text);
+  assert.equal(reads, 1);
+  assert.equal(await after.readText("Nobody"), null);
+});
