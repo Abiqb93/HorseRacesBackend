@@ -103,6 +103,20 @@ export function preferHouses(lots, houses) {
 }
 
 /**
+ * A source read only where nothing else holds the horse (BloodHorse,
+ * sales/bloodhorse.mjs): its lot is left out wherever any other source holds
+ * the same house, sale year, dam and sire, so the New Zealand workbook's
+ * Karaka rows, in their own currency, stand where both have the horse.
+ */
+export function lastResort(lots, sources) {
+  const key = (l) => `${houseOf(l.company)}|${l.year}|${l.dam_key}|${l.sire_key ?? ""}`;
+  const held = new Set();
+  for (const l of lots) if (!sources.has(l.source) && l.dam_key) held.add(key(l));
+  const kept = lots.filter((l) => !sources.has(l.source) || !l.dam_key || !held.has(key(l)));
+  return { lots: kept, dropped: lots.length - kept.length };
+}
+
+/**
  * One lot, once, when a feed lists it on two pages of the same sale.
  *
  * Racing Post gives Goffs' Autumn Sale as two pages, and a lot withdrawn
@@ -359,7 +373,7 @@ export function damRecord(lots, damKey, { sireMedians = new Map() } = {}) {
       const ref = sireMedians.get(`${l.sire_key}|${l.sale_type}|${l.region}|${l.year}`);
       const ratio = SOLD(l) && ref ? Number(l.price_gbp) / ref : null;
       if (ratio) ratios.push(ratio);
-      return { year: l.year, sale: l.sale_name, type: l.sale_type, lot: l.lot, sire: l.sire, sex: l.sex, status: l.status, price: l.price, currency: l.currency, priceGbp: l.price_gbp, vendor: l.vendor ?? null, buyer: l.buyer ?? null, sireMedianGbp: ref ? Math.round(ref) : null, ratio: round(ratio, 2) };
+      return { year: l.year, sale: l.sale_name, type: l.sale_type, lot: l.lot, sire: l.sire, sex: l.sex, status: l.status, price: l.price, currency: l.currency, priceGbp: l.price_gbp, vendor: l.vendor ?? null, buyer: l.buyer ?? null, foaled: l.foaling_year ?? null, sireMedianGbp: ref ? Math.round(ref) : null, ratio: round(ratio, 2) };
     });
   const index = ratios.length ? Math.exp(ratios.reduce((a, r) => a + Math.log(r), 0) / (ratios.length + 1)) : null;
   return { damKey, lots: items, sold: items.filter((i) => i.status === "sold").length, index: round(index, 2), basis: ratios.length };
