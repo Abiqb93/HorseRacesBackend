@@ -122,3 +122,26 @@ test("a key parse.bot refuses is said plainly, and not tried three times", async
   await assert.rejects(discover({ year: 2025, fetchImpl }), /HTTP 401 .*PARSE_API_KEY/);
   assert.equal(calls, 1);
 });
+
+test("the Autumn Sale's first day: yearlings under the Autumn Yearlings, horses in training where they were", () => {
+  const day1 = {
+    venue_id: "3", sale_date: "2025-11-03", sale_end_date: "2025-11-03",
+    sale_name: "Goffs Autumn HIT & Yearling Sale 2025", sale_company: "GOFFS",
+    lots: [
+      { lot_no: 12, horse_name: "Old Boy", sex: "G", year_of_birth: 2021, sire_name: "Kodiac", dam_name: "Mum", buyer: "A Buyer", price: 20000, currency: "EUR" },
+      { lot_no: 210, sex: "C", year_of_birth: 2024, sire_name: "Mehmas", dam_name: "Yearling Dam", buyer: "B Buyer", price: 30000, currency: "EUR" },
+      { lot_no: 211, sex: "F", sire_name: "Kodiac", dam_name: "No Age", buyer: "C Buyer", price: 9000, currency: "EUR" },
+    ],
+  };
+  const { lots } = parseSale(day1, { today: "2026-01-01" });
+  const byLot = Object.fromEntries(lots.map((l) => [l.lot, l]));
+  assert.equal(byLot["12"].sale_type, "hit");
+  assert.equal(byLot["12"].sale_key, "GOF-HIT");
+  assert.equal(byLot["12"].sale_name, "Goffs Horses in Training");
+  assert.equal(byLot["210"].sale_type, "yearling");
+  assert.equal(byLot["210"].sale_key, "GOF-AUT");
+  assert.equal(byLot["210"].sale_name, "Goffs Autumn Yearlings");
+  // No age given: counted as before, with the horses in training.
+  assert.equal(byLot["211"].sale_key, "GOF-HIT");
+  assert.ok(lots.every((l) => l.sale_label === "3/2025-11-03"));
+});

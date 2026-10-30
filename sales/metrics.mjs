@@ -102,6 +102,36 @@ export function preferHouses(lots, houses) {
   return { lots: kept, dropped: lots.length - kept.length };
 }
 
+/**
+ * One lot, once, when a feed lists it on two pages of the same sale.
+ *
+ * Racing Post gives Goffs' Autumn Sale as two pages, and a lot withdrawn
+ * from the yearling days is listed on the first day's page too (in 2025,
+ * lots 602, 660, 674 and 734 among them). Both readings land under the same
+ * sale key, year, lot and dam; the one that says what happened is kept.
+ */
+const OUTCOME_RANK = { sold: 0, rna: 1, unknown: 2, withdrawn: 3, catalogued: 4 };
+export function oneLotOnce(lots) {
+  const best = new Map();
+  const order = [];
+  for (const l of lots) {
+    if (!l.dam_key || l.lot === null || l.lot === undefined) {
+      order.push(l);
+      continue;
+    }
+    const k = `${l.source}|${l.sale_key}|${l.year}|${l.lot}|${l.dam_key}`;
+    const held = best.get(k);
+    if (!held) {
+      best.set(k, l);
+      order.push(k);
+    } else if ((OUTCOME_RANK[l.status] ?? 5) < (OUTCOME_RANK[held.status] ?? 5)) {
+      best.set(k, l);
+    }
+  }
+  const kept = order.map((x) => (typeof x === "string" ? best.get(x) : x));
+  return { lots: kept, dropped: lots.length - kept.length };
+}
+
 /* --------------------------------------------------------------- fees */
 
 /**

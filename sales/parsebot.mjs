@@ -33,7 +33,7 @@
  */
 import { nameKey, sexOf } from "./normalise.mjs";
 import { convert } from "./fx.mjs";
-import { regionOf as goffsRegion, saleFromTitle as goffsSale, kindOf } from "./goffs.mjs";
+import { regionOf as goffsRegion, saleFromTitle as goffsSale, saleForKind, kindOf } from "./goffs.mjs";
 
 const SCRAPER = process.env.PARSE_SALES_SCRAPER_ID || "c8c40e63-fbf4-42f4-b1bc-88695b5118d6";
 const BASE = `https://api.parse.bot/scraper/${SCRAPER}`;
@@ -96,7 +96,7 @@ export function saleOf({ sale_company: company, sale_name: title, sale_date: dat
   if (GOFFS.has(upper(company))) {
     const region = upper(company) === "GOFFS UK" ? "UK" : upper(company) === "GOFFSGO" ? "GoffsGo" : goffsRegion(null, null, title);
     const s = goffsSale(title, region);
-    return { key: s.key, name: s.name, type: s.type, tier: s.tier, company: s.company, region: "EU", year, month };
+    return { key: s.key, name: s.name, type: s.type, tier: s.tier, company: s.company, region: "EU", year, month, byKind: s.byKind };
   }
   const c = companyOf(company, currency);
   const flat = /flat|yearling|foal|breeze|2yo/i.test(title ?? "");
@@ -154,8 +154,8 @@ export function parseSale(data, { today = new Date().toISOString().slice(0, 10) 
     lots.push({
       source: "parsebot",
       company: sale.company,
-      sale_key: sale.key,
-      sale_name: sale.name,
+      sale_key: saleForKind(sale, type).key,
+      sale_name: saleForKind(sale, type).name,
       sale_tier: sale.tier,
       sale_label: id,
       region: sale.region,

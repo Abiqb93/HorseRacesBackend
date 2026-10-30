@@ -177,3 +177,27 @@ test("sent in, the lots are written as a feed's: a named sale's workbook rows gi
   assert.deepEqual(deletes, [["GOF-ORBY", 2025, "goffs"]]);
   assert.equal(sql.filter(([q]) => /^INSERT INTO sale_imports/.test(q)).length, 2, "one import logged per sale");
 });
+
+/* ------------------------------------------- the Autumn Sale's two kinds */
+
+test("the Autumn Sale's first day files its yearlings with the Autumn Yearlings", async () => {
+  const { saleForKind } = await import("./goffs.mjs");
+  // Racing Post's title for the first day; the yearling days after it keep their own rule.
+  const day1 = saleFromTitle("Goffs Autumn HIT & Yearling Sale 2026", "IRE");
+  assert.equal(day1.key, "GOF-HIT", "the horses in training stay where they were");
+  assert.equal(day1.type, "hit");
+  assert.deepEqual(saleForKind(day1, "yearling"), { key: "GOF-AUT", name: "Goffs Autumn Yearlings" });
+  assert.deepEqual(saleForKind(day1, "hit"), { key: "GOF-HIT", name: "Goffs Horses in Training" });
+  assert.equal(saleFromTitle("Goffs Autumn Horses in Training & Yearling Sale", "IRE").byKind.yearling.key, "GOF-AUT");
+  assert.equal(saleFromTitle("Goffs Autumn Yearling Sale 2026", "IRE").key, "GOF-AUT");
+});
+
+test("an autumn National Hunt sale, a plain HIT sale and Goffs UK's autumn sale are left as they were", async () => {
+  const { saleForKind } = await import("./goffs.mjs");
+  assert.equal(saleFromTitle("Goffs Autumn National Hunt Sale", "IRE").key, "GOF-NH");
+  assert.equal(saleFromTitle("Goffs Autumn Store Sale", "IRE").key, "GOF-NH");
+  const hit = saleFromTitle("Goffs Horses in Training Sale 2026", "IRE");
+  assert.equal(hit.byKind, undefined);
+  assert.deepEqual(saleForKind(hit, "yearling"), { key: "GOF-HIT", name: "Goffs Horses in Training" });
+  assert.equal(saleFromTitle("Goffs UK Autumn HIT Sale", "UK").key, "GUK-HIT");
+});
