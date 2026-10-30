@@ -201,10 +201,12 @@ test("horses in training: the share sold early, at two or three", () => {
 test("a mare's produce against its sires' medians: her commercial index", () => {
   const lots = [];
   for (let i = 0; i < 5; i += 1) lots.push(lot({ sire_key: "DUBAWI", dam_key: `D${i}`, price_gbp: 400000 }));
-  lots.push(lot({ sire_key: "DUBAWI", dam_key: "PRUDENZIA", price_gbp: 1200000, sale_name: "Arqana August", sire: "Dubawi" }));
+  lots.push(lot({ sire_key: "DUBAWI", dam_key: "PRUDENZIA", price_gbp: 1200000, sale_name: "Arqana August", sire: "Dubawi", vendor: "Haras de Saint Pair", buyer: "Godolphin" }));
   lots.push(lot({ sire_key: "DUBAWI", dam_key: "PRUDENZIA", year: 2024, status: "rna", price_gbp: null }));
   const rec = damRecord(lots, "PRUDENZIA", { sireMedians: sireMedians(lots) });
   assert.equal(rec.lots.length, 2);
+  const sold = rec.lots.find((l) => l.status === "sold");
+  assert.deepEqual([sold.vendor, sold.buyer], ["Haras de Saint Pair", "Godolphin"], "who sold each lot and who bought it");
   assert.equal(rec.sold, 1);
   assert.equal(rec.lots[1].ratio, 3, "1.2m against the 400k median of Dubawi's yearlings that year");
   assert.ok(rec.index > 1.5);
@@ -345,7 +347,7 @@ test("the index reads the lots table in pages by id", async () => {
 
 test("a lot as the index keeps it: one shape, shared strings, numbers as numbers", async () => {
   const { slim } = await import("./service.mjs");
-  const row = { id: 7, source: "tattersalls", company: "Tattersalls", sale_key: "TAT-OC2", sale_name: "Tattersalls October Book 2", sale_tier: 2, region: "EU", year: 2025, sale_type: "yearling", lot: "12", sire: "Night of Thunder", sire_key: "NIGHT OF THUNDER", dam_key: "A DAM", sex: "colt", foaling_year: 2024, status: "sold", after_sale: 0, price: "120000.00", currency: "GNS", price_gbp: "126000.00" };
+  const row = { id: 7, source: "tattersalls", company: "Tattersalls", sale_key: "TAT-OC2", sale_name: "Tattersalls October Book 2", sale_tier: 2, region: "EU", year: 2025, sale_type: "yearling", lot: "12", sire: "Night of Thunder", sire_key: "NIGHT OF THUNDER", dam_key: "A DAM", sex: "colt", foaling_year: 2024, vendor: "Newsells Park Stud", buyer: "Godolphin", status: "sold", after_sale: 0, price: "120000.00", currency: "GNS", price_gbp: "126000.00" };
   const a = slim(row);
   const b = slim({ ...row, sale_name: ["Tattersalls October ", "Book 2"].join("") });
   assert.equal(a.id, undefined);
@@ -353,6 +355,8 @@ test("a lot as the index keeps it: one shape, shared strings, numbers as numbers
   assert.equal(a.price_gbp, 126000);
   assert.deepEqual(Object.keys(a), Object.keys(slim({ source: "x", region: "EU", year: 2020, sale_type: "foal", status: "rna" })));
   assert.equal(a.sale_name, b.sale_name);
+  assert.deepEqual([a.vendor, a.buyer], ["Newsells Park Stud", "Godolphin"], "who sold it and who bought it");
+  assert.deepEqual([slim({ source: "x", region: "EU", year: 2020, sale_type: "foal", status: "rna" }).buyer], [null]);
 });
 
 test("a page's request while the first index is built is answered at once, not held", async () => {

@@ -329,7 +329,7 @@ export function damRecord(lots, damKey, { sireMedians = new Map() } = {}) {
       const ref = sireMedians.get(`${l.sire_key}|${l.sale_type}|${l.region}|${l.year}`);
       const ratio = SOLD(l) && ref ? Number(l.price_gbp) / ref : null;
       if (ratio) ratios.push(ratio);
-      return { year: l.year, sale: l.sale_name, type: l.sale_type, lot: l.lot, sire: l.sire, sex: l.sex, status: l.status, price: l.price, currency: l.currency, priceGbp: l.price_gbp, sireMedianGbp: ref ? Math.round(ref) : null, ratio: round(ratio, 2) };
+      return { year: l.year, sale: l.sale_name, type: l.sale_type, lot: l.lot, sire: l.sire, sex: l.sex, status: l.status, price: l.price, currency: l.currency, priceGbp: l.price_gbp, vendor: l.vendor ?? null, buyer: l.buyer ?? null, sireMedianGbp: ref ? Math.round(ref) : null, ratio: round(ratio, 2) };
     });
   const index = ratios.length ? Math.exp(ratios.reduce((a, r) => a + Math.log(r), 0) / (ratios.length + 1)) : null;
   return { damKey, lots: items, sold: items.filter((i) => i.status === "sold").length, index: round(index, 2), basis: ratios.length };

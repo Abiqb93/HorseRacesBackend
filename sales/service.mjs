@@ -123,6 +123,11 @@ export function slim(r) {
     dam_key: r.dam_key ?? null,
     sex: shared(r.sex ?? null),
     foaling_year: r.foaling_year ?? null,
+    // Who sold it and who bought it (27 October 2026: "We also need to add
+    // purchaser and vendor to all sales data"); a few thousand names, each
+    // held once however many lots carry it.
+    vendor: shared(r.vendor ?? null),
+    buyer: shared(r.buyer ?? null),
     status: shared(r.status),
     after_sale: r.after_sale ?? 0,
     price: num(r.price),
@@ -195,7 +200,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
       for (let after = 0; ; ) {
         const page = await runQuery(
           `SELECT /*+ MAX_EXECUTION_TIME(240000) */ id, source, company, sale_key, sale_name, sale_tier, region, year, sale_type, lot, sire, sire_key, dam_key,
-                  sex, foaling_year, status, after_sale, price, currency, price_gbp
+                  sex, foaling_year, vendor, buyer, status, after_sale, price, currency, price_gbp
              FROM ${LOTS_TABLE} WHERE id > ? ORDER BY id LIMIT ${Number(buildPage)}`,
           [after],
         );
