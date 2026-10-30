@@ -2623,6 +2623,27 @@ app.get('/api/ConfirmationsTracking', (req, res) => {
 
 app.use(express.json()); 
 
+// A change to what a user tracks, or a result they mark reviewed, rebuilds
+// their home page lists a few seconds later (home/builder.mjs). The deletes by
+// id do not say whose row it was, so that is read before the row goes.
+const HOME_TRACKING_WRITE = /^\/api\/(horseTracking|sire_tracking|dam_tracking|owner_tracking|jockey_tracking|reviewed_results)(\/|$)/;
+app.use((req, res, next) => {
+  if (req.method === "GET" || !HOME_TRACKING_WRITE.test(req.path)) return next();
+  const named = req.body?.user_id || req.body?.user || req.body?.User || req.body?.userId || req.query?.user || req.query?.user_id;
+  const byId = /^\/api\/(sire|dam|owner|jockey)_tracking\/([^/]+)$/.exec(req.path);
+  const who = !named && req.method === "DELETE" && byId
+    ? runQuery(`SELECT user_id FROM ${byId[1]}_tracking WHERE id = ? LIMIT 1`, [byId[2]]).then((r) => r?.[0]?.user_id).catch(() => null)
+    : Promise.resolve(named);
+  who.then((user) => {
+    if (user) {
+      res.on("finish", () => {
+        if (res.statusCode < 400) homeBuilder().then((b) => b.rebuildSoon(user)).catch(() => {});
+      });
+    }
+    next();
+  });
+});
+
 
 app.post("/api/calendar/invite", (req, res) => {
   // ✅ DEBUG LOGS: show exactly what the backend receives
@@ -3815,6 +3836,70 @@ const getOffspring = async () => {
   return offspring;
 };
 setTimeout(() => getOffspring().then((o) => o.start(null)).catch(() => {}), 20000);
+
+/**
+ * Every user's home page lists, built ahead of time (home/builder.mjs) so the
+ * page shows them at once: at 04:00 London, at 07:00 once the morning scrape
+ * is in, every two hours to 21:00, a user's own a few seconds after they
+ * change what they track, and once after a start if today's are not there.
+ */
+const loadHomeBuilder = () => import("./home/builder.mjs");
+let homeBuilderPromise = null;
+const homeBuilder = () => {
+  if (!homeBuilderPromise) {
+    homeBuilderPromise = loadHomeBuilder().then(({ createHomeBuilder }) =>
+      createHomeBuilder({
+        runQuery,
+        // This server's own routes, so the lists are built from exactly what the page reads.
+        fetchJson: async (path) => {
+          const r = await fetch(`http://127.0.0.1:${port}${path}`);
+          if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+          return r.json();
+        },
+        offspring: async (kind, names) => (names.length ? (await getOffspring()).lookup(kind, names) : {}),
+      }));
+    homeBuilderPromise.catch(() => { homeBuilderPromise = null; });
+  }
+  return homeBuilderPromise;
+};
+
+{
+  const cron = require("node-cron");
+  const round = (why) => homeBuilder().then((b) => b.buildAll(why)).catch((err) => console.warn("[home]", why, err.message));
+  cron.schedule("0 4 * * *", () => round("04:00"), { timezone: "Europe/London" });
+  cron.schedule("0 7-21/2 * * *", () => round("day"), { timezone: "Europe/London" });
+  // After a start: build today's if they are not there, once the offspring list can answer.
+  setTimeout(() => homeBuilder()
+    .then(async (b) => { if (!(await b.builtToday())) await b.buildAll("start"); })
+    .catch((err) => console.warn("[home] start:", err.message)), 90000);
+}
+
+// The user's lists as last built: { version, userId, day, builtAt, aux, dash }.
+app.get('/api/home/dashboard', async (req, res) => {
+  const user = String(req.query.user ?? "").trim();
+  if (!user) return res.status(400).json({ error: "Missing user" });
+  try {
+    const b = await homeBuilder();
+    const body = await b.read(user);
+    if (!body) {
+      b.rebuildSoon(user);
+      return res.status(404).json({ error: "Not built yet" });
+    }
+    res.set("Cache-Control", "no-store");
+    return res.json(body);
+  } catch (err) {
+    console.error("[home] read:", err.message);
+    return res.status(503).json({ error: "Could not read the lists just now.", details: err.message });
+  }
+});
+
+app.get('/api/home/status', async (req, res) => {
+  try {
+    return res.json((await homeBuilder()).status());
+  } catch (err) {
+    return res.status(503).json({ error: err.message });
+  }
+});
 
 app.get('/api/APIData_Table2/index-status', async (req, res) =>
   res.json({ ...apiIndexes, offspring: offspring ? offspring.status() : { state: "not started" } }));
