@@ -40,6 +40,15 @@ export const READ_ELSEWHERE = /^(keeneland|fasig|tattersalls|goffs|arqana|inglis
  */
 export const JUMPS = /brightwells|cheltenham|national hunt|\bn\.?h\.?\b|point[- ]to[- ]point|\bp2p\b|\bstore\b|\bjumps?\b/i;
 
+/** The same, as the database matches it, for the rows read before jumps sales were left out. */
+export const JUMPS_SQL = "brightwells|cheltenham|national hunt|point[- ]to[- ]point|p2p| store|jump";
+
+/** Rows of jumps sales this feed read before it left them out, removed; how many went. */
+export async function pruneJumps(runQuery) {
+  const done = await runQuery(`DELETE FROM sale_lots WHERE source = 'bloodhorse' AND LOWER(sale_name) REGEXP ?`, [JUMPS_SQL]);
+  return done?.affectedRows ?? 0;
+}
+
 /** Whether a sale is this feed's: one no other feed reads, and not a jumps sale. */
 export const isGap = (name) => Boolean(String(name ?? "").trim()) && !READ_ELSEWHERE.test(String(name).trim()) && !JUMPS.test(String(name));
 

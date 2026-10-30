@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isGap, companyOf, regionOf, saleOf, kindOf, outcomeOf, parseLots, idOfLink, discover, fetchSale } from "./bloodhorse.mjs";
+import { isGap, companyOf, regionOf, saleOf, kindOf, outcomeOf, parseLots, idOfLink, discover, fetchSale, pruneJumps, JUMPS_SQL } from "./bloodhorse.mjs";
 import { lastResort, damRecord } from "./metrics.mjs";
 
 // As BloodHorse gave them through parse.bot (30 October 2026).
@@ -69,6 +69,16 @@ test("a BloodHorse lot stands only where no other source holds the horse", () =>
 test("a dam's record gives each lot's year of birth", () => {
   const rec = damRecord([{ dam_key: "MECHA CORTA", sale_type: "yearling", year: 2025, sale_name: "JRHA Select Yearling & Foal Sale", foaling_year: 2024, status: "sold", price_gbp: 1438780, region: "JPN" }], "MECHA CORTA");
   assert.equal(rec.lots[0].foaled, 2024);
+});
+
+test("rows of jumps sales read earlier are removed, and only this feed's", async () => {
+  let sql = null, params = null;
+  const gone = await pruneJumps(async (s, p) => ((sql = s), (params = p), { affectedRows: 354 }));
+  assert.equal(gone, 354);
+  assert.match(sql, /DELETE FROM sale_lots WHERE source = 'bloodhorse' AND LOWER\(sale_name\) REGEXP \?/);
+  assert.deepEqual(params, [JUMPS_SQL]);
+  for (const n of ["brightwells bloodstock cheltenham january bloodstock sale", "goffs uk doncaster spring store sale"]) assert.match(n, new RegExp(JUMPS_SQL));
+  assert.doesNotMatch("jrha select yearling & foal sale", new RegExp(JUMPS_SQL));
 });
 
 const answer = (data) => ({ ok: true, status: 200, text: async () => JSON.stringify({ status: "success", data }) });
