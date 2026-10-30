@@ -108,6 +108,34 @@ export async function upsertLots(runQuery, lots, { batch = 500 } = {}) {
 }
 
 /** A sale-year read from the house itself replaces any workbook's reading of it. */
+/**
+ * A sale read again replaces its own rows. The lot's identity includes its
+ * sale key, so when the rule that files a sale changes (sales/goffs.mjs: the
+ * Autumn Sale's yearlings), reading it again would otherwise leave its old
+ * rows standing beside the new ones and count those horses twice. For each
+ * sale label in `lots`, this drops that source's rows of the label and year
+ * under any key the new reading did not use.
+ */
+export async function dropRekeyed(runQuery, { source, lots }) {
+  const bySale = new Map();
+  for (const l of lots) {
+    if (!l.sale_label || !l.year) continue;
+    const k = `${l.sale_label}\u0000${l.year}`;
+    (bySale.get(k) ?? bySale.set(k, new Set()).get(k)).add(l.sale_key);
+  }
+  let dropped = 0;
+  for (const [k, keys] of bySale) {
+    const [label, year] = k.split("\u0000");
+    const list = [...keys];
+    const done = await runQuery(
+      `DELETE FROM ${LOTS_TABLE} WHERE source = ? AND sale_label = ? AND year = ? AND sale_key NOT IN (${list.map(() => "?").join(", ")})`,
+      [source, label, Number(year), ...list],
+    );
+    dropped += Number(done?.affectedRows ?? 0);
+  }
+  return dropped;
+}
+
 export async function dropSuperseded(runQuery, { saleKey, year, source }) {
   const done = await runQuery(`DELETE FROM ${LOTS_TABLE} WHERE sale_key = ? AND year = ? AND source <> ?`, [saleKey, year, source]);
   return done?.affectedRows ?? 0;

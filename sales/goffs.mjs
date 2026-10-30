@@ -84,6 +84,17 @@ const IRE_SALES = [
   [/sportsman/i, { key: "GOF-SPORT", name: "Goffs Sportsman's", type: "yearling", tier: 3, month: 10 }],
   [/open yearling/i, { key: "GOF-OPEN", name: "Goffs Open Yearlings", type: "yearling", tier: 3, month: null }],
   [/autumn yearling/i, { key: "GOF-AUT", name: "Goffs Autumn Yearlings", type: "yearling", tier: 3, month: null }],
+  // The Autumn Sale sells horses in training and yearlings together, and
+  // Racing Post lists its first day as "Autumn HIT & Yearling Sale" (lots 1
+  // to about 335, yearlings from about lot 205) apart from the yearling days
+  // after it. That page is read as the horses-in-training sale it was before,
+  // except that its yearlings are filed with the Autumn Yearlings: in 2025,
+  // 112 of them sat under "Goffs Horses in Training" and the sale looked 112
+  // yearlings short. A National Hunt sale held in the autumn is not this one.
+  [/^(?!.*(national hunt|\bnh\b|store|point|p2p|jumps)).*\bautumn\b/i, {
+    key: "GOF-HIT", name: "Goffs Horses in Training", type: "hit", tier: 3, month: null,
+    byKind: { yearling: { key: "GOF-AUT", name: "Goffs Autumn Yearlings" } },
+  }],
   [/premier yearling/i, { key: "GUK-PREM", name: "Goffs UK Premier Yearlings", type: "yearling", tier: 2, month: 8, company: "Goffs UK" }],
   [/foal/i, { key: "GOF-FOAL", name: "Goffs November Foals", type: "foal", tier: 2, month: 11 }],
   [/breeding stock|\bmares?\b/i, { key: "GOF-BS", name: "Goffs Breeding Stock", type: "mixed", tier: 3, month: 11 }],
@@ -152,6 +163,16 @@ export function kindOf(sale, age, mare = false) {
   if (mare) return "breeding";
   if (sale.type === "mixed" && age >= 2) return "hit";
   return null;
+}
+
+/**
+ * The key and name a lot of `type` is filed under. A sale that sells two
+ * kinds under separate headings (the Autumn Sale: horses in training and
+ * yearlings) gives each kind its own; any other sale gives its own to all.
+ */
+export function saleForKind(sale, type) {
+  const own = sale?.byKind?.[type];
+  return own ? { key: own.key, name: own.name } : { key: sale.key, name: sale.name };
 }
 
 /* -------------------------------------------------------------- lots */
@@ -240,8 +261,8 @@ export function fromNotebookRows(rows, { year = null } = {}) {
     lots.push({
       source: "goffs",
       company: sale.company,
-      sale_key: sale.key,
-      sale_name: sale.name,
+      sale_key: saleForKind(sale, type).key,
+      sale_name: saleForKind(sale, type).name,
       sale_tier: sale.tier,
       sale_label: label,
       region: "EU",
@@ -276,4 +297,4 @@ export function fromNotebookCsv(text, opts = {}) {
   return { rows: rows.length, ...fromNotebookRows(rows, opts) };
 }
 
-export default { parseCsv, regionOf, saleFromTitle, yearOf, kindOf, outcomeOf, labelOf, fromNotebookRows, fromNotebookCsv };
+export default { parseCsv, regionOf, saleFromTitle, saleForKind, yearOf, kindOf, outcomeOf, labelOf, fromNotebookRows, fromNotebookCsv };

@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { convert, ratesFor } from "./fx.mjs";
 import { nameKey, horseName, saleOf, statusOf, bestReading, hammer, euReadings, fromEuRow, fromUsRow, fromAuRow, feeHintsFromEu } from "./normalise.mjs";
 import { parseHorseCell, readBuyer, parseTotals, parseResults, reconcile, parseCode } from "./tattersalls.mjs";
-import { figures, feeFinder, sireTable, marketLines, marketMedians, hitTable, damRecord, sireMedians, verdictOf, houseOf, preferHouses } from "./metrics.mjs";
-import { lotHash, rowValues } from "./store.mjs";
+import { figures, feeFinder, sireTable, marketLines, marketMedians, hitTable, damRecord, sireMedians, verdictOf, houseOf, preferHouses, oneLotOnce } from "./metrics.mjs";
+import { lotHash, rowValues, dropRekeyed } from "./store.mjs";
 
 test("guineas are pounds and five pence; other currencies at the month's ECB rates", () => {
   assert.equal(convert(100000, "GNS", "GBP", "2024-10"), 105000);
@@ -395,4 +395,37 @@ test("a sale that never answers is given up on, and the job goes on to the next"
   assert.match(last.results.find((r) => r.item === "HANGS").error, /no answer in 0 s/);
   assert.equal(last.results.find((r) => r.id === "FINE").lots, 1);
   assert.equal(svc.busy(), false);
+});
+
+
+/* ------------------------------------------- one lot once; a sale re-keyed */
+
+test("a lot listed on two pages of one sale is read once, by the reading that says what happened", () => {
+  const base = { source: "parsebot", sale_key: "GOF-AUT", year: 2025, lot: "734", dam_key: "SWEET DELIGHT", sire_key: "INVINCIBLE SPIRIT" };
+  const day1 = { ...base, status: "withdrawn" };
+  const day2 = { ...base, status: "sold", price_gbp: 40000 };
+  const other = { ...base, lot: "735", dam_key: "OTHER", status: "sold" };
+  const noLot = { ...base, lot: null, status: "sold" };
+  const { lots, dropped } = oneLotOnce([day1, other, day2, noLot]);
+  assert.equal(dropped, 1);
+  assert.deepEqual(lots.map((l) => [l.lot, l.status]), [["734", "sold"], ["735", "sold"], [null, "sold"]]);
+  // The same lot from two different sources is preferHouses' business, not this.
+  assert.equal(oneLotOnce([day1, { ...day2, source: "goffs" }]).dropped, 0);
+});
+
+test("a sale read again under a new key drops its rows under the old one, and only those", async () => {
+  const calls = [];
+  const runQuery = async (sql, params) => { calls.push({ sql, params }); return { affectedRows: 3 }; };
+  const lots = [
+    { sale_label: "3/2025-11-03", year: 2025, sale_key: "GOF-HIT" },
+    { sale_label: "3/2025-11-03", year: 2025, sale_key: "GOF-AUT" },
+    { sale_label: "3/2025-11-04", year: 2025, sale_key: "GOF-AUT" },
+    { sale_label: null, year: 2025, sale_key: "GOF-OTHER" },
+  ];
+  const dropped = await dropRekeyed(runQuery, { source: "parsebot", lots });
+  assert.equal(calls.length, 2, "one statement a sale; a lot with no label is left alone");
+  assert.match(calls[0].sql, /DELETE FROM sale_lots WHERE source = \? AND sale_label = \? AND year = \? AND sale_key NOT IN \(\?, \?\)/);
+  assert.deepEqual(calls[0].params, ["parsebot", "3/2025-11-03", 2025, "GOF-HIT", "GOF-AUT"]);
+  assert.deepEqual(calls[1].params, ["parsebot", "3/2025-11-04", 2025, "GOF-AUT"]);
+  assert.equal(dropped, 6);
 });

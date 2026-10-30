@@ -18,7 +18,7 @@ import zlib from "node:zlib";
 import fs from "node:fs";
 import path from "node:path";
 import { convert } from "./fx.mjs";
-import { ensureSalesSchema, upsertLots, dropSuperseded, logImport, LOTS_TABLE, IMPORTS_TABLE } from "./store.mjs";
+import { ensureSalesSchema, upsertLots, dropSuperseded, dropRekeyed, logImport, LOTS_TABLE, IMPORTS_TABLE } from "./store.mjs";
 import { TATTERSALLS, codeFor, fetchResults, reconcile } from "./tattersalls.mjs";
 import { fetchExport as fetchArqana } from "./arqana.mjs";
 import * as keeneland from "./keeneland.mjs";
@@ -51,7 +51,7 @@ export const FEEDS = {
 };
 /** Goffs is read through the parsebot feed, and can still be sent in from the results notebook (importLots, sales/goffs.mjs). */
 export const HOUSE_SOURCES = ["tattersalls", "arqana", ...Object.keys(FEEDS), "goffs"];
-import { KINDS, marketTable, marketLines, marketMedians, sireMedians, sireTable, hitTable, damRecord, feeFinder, figures, preferHouses } from "./metrics.mjs";
+import { KINDS, marketTable, marketLines, marketMedians, sireMedians, sireTable, hitTable, damRecord, feeFinder, figures, preferHouses, oneLotOnce } from "./metrics.mjs";
 import { nameKey } from "./normalise.mjs";
 import { runnerSales } from "./runners.mjs";
 
@@ -210,8 +210,11 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
         }
         if (page.length < buildPage) break;
       }
-      // A horse a house's results hold is read from them, not a workbook too.
-      const { lots, dropped } = preferHouses(raw, new Set(HOUSE_SOURCES));
+      // A horse a house's results hold is read from them, not a workbook too;
+      // and a lot a feed lists on two pages of one sale is read once.
+      const preferred = preferHouses(raw, new Set(HOUSE_SOURCES));
+      const { lots, dropped: twice } = oneLotOnce(preferred.lots);
+      const dropped = preferred.dropped;
       const fees = await loadFees();
       const lines = marketLines(lots, fees.feeFor);
       const medians = marketMedians(lots);
@@ -244,7 +247,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
         lines: Object.fromEntries(lines),
         hintMap: fees.hintMap ?? new Map(),
       };
-      log.log?.(`[sales] index: ${lots.length} lots in ${index.tookMs} ms (${dropped} workbook lots a house also holds left out)`);
+      log.log?.(`[sales] index: ${lots.length} lots in ${index.tookMs} ms (${dropped} workbook lots a house also holds left out, ${twice} lots listed twice read once)`);
       return index;
     })().finally(() => {
       building = null;
@@ -566,6 +569,9 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
     const out = await feed.mod.fetchSale(id, { fetchImpl, info: info?.key ? info : null });
     if (!out?.sale || !out.lots?.length) return { house, id, title: out?.title ?? info?.title ?? null, lots: 0 };
     await upsertLots(runQuery, out.lots);
+    // A sale read again under different keys (a rule that files it changed)
+    // leaves no rows behind under the old ones.
+    await dropRekeyed(runQuery, { source: house, lots: out.lots });
     let dropped = 0;
     // A key that gathers several sales ("-OTHER") gives way only horse by horse (as importLots).
     for (const k of new Set(out.lots.filter((l) => !/-OTHER$/.test(l.sale_key)).map((l) => `${l.sale_key}|${l.year}`))) {
