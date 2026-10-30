@@ -33,8 +33,15 @@ const RESULTS = "https://www.bloodhorse.com/horse-racing/thoroughbred-sales/resu
 /** The companies another feed reads, by the start of BloodHorse's sale names; left to those feeds. */
 export const READ_ELSEWHERE = /^(keeneland|fasig|tattersalls|goffs|arqana|inglis|magic millions|ocala|obs\b|baden|bbag|osarus|canadian thoroughbred|california|texas|washington|ltba|louisiana|emirates|sga\b|auctav|thoroughbid|goresbridge)/i;
 
-/** Whether a sale is this feed's: one no other feed reads. */
-export const isGap = (name) => Boolean(String(name ?? "").trim()) && !READ_ELSEWHERE.test(String(name).trim());
+/**
+ * National Hunt sales, by name: stores and pointers are none of the market's
+ * kinds, so they are left out here as the Racing Post feed leaves them out
+ * (Brightwells and Tattersalls Cheltenham, Goffs UK Doncaster's jumps days).
+ */
+export const JUMPS = /brightwells|cheltenham|national hunt|\bn\.?h\.?\b|point[- ]to[- ]point|\bp2p\b|\bstore\b|\bjumps?\b/i;
+
+/** Whether a sale is this feed's: one no other feed reads, and not a jumps sale. */
+export const isGap = (name) => Boolean(String(name ?? "").trim()) && !READ_ELSEWHERE.test(String(name).trim()) && !JUMPS.test(String(name));
 
 /** The company that held a sale, from its name: the name the index matches horses by (metrics.mjs houseOf). */
 const COMPANIES = [

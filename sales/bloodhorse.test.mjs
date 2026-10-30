@@ -13,6 +13,7 @@ const JRHA = { ...saleOf({ name: "JRHA Select Yearling & Foal Sale 2025", code: 
 
 test("only the sales no other feed reads are this feed's", () => {
   for (const n of ["JRHA Select Yearling & Foal Sale 2025", "New Zealand Bloodstock Karaka Yearling Sale 2025 (Books 1 & 2)", "Jockey Club of Saudi Arabia Yearling Sale 2025", "Minnesota Thoroughbred Association Yearling & Mixed Sale 2025"]) assert.equal(isGap(n), true, n);
+  for (const n of ["Brightwells Bloodstock 2015 Cheltenham January Bloodstock Sale", "Goffs UK Doncaster Spring Store Sale 2016"]) assert.equal(isGap(n), false, `${n}: a jumps sale`);
   for (const n of ["Keeneland September Yearling Sale 2025", "Fasig-Tipton Saratoga Sale 2025", "Tattersalls October Yearling Sale Book 1 2025", "Goffs Ireland Orby Sale 2025 (Book 1)", "Arqana August Yearling Sale 2025", "Ocala Breeders' Sales Co. Winter Mixed Sale 2025", "Baden-Baden Sales and Racing Festival 2025", "Osarus September Yearling Sale 2025", "Canadian Thoroughbred Horse Society Yearling Sale 2025"]) assert.equal(isGap(n), false, n);
 });
 
