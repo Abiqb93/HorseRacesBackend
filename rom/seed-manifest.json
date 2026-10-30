@@ -1,0 +1,110 @@
+{
+  "about": "Fingerprints of the Return of Mares seed parts the seed route accepts (POST /api/rom/seed). The parts are the user's Return of Mares files, one per covering year, breeders left out, and are kept in the private site repository (data/rom/seed), not here.",
+  "built": "2026-10-30",
+  "parts": [
+    {
+      "name": "rom-2013",
+      "kind": "coverings",
+      "year": 2013,
+      "rows": 17654,
+      "bytes": 354082,
+      "sha256": "5440da70255b2963c95b60c597f3ba255dae565b726ad35a59e8fa6c93dd804d"
+    },
+    {
+      "name": "rom-2014",
+      "kind": "coverings",
+      "year": 2014,
+      "rows": 17938,
+      "bytes": 518410,
+      "sha256": "5288f2e505a8e5caf527ab24e71b6bd9ae5f0771f75bf51e9fdb8f3988c5a8e6"
+    },
+    {
+      "name": "rom-2015",
+      "kind": "coverings",
+      "year": 2015,
+      "rows": 20080,
+      "bytes": 672886,
+      "sha256": "2ed4fc9ec03d0b10268d3c53c9b678f63740489ce11d99713eb9ba7f9016da5a"
+    },
+    {
+      "name": "rom-2016",
+      "kind": "coverings",
+      "year": 2016,
+      "rows": 18712,
+      "bytes": 615039,
+      "sha256": "693a73a17e0ae6f94452a3719c055b9fb9dd2e3c0febdb32e1bd699fffebd4d7"
+    },
+    {
+      "name": "rom-2017",
+      "kind": "coverings",
+      "year": 2017,
+      "rows": 17639,
+      "bytes": 585109,
+      "sha256": "90580f57552967b8988d5cb12c239267b6fb50d5cbf4e49e29e7e8de974227ac"
+    },
+    {
+      "name": "rom-2018",
+      "kind": "coverings",
+      "year": 2018,
+      "rows": 22367,
+      "bytes": 650343,
+      "sha256": "b23d303ecaa57f7c4f926a9a71dcb741169609bccb699a39c799dc4e751c302c"
+    },
+    {
+      "name": "rom-2019",
+      "kind": "coverings",
+      "year": 2019,
+      "rows": 21890,
+      "bytes": 632370,
+      "sha256": "ad92b718c91cf8ad88b8494e9bc84103ae60afd9560b7d1364f413135f016ca6"
+    },
+    {
+      "name": "rom-2020",
+      "kind": "coverings",
+      "year": 2020,
+      "rows": 19603,
+      "bytes": 538122,
+      "sha256": "551950846cb83e3a440703fe370680a909bba78c813a80db70d0e5803de08efe"
+    },
+    {
+      "name": "rom-2021",
+      "kind": "coverings",
+      "year": 2021,
+      "rows": 20216,
+      "bytes": 640883,
+      "sha256": "fe8da5afb3bbeb6e0fb03560790c9f738a497b50853f719a269b4b3985b48448"
+    },
+    {
+      "name": "rom-2022",
+      "kind": "coverings",
+      "year": 2022,
+      "rows": 21346,
+      "bytes": 663003,
+      "sha256": "ec63e83dea984aa4f93f3216d4b0f00cc63fd9b67fa85e4ed16bdcba7fc0feb9"
+    },
+    {
+      "name": "rom-2023",
+      "kind": "coverings",
+      "year": 2023,
+      "rows": 20157,
+      "bytes": 617469,
+      "sha256": "c47cd5bc444969dbd0186465a671e5db5310abd11cf6d1b934095ea15a29e43a"
+    },
+    {
+      "name": "rom-2024",
+      "kind": "coverings",
+      "year": 2024,
+      "rows": 17848,
+      "bytes": 460240,
+      "sha256": "6f24b4bb811ff19aa7607aa17f49430735cc6e701ec08a4dbf4b73bb7d4b946c"
+    },
+    {
+      "name": "rom-2025",
+      "kind": "coverings",
+      "year": 2025,
+      "rows": 17255,
+      "bytes": 377104,
+      "sha256": "2051318f4cc753af8479ae23fe60016730ce5426b97cb9735ddbac89e66bcdaa"
+    }
+  ]
+}
