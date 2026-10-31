@@ -8983,7 +8983,21 @@ function measureAgeGrid() {
   return ageGridInFlight;
 }
 
+/**
+ * The age grid and the uplift reads scan the whole results table, and on 28
+ * October 2026 three calls to them held up every other lookup on the database
+ * for about ten minutes. They stay off unless BREEDING_HEAVY_READS=1 is set,
+ * until their figures are precomputed off the request path.
+ */
+const heavyReadsOn = () => process.env.BREEDING_HEAVY_READS === "1";
+const heavyReadsOff = (res) =>
+  res.status(503).json({
+    error: "this read is switched off: it scans the whole results table and slows the database for everyone",
+    enable: "set BREEDING_HEAVY_READS=1 on the service",
+  });
+
 app.get("/api/breeding/age-effects", async (req, res) => {
+  if (!heavyReadsOn()) return heavyReadsOff(res);
   const { studBookName } = await loadMating();
   const sire = req.query.sire ? studBookName(req.query.sire) : null;
   try {
@@ -9016,6 +9030,7 @@ app.get("/api/breeding/age-effects", async (req, res) => {
  */
 const upliftCache = new Map();
 app.get("/api/breeding/sire-uplift", async (req, res) => {
+  if (!heavyReadsOn()) return heavyReadsOff(res);
   const { studBookName } = await loadMating();
   const sire = studBookName(req.query.sire);
   const damsire = req.query.damsire ? studBookName(req.query.damsire) : null;
