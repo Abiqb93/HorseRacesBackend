@@ -33,10 +33,13 @@ export const SOURCES = [
   { house: "keeneland", host: "secure.keeneland.com", path: /^\/sales\/[a-z0-9_-]+\/pdfs\/[a-z0-9_-]+\.pdf$/i },
   // https://www.fasigtipton.com/catalogs/2026/1102/1.pdf
   { house: "fasig-tipton", host: "www.fasigtipton.com", path: /^\/catalogs\/\d{4}\/[a-z0-9_-]+\/[a-z0-9_-]+\.pdf$/i },
+  // Goffs files each sale's pages under its own number, with a doubled slash (5 November 2026):
+  // https://media.goffs.com/pedigrees//1873/1031.pdf, a supplementary lot https://media.goffs.com/pedigrees//1847/275A.pdf
+  { house: "goffs", host: "media.goffs.com", path: /^\/pedigrees\/\/?\d+\/[a-z0-9_-]+\.pdf$/i },
 ];
 
 /** What a refused address is told: the houses whose pages are relayed, from SOURCES, so the two never disagree. */
-const HOUSE_NAMES = { tattersalls: "Tattersalls", arqana: "Arqana", keeneland: "Keeneland", "fasig-tipton": "Fasig-Tipton" };
+const HOUSE_NAMES = { tattersalls: "Tattersalls", arqana: "Arqana", keeneland: "Keeneland", "fasig-tipton": "Fasig-Tipton", goffs: "Goffs" };
 export const REFUSED = (() => {
   const names = SOURCES.map((x) => HOUSE_NAMES[x.house] || x.house);
   return `Not a catalogue pedigree page: only the catalogue pages of ${names.slice(0, -1).join(", ")} and ${names.at(-1)} are relayed.`;
