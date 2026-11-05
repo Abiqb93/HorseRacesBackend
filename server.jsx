@@ -6439,6 +6439,26 @@ const MARE_SEARCH_SQL = `
      ORDER BY best_rating DESC, runs DESC
      LIMIT ?`;
 
+/**
+ * Horse name search for the Horse Profile page: every horse in the results
+ * table, not only the ones the old `horse_names` summary holds. See
+ * results/horseSearch.mjs for the passes and why.
+ */
+const loadHorseSearch = () => import("./results/horseSearch.mjs");
+
+app.get("/api/horses/search", async (req, res) => {
+  try {
+    const { parseSearchParams, searchHorses, MIN_QUERY_LENGTH } = await loadHorseSearch();
+    const { q, limit } = parseSearchParams(req.query);
+    if (!q) return res.status(400).json({ error: `give at least ${MIN_QUERY_LENGTH} characters` });
+    const body = await searchHorses(runQuery, q, limit);
+    res.json(body);
+  } catch (err) {
+    console.error("horse search failed:", err.message);
+    res.status(500).json({ error: "database error" });
+  }
+});
+
 app.get("/api/mares/search", (req, res) => {
   const q = (req.query.q ?? "").toString().trim();
   if (q.length < 2) return res.status(400).json({ error: "give at least two characters" });
