@@ -31,7 +31,7 @@ test("and the breeding-stock and US sales' pages: Keeneland's and Fasig-Tipton's
 });
 
 test("an address refused is told which houses' pages are relayed", () => {
-  assert.equal(REFUSED, "Not a catalogue pedigree page: only the catalogue pages of Tattersalls, Arqana, Keeneland and Fasig-Tipton are relayed.");
+  assert.equal(REFUSED, "Not a catalogue pedigree page: only the catalogue pages of Tattersalls, Arqana, Keeneland, Fasig-Tipton and Goffs are relayed.");
 });
 
 test("nothing else is: another host, another folder, another kind of file, or anything but a plain https address", () => {
@@ -110,4 +110,15 @@ test("the memory holds at most its size, letting the longest unused page go firs
   assert.equal(asked, 4, "1 and 3 are still held");
   await counting(urls[1]);
   assert.equal(asked, 5, "2 had gone");
+});
+
+test("Goffs' pages, filed under each sale's number with a doubled slash", () => {
+  for (const ok of ["https://media.goffs.com/pedigrees//1873/1031.pdf", "https://media.goffs.com/pedigrees//1847/275A.pdf"]) assert.equal(pedigreeUrl(ok)?.href, ok);
+  for (const bad of [
+    "https://goffs.com/pedigrees//1873/1031.pdf",
+    "https://media.goffs.com/catalogue//Nov Breeding combined 2026.pdf",
+    "https://media.goffs.com/pedigrees//1873/../x/1031.pdf",
+    "https://media.goffs.com/pedigrees//1873/1031.jpg",
+    "https://media.goffs.com/pedigrees//1873/1031.pdf?x=1",
+  ]) assert.equal(pedigreeUrl(bad), null, bad);
 });
