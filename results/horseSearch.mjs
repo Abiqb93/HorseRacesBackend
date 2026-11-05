@@ -21,6 +21,9 @@
  *
  * The passes that cannot use the index are capped with MAX_EXECUTION_TIME;
  * a pass cut off at the cap, or failing, costs its own rows and nothing else.
+ * The later-word pass is a full scan: on the live table (5 November 2026) it
+ * hit a 5 s cap for "darzakir", so a search typed letter by letter took six
+ * seconds to show one horse. At 1.5 s it finds what it can and lets go.
  *
  * ## One result per name
  *
@@ -38,8 +41,8 @@ export const MAX_LIMIT = 50;
 
 /** Caps, in milliseconds, on each pass. */
 export const PREFIX_CAP_MS = 8000;
-export const WORD_CAP_MS = 5000;
-export const LEGACY_CAP_MS = 5000;
+export const WORD_CAP_MS = 1500;
+export const LEGACY_CAP_MS = 3000;
 
 /** Escape LIKE's wildcards so a name with % or _ in it matches itself. */
 export const escapeLike = (s) => String(s).replace(/[\\%_]/g, (c) => `\\${c}`);
