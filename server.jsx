@@ -10365,6 +10365,24 @@ app.post("/api/sales/runners", async (req, res) => {
   }
 });
 
+/**
+ * Fillies and mares in the ring, lot by lot: breeding stock, and fillies sold
+ * at the in-training sales (sales/breeding.mjs). For the valuation pages'
+ * leaderboard and comparables. region=EU|US|AUS|NZ, from/to (sale years),
+ * maxAge (age at sale), minPrice (sterling), hit=0 for breeding stock only.
+ */
+app.get("/api/sales/breeding", async (req, res) => {
+  const int = (v) => (v === undefined || v === "" ? null : Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
+  try {
+    res.json(await (await sales()).breeding({
+      region: salesRegion(req.query.region), from: int(req.query.from), to: int(req.query.to),
+      maxAge: int(req.query.maxAge), minPrice: int(req.query.minPrice) ?? 0, hit: req.query.hit !== "0",
+    }));
+  } catch (err) {
+    salesError(res, "sales breeding", err);
+  }
+});
+
 app.get("/api/sales/hit", async (req, res) => {
   try {
     res.json(await (await sales()).hit({ region: salesRegion(req.query.region) }));

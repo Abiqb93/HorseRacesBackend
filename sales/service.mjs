@@ -62,6 +62,7 @@ export const HOUSE_SOURCES = ["tattersalls", "arqana", ...Object.keys(FEEDS).fil
 import { KINDS, marketTable, marketLines, marketMedians, sireMedians, sireTable, hitTable, damRecord, feeFinder, figures, preferHouses, oneLotOnce, lastResort } from "./metrics.mjs";
 import { nameKey } from "./normalise.mjs";
 import { runnerSales } from "./runners.mjs";
+import { breedingLots } from "./breeding.mjs";
 
 export const HINTS_TABLE = "sale_fee_hints";
 const BUILD_PAGE = 50_000;
@@ -349,6 +350,13 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
       fees,
       runners,
     };
+  }
+
+  /** Fillies and mares sold as breeding stock or out of training, lot by lot (sales/breeding.mjs). */
+  async function breeding(opts = {}) {
+    const ix = await readyNow();
+    const lots = breedingLots(ix.lots, opts);
+    return { builtAt: ix.builtAt, count: lots.length, lots };
   }
 
   async function hit({ region = null } = {}) {
@@ -751,7 +759,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
   const busy = () => Boolean(job);
 
   return {
-    ensure, build, ready, busy, market, sires, sire, dam, runners, hit, commercialInputs, status, figures, manifest,
+    ensure, build, ready, busy, market, sires, sire, dam, runners, breeding, hit, commercialInputs, status, figures, manifest,
     importTattersalls, runTattersalls, refreshTattersalls, importArqana, runArqana, refreshArqana, importHouse, runHouse, refreshHouse, importLots,
     acceptSeed, queueSeed,
   };
