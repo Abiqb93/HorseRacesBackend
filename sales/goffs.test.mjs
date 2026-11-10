@@ -201,3 +201,36 @@ test("an autumn National Hunt sale, a plain HIT sale and Goffs UK's autumn sale 
   assert.deepEqual(saleForKind(hit, "yearling"), { key: "GOF-HIT", name: "Goffs Horses in Training" });
   assert.equal(saleFromTitle("Goffs UK Autumn HIT Sale", "UK").key, "GUK-HIT");
 });
+
+import { fromScraperResults } from "./goffs.mjs";
+
+test("the parse.bot Goffs scraper's results as lots: filed by the sale's title, priced in sterling", () => {
+  const sale = { tag: "november-sale-2019", name: "November Foal Sale 2019 Part 1", region: "IRE", year: 2019, currency: "€", pedigreeId: "1610", lots: [
+    { lot_number: "3", sire: "Sir Percy (GB)", dam: "Sandtail (IRE)", year_of_birth: 2019, sex: "C", consignor: "Airlie Stud", purchaser: "Ace Bloodstock", price: 7000, sold: true, offered: true, withdrawn: false },
+    { lot_number: "1", sire: "Excelebration (IRE)", dam: "Sadowa Destination (GB)", year_of_birth: 2019, sex: "C", consignor: "Rahinane Farm", purchaser: "Not Sold (9500)", price: null, sold: false, offered: true, withdrawn: false },
+    { lot_number: "9", sire: "Kodiac (GB)", dam: "Some Mare (IRE)", year_of_birth: 2019, sex: "F", purchaser: null, price: null, sold: false, offered: false, withdrawn: true },
+  ] };
+  const lots = fromScraperResults(sale);
+  assert.equal(lots.length, 3);
+  const [sold, rna, out] = lots;
+  assert.equal(sold.sale_key, "GOF-FOAL");
+  assert.equal(sold.sale_type, "foal");
+  assert.equal(sold.status, "sold");
+  assert.equal(sold.currency, "EUR");
+  assert.ok(sold.price_gbp > 5000 && sold.price_gbp < 7000);
+  assert.equal(sold.dam_key, "SANDTAIL");
+  assert.equal(sold.sire_key, "SIR PERCY");
+  assert.equal(sold.buyer, "Ace Bloodstock");
+  assert.equal(rna.status, "rna");
+  assert.equal(rna.bid, 9500);
+  assert.equal(rna.buyer, null);
+  assert.equal(out.status, "withdrawn");
+  // a yearling at Orby and a Goffs UK breeze-up are filed under their own sales
+  const orby = fromScraperResults({ name: "Orby Book 1 2025", region: "IRE", year: 2025, currency: "€", lots: [{ lot_number: "361", sire: "Starspangledbanner (AUS)", dam: "Sandtail (IRE)", year_of_birth: 2024, sex: "C", purchaser: "Quirke Bloodstock", price: 150000, sold: true, offered: true }] });
+  assert.equal(orby[0].sale_key, "GOF-ORBY");
+  assert.equal(orby[0].sale_type, "yearling");
+  const brz = fromScraperResults({ name: "Breeze Up Sale 2021", region: "UK", year: 2021, currency: "£", lots: [{ lot_number: "5", sire: "Kodiac", dam: "X", year_of_birth: 2019, sex: "C", purchaser: "Y", price: 50000, sold: true, offered: true }] });
+  assert.equal(brz[0].sale_key, "GUK-BRZ");
+  assert.equal(brz[0].sale_type, "2yo");
+  assert.equal(brz[0].price_gbp, 50000);
+});

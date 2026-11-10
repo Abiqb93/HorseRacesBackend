@@ -297,4 +297,39 @@ export function fromNotebookCsv(text, opts = {}) {
   return { rows: rows.length, ...fromNotebookRows(rows, opts) };
 }
 
-export default { parseCsv, regionOf, saleFromTitle, saleForKind, yearOf, kindOf, outcomeOf, labelOf, fromNotebookRows, fromNotebookCsv };
+/* ------------------------------------------- the parse.bot Goffs scraper */
+
+/**
+ * A Goffs sale's results (the parse.bot Goffs scraper's get_sale_results) as
+ * lots: filed by the sale's title as sales/goffs.mjs files the Racing Post
+ * feed's Goffs sales, priced in sterling at the sale's year.
+ */
+export function fromScraperResults(sale) {
+  const region = sale.region === "UK" ? "UK" : "IRE";
+  const base = saleFromTitle(sale.name, region);
+  const out = [];
+  for (const l of sale.lots ?? []) {
+    const yob = Number(l.year_of_birth) || null;
+    const age = yob ? sale.year - yob : null;
+    const type = kindOf(base, age, /^(M)$/i.test(String(l.sex ?? "")));
+    if (!["foal", "yearling", "2yo"].includes(type)) continue;
+    const filed = saleForKind(base, type);
+    const ccy = /£/.test(String(sale.currency ?? l.currency ?? "")) || region === "UK" ? "GBP" : "EUR";
+    const bid = Number((String(l.purchaser ?? "").match(/\((\d[\d,]*)\)/) ?? [])[1]?.replace(/,/g, "")) || null;
+    const status = l.withdrawn ? "withdrawn" : l.sold && Number(l.price) > 0 ? "sold" : l.sold ? "sold_private" : l.offered ? "rna" : "catalogued";
+    const price = status === "sold" ? Number(l.price) : null;
+    out.push({
+      source: "goffs-parsebot", company: base.company ?? "Goffs", sale_key: filed.key, sale_name: filed.name, sale_tier: base.tier ?? null,
+      sale_label: sale.tag, region: "EU", year: sale.year, sale_type: type, lot: String(l.lot_number ?? ""),
+      horse: null, sire: l.sire ? String(l.sire).replace(/\s*\([A-Z]{2,4}\)\s*$/, "") : null, sire_key: nameKey(l.sire) || null,
+      dam: l.dam ? String(l.dam).replace(/\s*\([A-Z]{2,4}\)\s*$/, "") : null, dam_key: nameKey(l.dam) || null,
+      sex: sexOf(l.sex), foaling_year: yob, vendor: l.consignor ?? null, buyer: status === "sold" ? l.purchaser ?? null : null,
+      status, price, bid: status === "rna" ? bid : null, currency: ccy,
+      price_gbp: price ? Math.round(convert(price, ccy, "GBP", String(sale.year)) ?? 0) || null : null,
+      pedigree_id: sale.pedigreeId ?? null,
+    });
+  }
+  return out;
+}
+
+export default { fromScraperResults, parseCsv, regionOf, saleFromTitle, saleForKind, yearOf, kindOf, outcomeOf, labelOf, fromNotebookRows, fromNotebookCsv };

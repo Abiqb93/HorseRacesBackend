@@ -103,11 +103,25 @@ export function summaryOf(horses = []) {
   };
 }
 
-/** The sire-ratings route's shape from a stored body: everything but the horses. */
+/**
+ * How many of a sire's rated runners reached each Timeform mark (80, 90,
+ * 100), and as a share of those rated: the figures the foal sales' research
+ * reads for sires the forecast does not cover (its first crops run from 2015,
+ * so a sire such as Frankel or Dark Angel is not in it).
+ */
+export const TF_MARKS = [80, 90, 100];
+export function bandsOf(horses) {
+  const rated = (horses ?? []).filter((h) => Number.isFinite(h.best));
+  if (!rated.length) return null;
+  const at = TF_MARKS.map((m) => rated.filter((h) => h.best >= m).length);
+  return { rated: rated.length, marks: TF_MARKS, at, share: at.map((n) => Number((n / rated.length).toFixed(4))) };
+}
+
+/** The sire-ratings route's shape from a stored body: everything but the horses, with the Timeform marks read off them. */
 export const ratingsView = (body) => {
   if (!body) return null;
   const { horses, ...rest } = body;
-  return rest;
+  return horses ? { ...rest, bands: bandsOf(horses) } : rest;
 };
 
 /* ------------------------------------------------------------- the table */
