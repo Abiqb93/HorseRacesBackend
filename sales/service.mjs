@@ -62,6 +62,7 @@ export const HOUSE_SOURCES = ["tattersalls", "arqana", ...Object.keys(FEEDS).fil
 import { KINDS, marketTable, marketLines, marketMedians, sireMedians, sireTable, hitTable, damRecord, feeFinder, figures, preferHouses, oneLotOnce, lastResort } from "./metrics.mjs";
 import { nameKey } from "./normalise.mjs";
 import { runnerSales } from "./runners.mjs";
+import { pinhookCohort, pinhookTable, returnsOf } from "./pinhook.mjs";
 
 export const HINTS_TABLE = "sale_fee_hints";
 const BUILD_PAGE = 50_000;
@@ -248,6 +249,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
         tables,
         hit,
         sireMedians: sireMedians(lots),
+        marketMedians: medians,
         fees: { roster: fees.roster, hints: fees.hints, lines: lines.size },
         feeFor: fees.feeFor,
         // The market's lines and the workbooks' fees by covering year, for
@@ -349,6 +351,42 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
       fees,
       runners,
     };
+  }
+
+  /**
+   * The pinhook cohort of a region (sales/pinhook.mjs), worked out on the
+   * first request after each build and held with the index, so a restart
+   * is no slower for it.
+   */
+  async function cohortOf(region = "EU") {
+    const ix = await readyNow();
+    ix.pinhook ??= new Map();
+    if (!ix.pinhook.has(region)) {
+      ix.pinhook.set(region, pinhookCohort(ix.lots, { region, feeFor: ix.feeFor, sireMedians: ix.sireMedians, marketMedians: ix.marketMedians ?? new Map() }));
+    }
+    return { ix, cohort: ix.pinhook.get(region) };
+  }
+
+  /** Pinhooking returns, foal to yearling or to two-year-old, grouped. */
+  async function pinhook({ region = "EU", to = "yearling", by = "year", minBought = 1 } = {}) {
+    const { ix, cohort } = await cohortOf(region);
+    return { builtAt: ix.builtAt, ...pinhookTable(cohort, { to, by, minBought }) };
+  }
+
+  /** The cohort itself, a page at a time: one row per foal offered, the training set for the foal model. */
+  async function pinhookCohortPage({ region = "EU", from = 2015, to = 9999, page = 1, limit = 5000 } = {}) {
+    const { ix, cohort } = await cohortOf(region);
+    const rows = cohort.rows.filter((r) => r.foal.year >= from && r.foal.year <= to);
+    const start = (Math.max(1, page) - 1) * limit;
+    return { builtAt: ix.builtAt, region, from, to, page, limit, total: rows.length, pages: Math.ceil(rows.length / limit), skipped: cohort.skipped, rows: rows.slice(start, start + limit) };
+  }
+
+  /** One sire's foals as pinhooks: his returns at each stage, and his foals. */
+  async function pinhookSire(key, { region = "EU" } = {}) {
+    const { ix, cohort } = await cohortOf(region);
+    const k = nameKey(key);
+    const rows = cohort.rows.filter((r) => r.sireKey === k);
+    return { builtAt: ix.builtAt, sireKey: k, region, yearling: returnsOf(rows, "yearling"), twoyo: returnsOf(rows, "2yo"), rows };
   }
 
   async function hit({ region = null } = {}) {
@@ -751,7 +789,7 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
   const busy = () => Boolean(job);
 
   return {
-    ensure, build, ready, busy, market, sires, sire, dam, runners, hit, commercialInputs, status, figures, manifest,
+    ensure, build, ready, busy, market, sires, sire, dam, runners, hit, pinhook, pinhookCohortPage, pinhookSire, commercialInputs, status, figures, manifest,
     importTattersalls, runTattersalls, refreshTattersalls, importArqana, runArqana, refreshArqana, importHouse, runHouse, refreshHouse, importLots,
     acceptSeed, queueSeed,
   };
