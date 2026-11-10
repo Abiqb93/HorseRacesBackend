@@ -5,13 +5,17 @@
  * machine that has no database access, and for checking the served cohort
  * (GET /api/sales/pinhook/cohort) against the houses.
  *
- *   node scripts/pinhook-cohort.mjs --cache <dir> --out <file.ndjson.gz> [--from 2015 --to 2025] [--arqana 186-460]
+ *   node scripts/pinhook-cohort.mjs --cache <dir> --out <file.ndjson.gz> [--from 2015 --to 2025] [--arqana 186-460] [--goffs <goffs-results.ndjson.gz>]
  *
  * Reads, through this repository's own readers:
  *   Tattersalls: December Foals (DEF), October Books 1-4, December Yearlings,
  *     Craven and Guineas Breeze-Ups, for the years asked and the two after;
  *   Arqana (optional): every sale number in the range given (foals,
- *     yearlings and the breeze-up are kept, the rest left out).
+ *     yearlings and the breeze-up are kept, the rest left out);
+ *   Goffs and Goffs UK (optional): the foal, yearling and breeze-up sales'
+ *     results as the site's scripts/bms/foal/goffs-history.mjs saved them
+ *     from the parse.bot Goffs scraper, filed under this repository's Goffs
+ *     sale keys (sales/goffs.mjs).
  * Each sale is cached in --cache as it is read, so a rerun reads only what
  * is missing. The output is one JSON line per foal offered (sales/pinhook.mjs
  * pinhookCohort), the first line a header saying what was read and when.
@@ -27,6 +31,7 @@ import { fetchResults, reconcile, codeFor } from "../sales/tattersalls.mjs";
 import { fetchExport } from "../sales/arqana.mjs";
 import { oneLotOnce, sireMedians, marketMedians } from "../sales/metrics.mjs";
 import { pinhookCohort } from "../sales/pinhook.mjs";
+import { fromScraperResults } from "../sales/goffs.mjs";
 
 const arg = (k, d = null) => {
   const i = process.argv.indexOf(`--${k}`);
@@ -88,6 +93,16 @@ if (arqana) {
   }
 }
 
+const goffs = arg("goffs");
+if (goffs) {
+  const sales = zlib.gunzipSync(fs.readFileSync(path.resolve(goffs))).toString("utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  for (const sale of sales) {
+    const got = fromScraperResults(sale);
+    lots.push(...got);
+    read.push({ sale: sale.tag, saleKey: got[0]?.sale_key ?? null, year: sale.year, lots: got.length, fetchedAt: sale.fetchedAt, source: "parse.bot Goffs scraper" });
+  }
+}
+
 const once = oneLotOnce(lots);
 const cohort = pinhookCohort(once.lots, { region: "EU", from, to, sireMedians: sireMedians(once.lots), marketMedians: marketMedians(once.lots) });
 const header = {
@@ -100,7 +115,7 @@ const header = {
   rows: cohort.rows.length,
   skipped: cohort.skipped,
   sales: read,
-  note: "Tattersalls and Arqana results only; a resale at another house reads as never entered.",
+  note: goffs ? "Tattersalls, Arqana and Goffs (Ireland and UK) results; a resale at another house reads as never entered." : "Tattersalls and Arqana results only; a resale at another house reads as never entered.",
 };
 fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
 fs.writeFileSync(out, zlib.gzipSync([header, ...cohort.rows].map((r) => JSON.stringify(r)).join("\n")));
