@@ -36,6 +36,13 @@ Never write (Claude speak):
   noting", "In short", "Bottom line", "In conclusion", "Key takeaways".
 - Inflated words: genuinely, materially, crucial, robust, comprehensive, seamless, leverage, unlock,
   insights, delve, landscape, nuanced, world-class (unless the user wrote it).
+- Narrating the work (11 November 2026: "Do not write like Claude. Nothing like \"we read\""): "we read",
+  "we rebuilt", "it reads", "X carry the most", "works the same way", "this is hindsight, and it's why".
+  Say what was found and what the user would do with it, in the phrases the writing guide quotes ("To
+  evaluate we utilised a dataset of...", "As usual, we like to establish a baseline", "I had actually
+  expected...", "Here's how...").
+- colt and filly in lower case: always Colt and Filly (11 November 2026: "colt = Colt, filly = Filly
+  everywhere").
 - Generic method paragraphs ("Each foal bought at a foal sale is followed on its dam..."). Titles
   short and sharp, one line under a table at most.
 - Three-item lists added for rhythm, bold-label bullets ("**Fees:** ..."), headed sections in a
