@@ -15,14 +15,18 @@ The user (11 November 2026: "NEVER use a Claude template format. We have my own 
 and writing style. Use this. Too much Claude Speak. Too much Claude template layout. Write hard rules
 to never use these."). These apply to every report, PDF, sheet, page, doc, commit message and chat reply.
 
-Use instead:
-- Layout: the racing² report style v2.0 and report template. Until that file is in the repo, use the
-  Editorial Ledger direction it was translated to: white paper, black ink, Crimson Pro 700 for titles
-  sitting on a 2px black rule, Instrument Sans for everything else, small letterspaced grey caps
-  labels, hairline table rows, first column bold, numbers right-aligned, one blue (#4A8CDC) that marks
-  only the thing being pointed at.
-- Words: the user's own voice (the my-writing-style skill, register D for reports). "We" for racing²
-  work, "I" for the user's own view. Short sentences, numbers inline, lead with the result.
+Use instead (the user's two guides, 11 November 2026):
+- Layout: the racing² style guide, UI Atelier's Editorial Ledger (the ui-atelier skill: its tokens.css,
+  directions.md and checklist). White paper, black ink, Crimson Pro 700 titles under a 2px black rule,
+  Instrument Sans for everything else, small letterspaced grey caps eyebrows, numbers set as a stat line
+  (never KPI tiles), hairline table rows, first column bold, numbers right-aligned, one blue (#4A8CDC)
+  that marks only the thing being pointed at, chart titles that state the finding.
+- Words: the writing guide, Tom Wilson's writing style (the my-writing-style skill; register D for
+  reports). "We" for racing² work, "I" for the user's own view: 27-37 first-person words per 1,000.
+  Short sentences, numbers inline, lead with the result. racing² metrics capitalised: Pinhook Rating,
+  Resale Rating, Breeze Rating. Run the guide's checklist before handing anything over.
+- Check every finding's sign against its table before writing it: say "slips" for a negative effect,
+  never "adds".
 
 Never write (Claude speak):
 - A detached narrator: a paragraph with no "we" or "I".
