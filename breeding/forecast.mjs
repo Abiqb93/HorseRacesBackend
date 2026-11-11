@@ -723,7 +723,12 @@ export function buildForecast(seasons, { now = new Date(), symbols = null, symbo
       const stats = st.whole ?? st.toDate;
       const p = st.whole ? parAt(st.k)?.whole : parAt(st.k)?.toDate;
       const idx = stats.runners >= 3 ? indexes(stats, p) : null;
-      s.push([st.T, st.k, idx ? Math.round(meanOf(idx) * 1000) / 10 : null, stats.runners]);
+      // The shares rated 80+, 90+ and 100+ that season, and the call for the season after as it would have
+      // been made then (the index carried at the fitted rate): the foal pinhook model reads both as they stood.
+      const shares = stats.runners >= 3 ? stats.n.map((c) => round(c / stats.runners)) : null;
+      const carried = idx ? idx.map((v, i) => (v > 0 ? Math.exp(betaAt(i, st.k) * Math.log(v)) : null)) : null;
+      const nextScore = carried && carried.every((v) => v !== null) ? Math.round(meanOf(carried) * 1000) / 10 : null;
+      s.push([st.T, st.k, idx ? Math.round(meanOf(idx) * 1000) / 10 : null, stats.runners, shares, nextScore]);
     }
     history[r.key] = { sire: r.name, first: r.first, s };
   }
