@@ -30,7 +30,7 @@ export function breedingLots(lots, { region = null, from = null, to = null, maxA
     out.push({
       kind, source: l.source, company: l.company ?? null, sale: l.sale_key, saleName: l.sale_label ?? l.sale_name ?? null,
       region: l.region ?? null, year: l.year, month: l.sale_month ?? null, lot: l.lot ?? null,
-      horse: l.horse ?? null, sire: l.sire ?? null, dam: l.dam ?? null, foaled: l.foaling_year ? Number(l.foaling_year) : null, age,
+      horse: l.horse ?? null, sire: l.sire ?? null, dam: l.dam ?? l.dam_key ?? null, foaled: l.foaling_year ? Number(l.foaling_year) : null, age,
       status: l.status, price: l.price === null || l.price === undefined ? null : Number(l.price), currency: l.currency ?? null,
       priceGbp: sold ? Number(l.price_gbp) : null, bid: l.bid === null || l.bid === undefined ? null : Number(l.bid),
       buyer: l.buyer ?? null, vendor: l.vendor ?? null, record: l.record ?? null,

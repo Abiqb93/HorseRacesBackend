@@ -27,3 +27,26 @@ test("filters: region, years, age at sale, minimum price; dearest first", () => 
   assert.deepEqual(out.map((l) => l.horse), ["dear"]);
   assert.equal(breedingLots(lots, { region: "EU" })[0].horse, "dear");
 });
+
+test("the service reads the lots table, so a lot keeps its horse, dam and record", async () => {
+  const { createSalesService } = await import("./service.mjs");
+  const seen = [];
+  const runQuery = async (sql, params) => {
+    seen.push({ sql, params });
+    if (!/sale_type IN \('breeding', 'hit'\)/.test(sql)) return [];
+    if (params[0] > 0) return [];
+    return [
+      { id: 7, source: "tattersalls", sale_key: "TAT-DEM", sale_label: "DEM25", region: "EU", year: 2025, sale_type: "breeding", lot: "1753",
+        horse: "Example Filly", sire: "Calyx", dam: "Example Dam", dam_key: "EXAMPLE DAM", sex: "filly", foaling_year: 2022,
+        status: "sold", price: 100000, currency: "GNS", price_gbp: 105000, record: '{"gw":1}' },
+    ];
+  };
+  const svc = createSalesService({ runQuery, log: {}, buildPage: 50 });
+  const out = await svc.breeding({ region: "EU", from: 2020 });
+  assert.equal(out.count, 1);
+  assert.equal(out.lots[0].horse, "Example Filly");
+  assert.equal(out.lots[0].dam, "Example Dam");
+  assert.deepEqual(out.lots[0].record, { gw: 1 });
+  const q = seen.find((s) => /sale_type IN/.test(s.sql));
+  assert.deepEqual(q.params, [0, "EU", 2020], "id, then region, then the first year, in the order the placeholders appear");
+});

@@ -146,6 +146,8 @@ export function slim(r) {
   };
 }
 
+const safeJson = (v) => { try { return JSON.parse(v); } catch { return null; } };
+
 export function createSalesService({ runQuery, log = console, fetchImpl = fetch, feeds = FEEDS, buildPage = BUILD_PAGE } = {}) {
   let index = null;
   let building = null;
@@ -355,10 +357,33 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
   }
 
   /** Fillies and mares sold as breeding stock or out of training, lot by lot (sales/breeding.mjs). */
+  //
+  // Read from the lots table, not the index: the index keeps only what the
+  // market tables need and leaves out the horse's name, the dam's, the
+  // record and the bid, which are exactly what a valuation joins on. The
+  // first version read the index and returned every lot without a name.
   async function breeding(opts = {}) {
-    const ix = await readyNow();
-    const lots = breedingLots(ix.lots, opts);
-    return { builtAt: ix.builtAt, count: lots.length, lots };
+    const where = ["sale_type IN ('breeding', 'hit')", "id > ?"];
+    const params = [];
+    if (opts.region) { where.push("region = ?"); params.push(opts.region); }
+    if (opts.from) { where.push("year >= ?"); params.push(opts.from); }
+    if (opts.to) { where.push("year <= ?"); params.push(opts.to); }
+    const rows = [];
+    for (let after = 0; ; ) {
+      const page = await runQuery(
+        `SELECT /*+ MAX_EXECUTION_TIME(120000) */ id, source, company, sale_key, sale_name, sale_label, region, year, sale_month, sale_type,
+                lot, horse, sire, dam, dam_key, sex, foaling_year, vendor, buyer, status, price, bid, currency, price_gbp, record
+           FROM ${LOTS_TABLE} WHERE ${where.join(" AND ")} ORDER BY id LIMIT ${Number(buildPage)}`,
+        [after, ...params],
+      );
+      for (const r of page) {
+        after = Math.max(after, Number(r.id));
+        rows.push({ ...r, record: typeof r.record === "string" ? safeJson(r.record) : r.record ?? null });
+      }
+      if (page.length < buildPage) break;
+    }
+    const lots = breedingLots(rows, opts);
+    return { builtAt: new Date().toISOString(), count: lots.length, lots };
   }
 
   /**
