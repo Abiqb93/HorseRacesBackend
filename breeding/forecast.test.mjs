@@ -278,6 +278,21 @@ test("the forecast: par by stage from past sires, the young sires graded against
   assert.equal(f.basis.countries.join(","), "GBR,IRE");
 });
 
+test("each sire's history carries that season's 80+, 90+ and 100+ shares and the call for the season after", () => {
+  const f = buildForecast(population(), { now: day("2026-10-27") });
+  const rows = Object.values(f.history).flatMap((h) => h.s).filter((r) => r[3] >= 3);
+  assert.ok(rows.length > 0);
+  for (const [, , score, runners, shares, next] of rows) {
+    assert.equal(shares.length, 3);
+    // 80+ holds 90+ holds 100+, each a share of his runners
+    assert.ok(shares[0] >= shares[1] && shares[1] >= shares[2] && shares[0] <= 1 && shares[2] >= 0);
+    assert.ok(runners >= 3);
+    if (score !== null && next !== null) assert.ok(next > 0);
+  }
+  // a season with too few runners keeps the row and holds no shares
+  for (const r of Object.values(f.history).flatMap((h) => h.s).filter((x) => x[3] < 3)) assert.equal(r[4], null);
+});
+
 test("the forecast counts Timeform p symbols among this season's runners when they are held", () => {
   const seasons = population();
   const symbols = new Map();
