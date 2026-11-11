@@ -39,6 +39,8 @@ test("the stored body is the group described, its three best, and every horse be
   assert.equal(view.horses, undefined);
   assert.equal(view.rated, 3);
   assert.equal(ratingsView(null), null);
+  // and the Timeform marks his rated runners reached: 90 (B), 100 (D), 120 (A) of three rated
+  assert.deepEqual(view.bands, { rated: 3, marks: [80, 90, 100], at: [3, 3, 2], share: [1, 1, 0.6667] });
 });
 
 test("the grade lines fall at the population's own percentiles: top 3%, 10%, 20%, half", () => {

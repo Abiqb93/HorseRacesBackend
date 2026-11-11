@@ -10383,6 +10383,46 @@ app.get("/api/sales/breeding", async (req, res) => {
   }
 });
 
+/**
+ * Pinhooking (sales/pinhook.mjs): foals bought at a foal sale and sold
+ * again as yearlings (`to=yearling`) or at a breeze-up (`to=2yo`), gross,
+ * grouped `by` year, sire, sale, band, sex, pinhooker or resale sale.
+ * `/cohort` is one row per foal offered, a page at a time; `/sire/:key`
+ * one sire's foals.
+ */
+const pinhookTo = (v) => (String(v) === "2yo" ? "2yo" : "yearling");
+app.get("/api/sales/pinhook", async (req, res) => {
+  try {
+    res.json(await (await sales()).pinhook({ region: salesRegion(req.query.region) ?? "EU", to: pinhookTo(req.query.to), by: String(req.query.by ?? "year"), minBought: Math.max(1, Number(req.query.minBought) || 1) }));
+  } catch (err) {
+    salesError(res, "sales pinhook", err);
+  }
+});
+
+app.get("/api/sales/pinhook/cohort", async (req, res) => {
+  try {
+    res.json(
+      await (await sales()).pinhookCohortPage({
+        region: salesRegion(req.query.region) ?? "EU",
+        from: Number(req.query.from) || 2015,
+        to: Number(req.query.to) || 9999,
+        page: Math.max(1, Number(req.query.page) || 1),
+        limit: Math.min(10000, Math.max(1, Number(req.query.limit) || 5000)),
+      }),
+    );
+  } catch (err) {
+    salesError(res, "sales pinhook cohort", err);
+  }
+});
+
+app.get("/api/sales/pinhook/sire/:key", async (req, res) => {
+  try {
+    res.json(await (await sales()).pinhookSire(req.params.key, { region: salesRegion(req.query.region) ?? "EU" }));
+  } catch (err) {
+    salesError(res, "sales pinhook sire", err);
+  }
+});
+
 app.get("/api/sales/hit", async (req, res) => {
   try {
     res.json(await (await sales()).hit({ region: salesRegion(req.query.region) }));
