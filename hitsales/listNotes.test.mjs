@@ -199,3 +199,23 @@ test("the client comments merge as the notes do: the later edit wins, a deletion
   const none = mergeListNotes({ lotNotesAt: {} }, { lotNotesAt: {} }, { now: NOW });
   assert.equal(none.list.lotClientNotes, undefined, "nothing written: nothing kept");
 });
+
+// 12 November 2026: "the ability in all sales to edit the value in a cell and save it. Just for their profile."
+import { mergeCellEdits } from "./listNotes.mjs";
+
+test("a user's cell edits are merged cell by cell: the later edit wins and one a save does not mention is kept", () => {
+  const t = (h) => `2026-11-12T${String(h).padStart(2, "0")}:00:00.000Z`;
+  const stored = { entries: [], cellEdits: { 1090: { orBest: { v: 92, at: t(9) }, trainer: { v: "W. Haggas", at: t(9) } } } };
+  const incoming = { entries: [], lotNotesAt: {}, cellEdits: { 1090: { orBest: { v: 95, at: t(10) } }, 12: { sire: { v: "Kingman", at: t(10) } } } };
+  const { list } = mergeListNotes(stored, incoming, { now: t(10) });
+  assert.deepEqual(list.cellEdits, { 1090: { orBest: { v: 95, at: t(10) }, trainer: { v: "W. Haggas", at: t(9) } }, 12: { sire: { v: "Kingman", at: t(10) } } });
+  // an older tab's copy does not undo the later edit, and a page from before cell edits removes none
+  assert.equal(mergeListNotes(list, { entries: [], lotNotesAt: {}, cellEdits: { 1090: { orBest: { v: 80, at: t(8) } } } }, { now: t(11) }).list.cellEdits[1090].orBest.v, 95);
+  assert.deepEqual(mergeListNotes(list, { entries: [], lotNotesAt: {} }, { now: t(11) }).list.cellEdits, list.cellEdits);
+  // an edit cleared keeps its time with nothing in it, so it stays cleared
+  const cleared = mergeListNotes(list, { entries: [], lotNotesAt: {}, cellEdits: { 1090: { orBest: { v: "", at: t(12) } } } }, { now: t(12) });
+  assert.deepEqual(cleared.list.cellEdits[1090].orBest, { v: "", at: t(12) });
+  // what is not a cell edit is not kept
+  assert.deepEqual(mergeCellEdits(null, { 5: { "bad key!": { v: 1, at: t(9) }, a: { v: { x: 1 }, at: t(9) }, b: { v: 2 } } }), {});
+  assert.equal("cellEdits" in mergeListNotes(null, { entries: [] }, { now: t(9) }).list, false);
+});

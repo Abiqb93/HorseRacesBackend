@@ -162,6 +162,11 @@ export function mergeListNotes(stored, incoming, { now = new Date().toISOString(
   const lotFlags = mergeLotFlags(stored?.lotFlags, incoming?.lotFlags);
   if (Object.keys(lotFlags).length) list.lotFlags = lotFlags;
   else delete list.lotFlags;
+  // The cells the user has typed their own value into (the site's hitCellEdits.js), cell by cell by the same
+  // rule: the later edit wins, and an edit the save does not mention is kept.
+  const cellEdits = mergeCellEdits(stored?.cellEdits, incoming?.cellEdits);
+  if (Object.keys(cellEdits).length) list.cellEdits = cellEdits;
+  else delete list.cellEdits;
   // Where each lot stands with each client, by the same rule, and the log of
   // client reports sent: every send either copy holds, once.
   const clientStates = mergeClientStates(stored?.clientStates, incoming?.clientStates);
@@ -243,6 +248,44 @@ export function mergeLotFlags(stored, incoming) {
   }
   const out = {};
   for (const { lot, key, v, at } of merged.values()) (out[lot] ||= {})[key] = { v, at };
+  return out;
+}
+
+/**
+ * The cells a user has typed their own value into (12 November 2026: "the ability in all sales to edit the
+ * value in a cell and save it. Just for their profile"; the site's src/utils/hitCellEdits.js): lot -> column ->
+ * { v, at }, `v` a number or up to 200 characters, "" for an edit cleared back to the catalogue's value.
+ * Merged like the checks: for each cell the later `at` wins, and a cell one copy does not mention is kept
+ * from the other, so a page from before cell edits existed removes none.
+ */
+const CELL_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,59}$/;
+const CELL_MAX = 200;
+
+function cellsOf(raw) {
+  const out = new Map();
+  if (!isObject(raw)) return out;
+  for (const [k, cols] of Object.entries(raw)) {
+    const lot = lotKey(k);
+    if (lot === null || !isObject(cols)) continue;
+    for (const [col, e] of Object.entries(cols)) {
+      if (!CELL_KEY.test(col) || !isObject(e)) continue;
+      const at = noteTime(e.at);
+      const v = typeof e.v === "number" && Number.isFinite(e.v) ? e.v : typeof e.v === "string" ? e.v.slice(0, CELL_MAX) : null;
+      if (v === null || !at) continue;
+      out.set(`${lot}\u0000${col}`, { lot, col, v, at });
+    }
+  }
+  return out;
+}
+
+export function mergeCellEdits(stored, incoming) {
+  const merged = cellsOf(stored);
+  for (const [k, e] of cellsOf(incoming)) {
+    const old = merged.get(k);
+    if (!old || e.at > old.at) merged.set(k, e);
+  }
+  const out = {};
+  for (const { lot, col, v, at } of merged.values()) (out[lot] ||= {})[col] = { v, at };
   return out;
 }
 
