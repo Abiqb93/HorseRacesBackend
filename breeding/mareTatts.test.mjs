@@ -90,3 +90,14 @@ test("in season the due pages are made, each horse once across users' lists; out
   const off = createMareTatts({ ...harness({ mares }), log: {}, now: () => Date.parse("2027-03-01T10:00:00Z") });
   assert.deepEqual(await off.refresh(), { made: 0, skipped: "out of season" });
 });
+
+test("a row's wrong country does not lose her: the search is country-blind and the year and sire choose", async () => {
+  const h = harness({ candidates: [{ token: "gb", label: "All Of Me (GB) 2014", cells: ["All Of Me", "GB", "2014", "Teofilo"] }] });
+  const seen = [];
+  const choose = (c, want) => (seen.push(want.country ?? null), want.country === "IRE" ? { one: null, among: [] } : { one: c[0], among: c });
+  const t = createMareTatts({ ...h, chooseCandidate: choose, log: {}, now: () => Date.parse("2026-11-17T10:00:00Z") });
+  const page = await t.make({ horse_name: "ALL OF ME", foaling_year: 2014, country_code: "IRE", sire_name: "TEOFILO" });
+  assert.equal(page.pdfId, "pdf1");
+  assert.deepEqual(seen, ["IRE", null], "her country first, then without it");
+});
+
