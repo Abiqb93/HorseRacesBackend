@@ -95,9 +95,13 @@ export function createMareTatts({ runQuery, loadArion, chooseCandidate, log = co
     try {
       const { client } = await loadArion();
       if (typeof client.configured === "function" && !client.configured()) throw new Error("Arion is not configured on this server (ARION_USERNAME and ARION_PASSWORD)");
-      const found = await client.search({ kind: "named", name, year: y || null, country: country ?? "" });
+      // Asked without her country: a row's country can be wrong (All Of Me is
+      // GB on Arion, IRE on her row), so her year and sire choose, and her
+      // country only settles a tie between namesakes
+      const found = await client.search({ kind: "named", name, year: y || null, country: "" });
       if (!found?.found || !found.candidates?.length) throw new Error(found?.text || `Arion holds no horse called ${name}`);
-      const pick = chooseCandidate(found.candidates, { name, year: y || null, country, sire });
+      const strict = chooseCandidate(found.candidates, { name, year: y || null, country, sire });
+      const pick = strict.one ? strict : chooseCandidate(found.candidates, { name, year: y || null, sire });
       if (!pick.one) throw new Error(pick.among.length ? `Arion lists ${pick.among.length} horses called ${name}; her country or sire would tell them apart` : `Arion lists no ${name}${y ? ` foaled ${y}` : ""}`);
       const out = await client.report({ token: pick.one.token, reportId: TATTS_REPORT, userId });
       const pdf = (out?.files ?? []).find((f) => f.kind === "pdf");
