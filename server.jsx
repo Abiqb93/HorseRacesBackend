@@ -6914,6 +6914,94 @@ app.put("/api/mares/:userId/:id/photo", express.json({ limit: "6mb" }), async (r
   }
 });
 
+/**
+ * Her picture and description from the team's Matings App, where her row
+ * lacks them (breeding/matingsApp.mjs). The app's login is the server's
+ * MATINGS_APP_USER and MATINGS_APP_PASSWORD.
+ */
+let matingsAppClient = null;
+app.post("/api/mares/:userId/:id/matings-app", async (req, res) => {
+  try {
+    const { createMatingsAppClient, importFromApp } = await import("./breeding/matingsApp.mjs");
+    if (!process.env.MATINGS_APP_USER || !process.env.MATINGS_APP_PASSWORD) {
+      return res.status(501).json({ error: "the Matings App login is not set on this server (MATINGS_APP_USER, MATINGS_APP_PASSWORD)" });
+    }
+    matingsAppClient = matingsAppClient ?? createMatingsAppClient({ user: process.env.MATINGS_APP_USER, password: process.env.MATINGS_APP_PASSWORD });
+    const userId = String(req.params.userId);
+    const mare = await queryOne("SELECT id, horse_name, foaling_year, physical FROM my_mares WHERE id = ? AND user_id = ? LIMIT 1", [Number(req.params.id), userId]);
+    if (!mare) return res.status(404).json({ error: "no such mare on your list" });
+    const p = await profiles();
+    const [line] = await importFromApp({
+      mares: [mare],
+      photoAt: await p.photoTimes(userId),
+      client: matingsAppClient,
+      savePhysical: (m, text) => runQuery("UPDATE my_mares SET physical = ? WHERE id = ? AND user_id = ? AND (physical IS NULL OR physical = '')", [text, m.id, userId]),
+      savePhoto: async (m, img) => {
+        const out = await p.saveMarePhoto({ userId, mareId: m.id, bytes: img });
+        if (out.error) throw new Error(out.error);
+      },
+      pause: async () => {},
+    });
+    if (line.error) matingsAppClient = null; // a stale session is logged in afresh next time
+    return res.json(line);
+  } catch (err) {
+    matingsAppClient = null;
+    console.error("matings app import:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Her own Arion page in Tatts style (breeding/mareTatts.mjs): the newest,
+ * and one made now on asking. In November, December and January a page
+ * older than a week is made again by the timer below.
+ */
+let mareTattsApi = null;
+async function mareTatts() {
+  if (!mareTattsApi) {
+    const [{ createMareTatts }, { chooseCandidate }] = await Promise.all([import("./breeding/mareTatts.mjs"), import("./arion/pedigreeGrid.mjs")]);
+    mareTattsApi = createMareTatts({ runQuery, loadArion: arion, chooseCandidate, log: console });
+  }
+  return mareTattsApi;
+}
+const mareOfUser = (userId, id) =>
+  queryOne("SELECT id, user_id, horse_name, foaling_year, country_code, sire_name FROM my_mares WHERE id = ? AND user_id = ? LIMIT 1", [Number(id), String(userId)]);
+
+app.get("/api/mares/:userId/:id/tatts", async (req, res) => {
+  try {
+    const mare = await mareOfUser(req.params.userId, req.params.id);
+    if (!mare) return res.status(404).json({ error: "no such mare on your list" });
+    return res.json({ page: await (await mareTatts()).latest(mare.horse_name, mare.foaling_year) });
+  } catch (err) {
+    console.error("mare tatts:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/mares/:userId/:id/tatts", async (req, res) => {
+  try {
+    const mare = await mareOfUser(req.params.userId, req.params.id);
+    if (!mare) return res.status(404).json({ error: "no such mare on your list" });
+    const page = await (await mareTatts()).make(mare);
+    return page?.error && !page.pdfId && !page.htmlId ? res.status(502).json({ page, error: page.error }) : res.json({ page });
+  } catch (err) {
+    console.error("mare tatts make:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// The season's weekly pages: looked at every hour, a few made at a time.
+// MARE_TATTS_AUTO=off stops it.
+if (process.env.MARE_TATTS_AUTO !== "off") {
+  const tattsTick = () =>
+    mareTatts()
+      .then((t) => t.refresh({ limit: 25 }))
+      .then((r) => r?.made && console.log(`[tatts] ${r.made} made; ${Math.max(0, (r.due ?? 0) - r.made)} still due`))
+      .catch((err) => console.error("[tatts] refresh:", err.message));
+  setTimeout(tattsTick, 10 * 60 * 1000).unref?.();
+  setInterval(tattsTick, 60 * 60 * 1000).unref?.();
+}
+
 app.delete("/api/mares/:userId/:id/photo", async (req, res) => {
   try {
     const out = await (await profiles()).deleteMarePhoto({ userId: req.params.userId, mareId: req.params.id });
@@ -9183,7 +9271,8 @@ app.get("/api/breeding/sire-uplift", async (req, res) => {
  * we hold (Britain, Ireland and France). Asked in one go for the roster; each
  * answer kept for a day, as a retired horse's figure does not move.
  *
- * POST { horses: [{ name, year }] } -> { horses: { "KINGMAN|2011": { best, runs, lastRun } } }
+ * POST { horses: [{ name, year }] } -> { horses: { "KINGMAN|2011": { best, runs, lastRun, or, orRuns } } }
+ * `or` is his highest official rating on the runs timeform_symbols holds.
  */
 const careerHighs = new Map(); // "NAME|year" -> { at, value }
 const CAREER_HIGH_TTL_MS = 24 * 60 * 60 * 1000;
@@ -9216,12 +9305,25 @@ app.post("/api/breeding/career-highs", express.json({ limit: "512kb" }), async (
       if (!byName.has(n)) byName.set(n, []);
       byName.get(n).push(h);
     }
+    // his highest official rating, from the runs timeform_symbols keeps
+    // (17 November 2026: "We should hold OR in our timeform db"); none where
+    // the column is not there yet
+    const ors = new Map();
+    const orRows = await runQuery(
+      `SELECT UPPER(horseName) AS n, YEAR(foalingDate) AS y, MAX(officialRating) AS orHigh, COUNT(officialRating) AS orRuns
+         FROM timeform_symbols
+        WHERE horseName IN (${chunk.map(() => "?").join(", ")}) AND officialRating IS NOT NULL
+        GROUP BY UPPER(horseName), YEAR(foalingDate)`,
+      chunk,
+    ).catch(() => []);
+    for (const r of orRows) ors.set(`${r.n}|${r.y ?? ""}`, { or: Number(r.orHigh) || null, orRuns: Number(r.orRuns) || 0 });
     for (const n of chunk) {
       const rows = byName.get(n) ?? [];
       for (const y of want.get(n)) {
         // a namesake of another year is not him; with no year asked, the best-run one
         const h = y ? rows.find((r) => r.foalingYear === y) : rows.slice().sort((a, b) => (b.runs ?? 0) - (a.runs ?? 0))[0];
-        const value = h ? { best: h.best ?? null, bestJumps: h.bestJumps ?? null, runs: h.runs ?? 0, lastRun: h.lastRun ?? null } : null;
+        const o = ors.get(`${n}|${y ?? h?.foalingYear ?? ""}`) ?? (y ? null : [...ors.entries()].find(([k]) => k.startsWith(`${n}|`))?.[1]) ?? null;
+        const value = h || o ? { best: h?.best ?? null, bestJumps: h?.bestJumps ?? null, runs: h?.runs ?? 0, lastRun: h?.lastRun ?? null, or: o?.or ?? null, orRuns: o?.orRuns ?? 0 } : null;
         if (!got.timedOut) careerHighs.set(key(n, y), { at: Date.now(), value });
       }
     }

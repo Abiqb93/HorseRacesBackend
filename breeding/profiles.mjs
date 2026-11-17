@@ -105,8 +105,13 @@ export function createProfiles({ runQuery }) {
     return rows?.[0] ?? null;
   };
 
-  async function saveMarePhoto({ userId, mareId, data }) {
-    const photo = readPhoto(data);
+  async function saveMarePhoto({ userId, mareId, data = null, bytes = null }) {
+    // a data URL from the page, or bytes the server fetched itself (the Matings App's picture)
+    const photo = bytes
+      ? TYPES.has(String(bytes.type).toLowerCase().split(";")[0]) && bytes.body?.length && bytes.body.length <= MAX_PHOTO_BYTES
+        ? { type: String(bytes.type).toLowerCase().split(";")[0], body: bytes.body }
+        : { error: "that picture is not a JPEG, PNG or WebP under 3 MB" }
+      : readPhoto(data);
     if (photo.error) return { status: 400, error: photo.error };
     await ensure();
     if (!(await mareOf(userId, mareId))) return { status: 404, error: "no such mare on your list" };
