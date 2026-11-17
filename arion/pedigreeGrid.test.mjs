@@ -154,3 +154,16 @@ test("the heading is optional: a grid without one still reads, named from the se
   assert.equal(payload.horse.sex, "Mare");
   assert.equal(payload.horse.sire, "Dansili (GB)");
 });
+
+test("Arion's best match is not taken against her sire and dam; with the year wrong, her parents choose (Araminta, 17 November)", () => {
+  const cands = [
+    { token: "fr", best: true, cells: ["Araminta", "FR", "2021", "French Fifteen", "Eaux Fortes", "R"] },
+    { token: "aus", cells: ["Araminta", "AUS", "2020", "Spirit of Boom", "Jessamin", "R"] },
+    { token: "ire", cells: ["Araminta", "IRE", "2020", "Gleneagles", "Mince", "R"] },
+  ];
+  const pick = chooseCandidate(cands, { name: "ARAMINTA", year: 2021, country: "USA", sire: "GLENEAGLES", dam: "MINCE" });
+  assert.equal(pick.one?.token, "ire");
+  assert.equal(pick.byParents, true);
+  assert.equal(chooseCandidate(cands, { name: "ARAMINTA", year: 2021, sire: "GLENEAGLES" }).one, null, "her sire alone does not overrule the year");
+  assert.equal(chooseCandidate(cands, { name: "Araminta", year: 2021 }).one.token, "fr", "with nothing against it, the best match stands");
+});

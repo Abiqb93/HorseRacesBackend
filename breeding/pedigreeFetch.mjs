@@ -76,6 +76,29 @@ export function pickHers(matches = [], mare = {}) {
   return fits.length === 1 ? fits[0] : null;
 }
 
+/**
+ * Which of every horse of her name is hers, by her sire and her dam together,
+ * whatever the year. Asked with the year, a row whose year is wrong finds a
+ * namesake or nothing (Araminta's row said 2021; she is Araminta (IRE) 2020 by
+ * Gleneagles out of Mince). Both parents must be on her row and on the match,
+ * and only one horse may have both.
+ */
+export function byParents(matches = [], mare = {}) {
+  const wantSire = bare(mare.sire_name);
+  const wantDam = bare(mare.dam_name);
+  if (!wantSire || !wantDam) return null;
+  const fits = matches.filter(
+    (m) => m?.reference_number && (!m.sex || FEMALE.test(String(m.sex))) && bare(m.sire) === wantSire && bare(m.dam) === wantDam,
+  );
+  return fits.length === 1 ? fits[0] : null;
+}
+
+/** Her foaling year and country as a chart gives them. */
+export function foundAs(payload) {
+  const h = payload?.horse ?? {};
+  return { year: year(String(h.foaled ?? "").match(/\b(1[789]|20)\d\d\b/)?.[0]), country: countryOf(h.name) };
+}
+
 /** A payload's sire and dam: the ancestors at paths "S" and "D". */
 export function parentsOf(payload) {
   const at = (path) => {
@@ -217,22 +240,74 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
    * by her year, country and sire; when they cannot either, the error is
    * thrown on with `undecided` and the source's matches, for the user.
    */
+  /**
+   * Her row's year and country, put right when her chart was found by her
+   * sire and dam and gives others: the year is what every later search of
+   * her (her Tatts page, her namesakes) goes by. Returns what was changed,
+   * in words, or null.
+   */
+  async function correctRow(mare, payload) {
+    if (!mare.sire_name || !mare.dam_name) return null;
+    const { sire, dam } = parentsOf(payload);
+    if (!sire || !dam || misfit(payload, mare)) return null;
+    const got = foundAs(payload);
+    const was = { year: year(mare.foaling_year), country: String(mare.country_code ?? "").toUpperCase() || null };
+    const sets = [];
+    const args = [];
+    const said = [];
+    if (got.year && got.year !== was.year) {
+      sets.push("foaling_year = ?");
+      args.push(got.year);
+      said.push(`foaled ${got.year}, not ${was.year ?? "unknown"}`);
+    }
+    if (got.country && was.country && got.country !== was.country) {
+      sets.push("country_code = ?");
+      args.push(got.country);
+      said.push(`${got.country}, not ${was.country}`);
+    }
+    if (!sets.length) return null;
+    await runQuery(`UPDATE my_mares SET ${sets.join(", ")} WHERE id = ?`, [...args, mare.id]);
+    const note = `found by her sire and dam: ${said.join(", ")}, so her record was corrected`;
+    log.log(`mares: ${mare.horse_name}: ${note}`);
+    return note;
+  }
+
   async function fromEquineline(mare, ref) {
     const client = await loadClient();
     const y = year(mare.foaling_year);
     // A reference alone is not a query the source accepts; it goes with the name.
     const ask = { name: mare.horse_name, year: y, ref: ref ? String(ref) : null };
+    let first;
     try {
-      return await client.getPedigree(ask);
+      const payload = await (async () => {
+        try {
+          return await client.getPedigree(ask);
+        } catch (err) {
+          if (!err?.ambiguous || ref) throw err;
+          const hers = pickHers(err.matches ?? [], mare);
+          if (!hers) {
+            err.undecided = true;
+            throw err;
+          }
+          return client.getPedigree({ ...ask, ref: String(hers.reference_number) });
+        }
+      })();
+      const off = ref ? null : misfit(payload, mare);
+      if (!off) return payload;
+      first = Object.assign(new Error(off), { misfit: true });
     } catch (err) {
-      if (!err?.ambiguous || ref) throw err;
-      const hers = pickHers(err.matches ?? [], mare);
-      if (!hers) {
-        err.undecided = true;
-        throw err;
-      }
-      return client.getPedigree({ ...ask, ref: String(hers.reference_number) });
+      if (ref || err?.rejectedKey || err?.blocked || err?.unconfigured) throw err;
+      first = err;
     }
+    // asked by name and year, it found a namesake or nothing: every horse of
+    // her name, and the one by her sire out of her dam
+    if (!mare.sire_name || !mare.dam_name || typeof client.searchHorses !== "function") throw first;
+    const all = await client.searchHorses({ name: mare.horse_name, year: null }).catch(() => null);
+    const hers = byParents(all?.matches ?? [], mare);
+    if (!hers) throw first;
+    const payload = await client.getPedigree({ name: mare.horse_name, year: year(hers.foaling_year), ref: String(hers.reference_number) });
+    if (misfit(payload, mare)) throw first;
+    return payload;
   }
 
   /** Her chart from Arion's 5x5 grid, when the server has Arion. */
@@ -243,7 +318,7 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
       throw err;
     }
     const grid = await loadGrid();
-    return grid.fetchGrid({ name: mare.horse_name, year: year(mare.foaling_year), country: mare.country_code ?? null, sire: mare.sire_name ?? null, userId: mare.user_id ?? null });
+    return grid.fetchGrid({ name: mare.horse_name, year: year(mare.foaling_year), country: mare.country_code ?? null, sire: mare.sire_name ?? null, dam: mare.dam_name ?? null, userId: mare.user_id ?? null });
   }
 
   /**
@@ -271,12 +346,6 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
           try {
             payload = await fromEquineline(mare, ref);
             via = "equineline";
-            const off = ref ? null : misfit(payload, mare);
-            if (off) {
-              payload = null;
-              via = null;
-              throw Object.assign(new Error(off), { misfit: true });
-            }
           } catch (err) {
             if (err?.rejectedKey) keyRejectedAt = now();
             if (err?.undecided) undecided = err;
@@ -317,8 +386,9 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
       }
       await runQuery(store.UPSERT, store.upsertArgs(row));
       await link(id, row.reference);
+      const fixed = await correctRow(mare, payload);
       await held(mare, row.reference, true);
-      set(id, { state: "held", reference: row.reference, message: null, matches: null, source: via, blocked: false, rejectedKey: false });
+      set(id, { state: "held", reference: row.reference, message: fixed, matches: null, source: via, blocked: false, rejectedKey: false });
       log.log(`mares: fetched the pedigree of ${mare.horse_name} (${y ?? "?"}) from ${via}, ref ${row.reference}${failures.length ? ` (${failures.map((f) => `${f.via}: ${said(f)}`).join("; ")})` : ""}`);
     } catch (err) {
       set(id, { state: "failed", message: describeFailure(err), matches: null, source: null, blocked: Boolean(err?.blocked), rejectedKey: Boolean(err?.rejectedKey) });

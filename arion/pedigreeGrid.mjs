@@ -226,25 +226,39 @@ const bareKey = (s) => normaliseName(splitName(s).name);
  * sides know them; one left is hers, none or several is not a guess to make.
  * A row's cells are name, country, year, sire, dam, sex.
  */
-export function chooseCandidate(candidates = [], { name = "", year = null, country = null, sire = null } = {}) {
-  const best = candidates.find((c) => c?.best);
-  if (best) return { one: best, among: candidates };
+export function chooseCandidate(candidates = [], { name = "", year = null, country = null, sire = null, dam = null } = {}) {
   const wantKey = bareKey(name);
-  const wantYear = Number(year) > 1700 ? Number(year) : null;
-  const wantCountry = country ? String(country).trim().toUpperCase() : null;
   const wantSire = sire ? bareKey(sire) : null;
-  const among = candidates.filter((c) => {
+  const wantDam = dam ? bareKey(dam) : null;
+  const fits = (c, { y = null, cc = null, parents = true } = {}) => {
     const cells = c?.cells ?? [];
     if (bareKey(cells[0] ?? c?.label ?? "") !== wantKey) return false;
-    const y = Number(cells[2]);
-    if (wantYear && y > 1700 && y !== wantYear) return false;
-    const cc = String(cells[1] ?? "").trim().toUpperCase();
-    if (wantCountry && cc && cc !== wantCountry) return false;
+    const got = Number(cells[2]);
+    if (y && got > 1700 && got !== y) return false;
+    const gotCc = String(cells[1] ?? "").trim().toUpperCase();
+    if (cc && gotCc && gotCc !== cc) return false;
+    if (!parents) return true;
     const s = cells[3] ? bareKey(cells[3]) : null;
     if (wantSire && s && s !== wantSire) return false;
+    const d = cells[4] ? bareKey(cells[4]) : null;
+    if (wantDam && d && d !== wantDam) return false;
     return true;
-  });
-  return { one: among.length === 1 ? among[0] : null, among };
+  };
+  const want = { y: Number(year) > 1700 ? Number(year) : null, cc: country ? String(country).trim().toUpperCase() : null };
+  // Arion's own best match is taken only when her sire and dam agree with it:
+  // asked for a 2021 Araminta it named Araminta (FR) by French Fifteen, and
+  // the mare meant was Araminta (IRE) 2020 by Gleneagles (17 November 2026)
+  const best = candidates.find((c) => c?.best && fits(c, want));
+  if (best) return { one: best, among: candidates };
+  const among = candidates.filter((c) => fits(c, want));
+  if (among.length === 1) return { one: among[0], among };
+  // a row's year or country can be wrong: her sire and dam together, with
+  // neither, still name her when only one horse of the name has both
+  if (!among.length && wantSire && wantDam) {
+    const byParents = candidates.filter((c) => fits(c, {}) && (c?.cells ?? [])[3] && (c?.cells ?? [])[4]);
+    if (byParents.length === 1) return { one: byParents[0], among: byParents, byParents: true };
+  }
+  return { one: null, among };
 }
 
 /** A candidate as the mare pages list a namesake: the shape Equineline's matches take. */
@@ -267,7 +281,7 @@ export const asMatch = (c) => {
  * to Arion on its own.
  */
 export function createGridFetcher({ loadArion, log = console }) {
-  async function fetchGrid({ name, year = null, country = null, sire = null, userId = null } = {}) {
+  async function fetchGrid({ name, year = null, country = null, sire = null, dam = null, userId = null } = {}) {
     if (!String(name ?? "").trim()) throw new Error("a name is needed to ask Arion for a pedigree");
     const { client } = await loadArion();
     if (typeof client.configured === "function" && !client.configured()) {
@@ -281,7 +295,7 @@ export function createGridFetcher({ loadArion, log = console }) {
       err.notFound = true;
       throw err;
     }
-    const pick = chooseCandidate(found.candidates, { name, year, country, sire });
+    const pick = chooseCandidate(found.candidates, { name, year, country, sire, dam });
     if (!pick.one) {
       const err = new Error(
         pick.among.length
@@ -304,7 +318,10 @@ export function createGridFetcher({ loadArion, log = console }) {
       throw new Error(`Arion's grid is for ${parsed.subject.name}, not ${name}`);
     }
     log.log?.(`[arion] 5x5 grid read for ${pick.one.label}: ${parsed.ancestors.length} ancestors`);
-    return payloadFor(parsed, { name, year, country, sex: (pick.one.cells ?? [])[5] ?? null });
+    // found by her parents: the year and country are the candidate's, not the row's
+    const cells = pick.one.cells ?? [];
+    const asFound = pick.byParents ? { year: Number(cells[2]) > 1700 ? Number(cells[2]) : null, country: cells[1] ? String(cells[1]).toUpperCase() : null } : { year, country };
+    return payloadFor(parsed, { name, ...asFound, sex: cells[5] ?? null });
   }
   return { fetchGrid, chooseCandidate };
 }
