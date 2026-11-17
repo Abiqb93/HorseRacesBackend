@@ -6358,7 +6358,7 @@ let mareFetcher = null;
 async function pedigreeFetcher() {
   if (!mareFetcher) {
     const { createMareFetcher } = await import("./breeding/pedigreeFetch.mjs");
-    mareFetcher = createMareFetcher({ runQuery, queryOne, loadClient: loadPedigreeClient, loadStore: loadPedigreeStore, loadGrid: arionGrid });
+    mareFetcher = createMareFetcher({ runQuery, queryOne, loadClient: loadPedigreeClient, loadStore: loadPedigreeStore, loadGrid: arionGrid, onHeld: mareChartHeld });
   }
   return mareFetcher;
 }
@@ -6371,10 +6371,28 @@ async function arionGrid() {
   }
   return gridFetcher;
 }
+/**
+ * Her chart is held: the held-charts list is forgotten when it was just
+ * written, so her page reads it at once, and her damsire is filled from the
+ * chart where her row has none, so a chart rebuilt from her parents still
+ * has a dam's side.
+ */
+async function mareChartHeld({ mare, reference, written }) {
+  // forgotten when just written, or when the list kept was built before she was
+  if (written || (gridsCache && !gridsCache.body?.horses?.[String(reference)])) forgetGrids();
+  if (mare.damsire_name) return;
+  const r = await queryOne("SELECT payload FROM pedigree_cache WHERE reference = ? LIMIT 1", [String(reference)]);
+  if (!r?.payload) return;
+  const { gridFromPayload } = await loadPedigreeGrid();
+  const { damsireFromGrid } = await import("./breeding/pedigreeFetch.mjs");
+  const damsire = damsireFromGrid(gridFromPayload(JSON.parse(r.payload)));
+  if (damsire) await runQuery("UPDATE my_mares SET damsire_name = ? WHERE id = ? AND (damsire_name IS NULL OR damsire_name = '')", [damsire, mare.id]);
+}
+
 /** Start her fetch, and say "held" or "pending"; an add is never failed by it. */
 async function fetchPedigreeFor(mareId, { ref = null, again = false, source = null } = {}) {
   try {
-    const mare = await queryOne("SELECT id, user_id, horse_name, foaling_year, country_code, sire_name, pedigree_reference FROM my_mares WHERE id = ? LIMIT 1", [mareId]);
+    const mare = await queryOne("SELECT id, user_id, horse_name, foaling_year, country_code, sire_name, damsire_name, pedigree_reference FROM my_mares WHERE id = ? LIMIT 1", [mareId]);
     if (!mare) return null;
     return await (await pedigreeFetcher()).queue(mare, { ref, again, source });
   } catch (err) {
@@ -6829,6 +6847,83 @@ app.patch("/api/mares/:userId/:id", express.json(), async (req, res) => {
  * Declared above `/api/mares/:userId/:id` so "bands" is read as the word it
  * is rather than as a mare's id.
  */
+/* -------------------------------------------- descriptions and pictures */
+// A stallion's physical description (shared by everyone) and a mare's
+// picture (hers alone). See breeding/profiles.mjs.
+let profilesApi = null;
+async function profiles() {
+  if (!profilesApi) {
+    const { createProfiles } = await import("./breeding/profiles.mjs");
+    profilesApi = createProfiles({ runQuery });
+  }
+  return profilesApi;
+}
+
+app.get("/api/stallion-profiles", async (req, res) => {
+  try {
+    res.set("Cache-Control", "no-store");
+    return res.json({ profiles: await (await profiles()).stallionProfiles() });
+  } catch (err) {
+    console.error("stallion profiles:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/stallion-profiles/:id", express.json({ limit: "64kb" }), async (req, res) => {
+  try {
+    const b = req.body ?? {};
+    const out = await (await profiles()).saveStallion({ id: req.params.id, name: b.name ?? null, physical: b.physical, userId: b.userId ?? null });
+    return out.error ? res.status(out.status).json({ error: out.error }) : res.json(out.body);
+  } catch (err) {
+    console.error("stallion profile save:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/mares/:userId/photos", async (req, res) => {
+  try {
+    const times = await (await profiles()).photoTimes(req.params.userId);
+    return res.json({ photos: Object.fromEntries(times) });
+  } catch (err) {
+    console.error("mare photos:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/mares/:userId/:id/photo", async (req, res) => {
+  try {
+    const p = await (await profiles()).marePhoto({ userId: req.params.userId, mareId: req.params.id });
+    if (!p) return res.status(404).json({ error: "no picture of her yet" });
+    res.set("Content-Type", p.type);
+    // the page adds ?v=<when it changed>, so a cached copy is never stale
+    res.set("Cache-Control", "private, max-age=86400");
+    return res.send(p.body);
+  } catch (err) {
+    console.error("mare photo:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.put("/api/mares/:userId/:id/photo", express.json({ limit: "6mb" }), async (req, res) => {
+  try {
+    const out = await (await profiles()).saveMarePhoto({ userId: req.params.userId, mareId: req.params.id, data: req.body?.data });
+    return out.error ? res.status(out.status).json({ error: out.error }) : res.json(out.body);
+  } catch (err) {
+    console.error("mare photo save:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/mares/:userId/:id/photo", async (req, res) => {
+  try {
+    const out = await (await profiles()).deleteMarePhoto({ userId: req.params.userId, mareId: req.params.id });
+    return res.json(out.body);
+  } catch (err) {
+    console.error("mare photo delete:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/mares/:userId/bands", async (req, res) => {
   const userId = String(req.params.userId);
   const seasonRaw = Number(req.query.season);
@@ -9078,6 +9173,66 @@ app.get("/api/breeding/sire-uplift", async (req, res) => {
     console.error("sire uplift failed:", err.message);
     res.status(500).json({ error: "database error", detail: err.message });
   }
+});
+
+/**
+ * Career-high Timeform figures for a list of horses, for the stallions on
+ * Matings and their own pages (17 November 2026: "On the stallion page could
+ * you add in their career high TF rating"). The best flat figure on either of
+ * Timeform's scales, as every other read of a horse's best, from the results
+ * we hold (Britain, Ireland and France). Asked in one go for the roster; each
+ * answer kept for a day, as a retired horse's figure does not move.
+ *
+ * POST { horses: [{ name, year }] } -> { horses: { "KINGMAN|2011": { best, runs, lastRun } } }
+ */
+const careerHighs = new Map(); // "NAME|year" -> { at, value }
+const CAREER_HIGH_TTL_MS = 24 * 60 * 60 * 1000;
+app.post("/api/breeding/career-highs", express.json({ limit: "512kb" }), async (req, res) => {
+  const { studBookName } = await loadMating();
+  const asked = Array.isArray(req.body?.horses) ? req.body.horses.slice(0, 5000) : [];
+  const want = new Map(); // name -> Set(year|null)
+  for (const h of asked) {
+    const name = studBookName(h?.name);
+    if (!name) continue;
+    const y = Number(h?.year);
+    if (!want.has(name)) want.set(name, new Set());
+    want.get(name).add(Number.isFinite(y) && y > 1900 ? y : null);
+  }
+  const key = (name, year) => `${name}|${year ?? ""}`;
+  const out = {};
+  const fresh = (k) => {
+    const c = careerHighs.get(k);
+    return c && Date.now() - c.at < CAREER_HIGH_TTL_MS ? c : null;
+  };
+  const toRead = [...want.keys()].filter((n) => [...want.get(n)].some((y) => !fresh(key(n, y))));
+  let timedOut = false;
+  for (let i = 0; i < toRead.length; i += 300) {
+    const chunk = toRead.slice(i, i + 300);
+    const got = await horsesWhere(`horseName IN (${chunk.map(() => "?").join(", ")})`, chunk, 20000).catch(() => ({ horses: [], timedOut: true }));
+    timedOut = timedOut || got.timedOut;
+    const byName = new Map();
+    for (const h of got.horses) {
+      const n = String(h.name).toUpperCase();
+      if (!byName.has(n)) byName.set(n, []);
+      byName.get(n).push(h);
+    }
+    for (const n of chunk) {
+      const rows = byName.get(n) ?? [];
+      for (const y of want.get(n)) {
+        // a namesake of another year is not him; with no year asked, the best-run one
+        const h = y ? rows.find((r) => r.foalingYear === y) : rows.slice().sort((a, b) => (b.runs ?? 0) - (a.runs ?? 0))[0];
+        const value = h ? { best: h.best ?? null, bestJumps: h.bestJumps ?? null, runs: h.runs ?? 0, lastRun: h.lastRun ?? null } : null;
+        if (!got.timedOut) careerHighs.set(key(n, y), { at: Date.now(), value });
+      }
+    }
+  }
+  for (const [n, years] of want) {
+    for (const y of years) {
+      const c = careerHighs.get(key(n, y));
+      if (c?.value) out[key(n, y)] = c.value;
+    }
+  }
+  return res.json({ horses: out, asked: asked.length, timedOut });
 });
 
 app.get("/api/breeding/family", async (req, res) => {
