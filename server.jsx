@@ -6392,7 +6392,7 @@ async function mareChartHeld({ mare, reference, written }) {
 /** Start her fetch, and say "held" or "pending"; an add is never failed by it. */
 async function fetchPedigreeFor(mareId, { ref = null, again = false, source = null } = {}) {
   try {
-    const mare = await queryOne("SELECT id, user_id, horse_name, foaling_year, country_code, sire_name, damsire_name, pedigree_reference FROM my_mares WHERE id = ? LIMIT 1", [mareId]);
+    const mare = await queryOne("SELECT id, user_id, horse_name, foaling_year, country_code, sire_name, dam_name, damsire_name, pedigree_reference FROM my_mares WHERE id = ? LIMIT 1", [mareId]);
     if (!mare) return null;
     return await (await pedigreeFetcher()).queue(mare, { ref, again, source });
   } catch (err) {

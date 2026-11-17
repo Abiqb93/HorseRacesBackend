@@ -76,6 +76,32 @@ export function pickHers(matches = [], mare = {}) {
   return fits.length === 1 ? fits[0] : null;
 }
 
+/** A payload's sire and dam: the ancestors at paths "S" and "D". */
+export function parentsOf(payload) {
+  const at = (path) => {
+    const a = (payload?.ancestors ?? []).find((x) => String(x?.path ?? "") === path);
+    return a ? String(a.display_name ?? a.name ?? "").trim() || null : null;
+  };
+  return { sire: at("S"), dam: at("D") };
+}
+
+/**
+ * Is this chart hers: her sire and her dam, where her row and the chart both
+ * name them, must agree. A chart of a namesake of the same year is otherwise
+ * taken for hers (Araminta 2021, by Gleneagles out of Mince, was given the
+ * chart of Araminta (FR) 2021 by French Fifteen; 17 November 2026: "a
+ * different Araminta is pulling through"). Returns null when it fits, else
+ * the reason.
+ */
+export function misfit(payload, mare = {}) {
+  const { sire, dam } = parentsOf(payload);
+  const name = String(payload?.horse?.name ?? mare.horse_name ?? "her");
+  const wrong = [];
+  if (mare.sire_name && sire && bare(sire) !== bare(mare.sire_name)) wrong.push(`by ${sire.replace(/^[=*$]+/, "")}, not ${mare.sire_name}`);
+  if (mare.dam_name && dam && bare(dam) !== bare(mare.dam_name)) wrong.push(`out of ${dam.replace(/^[=*$]+/, "")}, not ${mare.dam_name}`);
+  return wrong.length ? `the chart found is ${name}'s, ${wrong.join(" and ")}` : null;
+}
+
 /** What a failure is called on the mare's row, in the user's words. */
 export function describeFailure(err) {
   if (err?.rejectedKey) return "the pedigree source is rejecting the server's API key (PARSE_API_KEY needs replacing)";
@@ -138,17 +164,41 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
   };
 
   /** The reference of a chart already held for her, by the same rule the list uses. */
+  const payloadAt = async (reference) => {
+    const held = await queryOne("SELECT payload FROM pedigree_cache WHERE reference = ? LIMIT 1", [String(reference)]).catch(() => null);
+    try {
+      return held?.payload ? JSON.parse(held.payload) : null;
+    } catch {
+      return null;
+    }
+  };
+
   async function heldFor(mare) {
     if (mare.pedigree_reference) {
       const r = await queryOne("SELECT reference FROM pedigree_cache WHERE reference = ? LIMIT 1", [String(mare.pedigree_reference)]);
-      if (r) return String(r.reference);
+      if (r) {
+        // a namesake's chart linked to her row before the parents were checked
+        // is taken off it, and hers looked for afresh
+        const payload = mare.sire_name || mare.dam_name ? await payloadAt(r.reference) : null;
+        const off = payload ? misfit(payload, mare) : null;
+        if (!off) return String(r.reference);
+        await runQuery("UPDATE my_mares SET pedigree_reference = NULL WHERE id = ? AND pedigree_reference = ?", [mare.id, String(r.reference)]);
+        log.log(`mares: ${mare.horse_name}: unlinked ${r.reference} (${off})`);
+        mare.pedigree_reference = null;
+      }
     }
     const y = year(mare.foaling_year);
     if (!y) return null;
     const store = await loadStore();
     const q = store.findQuery({ name: mare.horse_name, year: y });
     const r = q ? await queryOne(q.sql, q.args) : null;
-    return r ? String(r.reference) : null;
+    if (!r) return null;
+    // a namesake of her year held already is not her chart
+    if (mare.sire_name || mare.dam_name) {
+      const payload = await payloadAt(r.reference);
+      if (payload && misfit(payload, mare)) return null;
+    }
+    return String(r.reference);
   }
 
   const link = (id, reference) =>
@@ -221,6 +271,12 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
           try {
             payload = await fromEquineline(mare, ref);
             via = "equineline";
+            const off = ref ? null : misfit(payload, mare);
+            if (off) {
+              payload = null;
+              via = null;
+              throw Object.assign(new Error(off), { misfit: true });
+            }
           } catch (err) {
             if (err?.rejectedKey) keyRejectedAt = now();
             if (err?.undecided) undecided = err;
@@ -232,6 +288,12 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
         try {
           payload = await fromArion(mare);
           via = "arion";
+          const off = misfit(payload, mare);
+          if (off) {
+            payload = null;
+            via = null;
+            throw Object.assign(new Error(off), { misfit: true });
+          }
         } catch (err) {
           if (err?.ambiguous && !undecided) undecided = err;
           failures.push({ via: "Arion", err });
