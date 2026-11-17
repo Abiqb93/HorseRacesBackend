@@ -271,3 +271,37 @@ test("a name neither source can settle is left for the user with Equineline's ch
   assert.equal(s.matches.length, 2);
   assert.equal(s.matches[0].reference_number, 9924938);
 });
+
+/* ------------------------------------------------ once her chart is held */
+
+test("her damsire is read off her chart: the dam's sire, as a mare row writes him", async () => {
+  const { damsireFromGrid } = await import("./pedigreeFetch.mjs");
+  const grid = [["=Teofilo (IRE)", "=Madonna Dell'orto (GB)"], ["$Galileo (IRE)", "Speirbhean (IRE)", "$Montjeu (IRE)", "Sabria"]];
+  assert.equal(damsireFromGrid(grid), "MONTJEU");
+  assert.equal(damsireFromGrid([["A", "B"], ["C", "D", null, "E"]]), null);
+  assert.equal(damsireFromGrid(null), null);
+});
+
+test("the server is told when her chart is held, written by a fetch or found in the cache (All Of Me, 17 November)", async () => {
+  const told = [];
+  const onHeld = async (x) => told.push([x.mare.id, x.reference, x.written]);
+  const fetched = harness({ answers: { "name:All Of Me": payload(9739287, "All of Me (GB)", "March 1,2014") } });
+  const f = createMareFetcher({ ...fetched.fake, onHeld });
+  await f.queue({ id: 104, horse_name: "All Of Me", foaling_year: 2014 });
+  await settle();
+  assert.deepEqual(told, [[104, "9739287", true]], "written: the held-charts list is forgotten");
+  const cached = harness({ held: [{ reference: "9739287", name_key: "all of me", foaling_year: 2014 }] });
+  const g = createMareFetcher({ ...cached.fake, onHeld });
+  assert.equal(await g.queue({ id: 104, horse_name: "All Of Me", foaling_year: 2014, pedigree_reference: "9739287" }), "held");
+  assert.deepEqual(told.at(-1), [104, "9739287", false]);
+});
+
+test("a failure after her chart is held is logged and never fails the fetch", async () => {
+  const errors = [];
+  const { fake } = harness({ answers: { "name:All Of Me": payload(9739287, "All of Me (GB)", "March 1,2014") } });
+  const f = createMareFetcher({ ...fake, log: { log: () => {}, error: (m) => errors.push(m) }, onHeld: async () => { throw new Error("db down"); } });
+  await f.queue({ id: 104, horse_name: "All Of Me", foaling_year: 2014 });
+  await settle();
+  assert.equal(f.statusOf(104).state, "held");
+  assert.match(errors.join(" "), /db down/);
+});

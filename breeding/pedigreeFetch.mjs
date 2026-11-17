@@ -98,7 +98,27 @@ export const SKIP_EQUINELINE_MS = 15 * 60 * 1000;
  * her. `retry(mare, { ref })` runs it again, with the horse the user picked
  * when the source could not tell.
  */
-export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, loadGrid = null, log = console, now = () => Date.now(), keep = KEEP_MS }) {
+/**
+ * Her damsire out of her chart: the dam's sire, generation two, third box,
+ * as the mare rows write a name ("$Montjeu (IRE)" -> "MONTJEU"). Null when
+ * the chart does not reach him.
+ */
+export function damsireFromGrid(grid) {
+  const n = grid?.[1]?.[2];
+  if (!n) return null;
+  const name = String(n).replace(/^[=*$]+/, "").replace(/\s*\([A-Za-z]{2,3}\)\s*$/, "").trim();
+  return name ? name.toUpperCase() : null;
+}
+
+/**
+ * `onHeld({ mare, reference, written })` runs once her chart is held: after a
+ * fetch writes it (`written`), or when an add finds it already in the cache.
+ * The server uses it to forget the held-charts list it keeps for an hour, so
+ * the page reads her own chart and not one rebuilt from her sire's
+ * (All Of Me, 17 November 2026: "It won't pull through the female side"),
+ * and to fill her damsire from the chart where her row has none.
+ */
+export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, loadGrid = null, onHeld = null, log = console, now = () => Date.now(), keep = KEEP_MS }) {
   const jobs = new Map(); // mare id -> { state, message, matches, reference, source, at }
   let keyRejectedAt = 0;
 
@@ -133,6 +153,14 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
 
   const link = (id, reference) =>
     runQuery("UPDATE my_mares SET pedigree_reference = ? WHERE id = ? AND pedigree_reference IS NULL", [String(reference), id]);
+  const held = async (mare, reference, written) => {
+    if (!onHeld) return;
+    try {
+      await onHeld({ mare, reference: String(reference), written });
+    } catch (err) {
+      log.error(`mares: after the pedigree of ${mare.horse_name} was held: ${err?.message ?? err}`);
+    }
+  };
 
   /**
    * Her chart from Equineline. A name the source cannot settle is settled
@@ -227,6 +255,7 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
       }
       await runQuery(store.UPSERT, store.upsertArgs(row));
       await link(id, row.reference);
+      await held(mare, row.reference, true);
       set(id, { state: "held", reference: row.reference, message: null, matches: null, source: via, blocked: false, rejectedKey: false });
       log.log(`mares: fetched the pedigree of ${mare.horse_name} (${y ?? "?"}) from ${via}, ref ${row.reference}${failures.length ? ` (${failures.map((f) => `${f.via}: ${said(f)}`).join("; ")})` : ""}`);
     } catch (err) {
@@ -246,6 +275,7 @@ export function createMareFetcher({ runQuery, queryOne, loadClient, loadStore, l
     const have = ref ? null : await heldFor(mare).catch(() => null);
     if (have) {
       if (!mare.pedigree_reference) await link(id, have).catch(() => null);
+      await held(mare, have, false);
       set(id, { state: "held", reference: have, message: null, matches: null, source: /^arion:/.test(have) ? "arion" : "equineline" });
       return "held";
     }
