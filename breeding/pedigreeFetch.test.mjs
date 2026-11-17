@@ -71,6 +71,10 @@ function harness({ held = [], answers = {} } = {}) {
         if (!a) throw new Error("get_pedigree: No horse matched");
         return a;
       },
+      searchHorses: async ({ name }) => {
+        calls.push({ searchHorses: name });
+        return { matches: answers[`search:${name}`] ?? [] };
+      },
     }),
     log: { log: () => {}, error: () => {} },
   };
@@ -193,7 +197,7 @@ test("when the scraper rejects the key, her chart comes from Arion instead, and 
   assert.equal(s.reference, "arion:prudenzia (ire)2005");
   assert.ok(cache.has("arion:prudenzia (ire)2005"), "the chart is in the cache");
   const asked = calls.find((c) => c.fetchGrid).fetchGrid;
-  assert.deepEqual(asked, { name: "Prudenzia", year: 2005, country: "IRE", sire: "Dansili", userId: "desk" });
+  assert.deepEqual(asked, { name: "Prudenzia", year: 2005, country: "IRE", sire: "Dansili", dam: null, userId: "desk" });
   assert.ok(calls.some((c) => /^UPDATE my_mares SET pedigree_reference/.test(c.sql) && c.args[0] === "arion:prudenzia (ire)2005"));
 });
 
@@ -346,4 +350,57 @@ test("a namesake's chart already on her row is taken off it and hers looked for"
   assert.ok(calls.some((c) => /^UPDATE my_mares SET pedigree_reference/.test(c.sql) && c.args[0] === 88 && c.args[1] === "11197158"), "unlinked");
   assert.equal(f.statusOf(88).state, "held");
   assert.equal(f.statusOf(88).reference, "222");
+});
+
+/* ------------------------------- a wrong year on her row: her parents find her */
+
+const ARAMINTAS = [
+  { reference_number: "11197158", name: "=Araminta (FR)", foaling_year: 2021, sex: "Mare", sire: "=French Fifteen (FR)", dam: "=Eaux Fortes (FR)" },
+  { reference_number: "10859598", name: "=Araminta (IRE)", foaling_year: 2020, sex: "Mare", sire: "Gleneagles (IRE)", dam: "=Mince (GB)" },
+  { reference_number: "10881976", name: "=Araminta (AUS)", foaling_year: 2020, sex: "Mare", sire: "=Spirit Of Boom (AUS)", dam: "=Jessamin (AUS)" },
+];
+
+test("of every horse of her name, hers is the one by her sire out of her dam, whatever the year", async () => {
+  const { byParents, foundAs } = await import("./pedigreeFetch.mjs");
+  assert.equal(byParents(ARAMINTAS, { sire_name: "GLENEAGLES", dam_name: "MINCE", foaling_year: 2021 }).reference_number, "10859598");
+  assert.equal(byParents(ARAMINTAS, { sire_name: "GLENEAGLES" }), null, "her sire alone is not enough");
+  assert.equal(byParents([...ARAMINTAS, { ...ARAMINTAS[1], reference_number: "1" }], { sire_name: "Gleneagles", dam_name: "Mince" }), null, "two by the same parents: not a guess to make");
+  assert.deepEqual(foundAs(withParents(10859598, "Araminta (IRE)", "April 2,2020", "Gleneagles (IRE)", "Mince (GB)")), { year: 2020, country: "IRE" });
+});
+
+test("a row with the wrong year finds her by her sire and dam, links her chart and corrects her year and country", async () => {
+  const fr = withParents(11197158, "Araminta (FR)", "May 1,2021", "=French Fifteen (FR)", "=Eaux Fortes (FR)");
+  const hers = withParents(10859598, "Araminta (IRE)", "April 2,2020", "Gleneagles (IRE)", "=Mince (GB)");
+  const { fake, calls } = harness({ answers: { "name:ARAMINTA": fr, "search:ARAMINTA": ARAMINTAS, "ref:10859598": hers } });
+  const f = createMareFetcher(fake);
+  await f.queue({ id: 88, horse_name: "ARAMINTA", foaling_year: 2021, country_code: "USA", sire_name: "GLENEAGLES", dam_name: "MINCE" });
+  await settle();
+  assert.equal(f.statusOf(88).state, "held");
+  assert.equal(f.statusOf(88).reference, "10859598");
+  assert.ok(calls.some((c) => c.searchHorses === "ARAMINTA"), "every Araminta asked for");
+  assert.ok(calls.some((c) => c.getPedigree?.ref === "10859598" && c.getPedigree?.year === 2020), "hers fetched by her reference and her real year");
+  const fix = calls.find((c) => /^UPDATE my_mares SET foaling_year/.test(c.sql));
+  assert.deepEqual(fix?.args, [2020, "IRE", 88]);
+  assert.match(f.statusOf(88).message, /foaled 2020, not 2021, IRE, not USA/);
+});
+
+test("without both parents on her row, the wider search is not made and the namesake is still refused", async () => {
+  const fr = withParents(11197158, "Araminta (FR)", "May 1,2021", "=French Fifteen (FR)", "=Eaux Fortes (FR)");
+  const { fake, calls } = harness({ answers: { "name:ARAMINTA": fr, "search:ARAMINTA": ARAMINTAS } });
+  const f = createMareFetcher(fake);
+  await f.queue({ id: 88, horse_name: "ARAMINTA", foaling_year: 2021, sire_name: "GLENEAGLES" });
+  await settle();
+  assert.equal(f.statusOf(88).state, "failed");
+  assert.ok(!calls.some((c) => c.searchHorses), "not asked");
+});
+
+test("a mare found as her row says is never corrected", async () => {
+  const hers = withParents(10859598, "Araminta (IRE)", "April 2,2020", "Gleneagles (IRE)", "=Mince (GB)");
+  const { fake, calls } = harness({ answers: { "name:ARAMINTA": hers } });
+  const f = createMareFetcher(fake);
+  await f.queue({ id: 88, horse_name: "ARAMINTA", foaling_year: 2020, country_code: "IRE", sire_name: "GLENEAGLES", dam_name: "MINCE" });
+  await settle();
+  assert.equal(f.statusOf(88).state, "held");
+  assert.equal(f.statusOf(88).message, null);
+  assert.ok(!calls.some((c) => /^UPDATE my_mares SET foaling_year|^UPDATE my_mares SET country/.test(c.sql)));
 });

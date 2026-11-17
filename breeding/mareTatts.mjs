@@ -88,7 +88,7 @@ export function createMareTatts({ runQuery, loadArion, chooseCandidate, log = co
       : null;
 
   /** Make her page on Arion now. Never throws: a failure is kept on her row, with when. */
-  async function make({ horse_name: name, foaling_year: year = null, country_code: country = null, sire_name: sire = null, user_id: userId = null }) {
+  async function make({ horse_name: name, foaling_year: year = null, country_code: country = null, sire_name: sire = null, dam_name: dam = null, user_id: userId = null }) {
     await ensure();
     const { key, year: y } = horseKey(name, year);
     const at = new Date(now());
@@ -100,8 +100,8 @@ export function createMareTatts({ runQuery, loadArion, chooseCandidate, log = co
       // country only settles a tie between namesakes
       const found = await client.search({ kind: "named", name, year: y || null, country: "" });
       if (!found?.found || !found.candidates?.length) throw new Error(found?.text || `Arion holds no horse called ${name}`);
-      const strict = chooseCandidate(found.candidates, { name, year: y || null, country, sire });
-      const pick = strict.one ? strict : chooseCandidate(found.candidates, { name, year: y || null, sire });
+      const strict = chooseCandidate(found.candidates, { name, year: y || null, country, sire, dam });
+      const pick = strict.one ? strict : chooseCandidate(found.candidates, { name, year: y || null, sire, dam });
       if (!pick.one) throw new Error(pick.among.length ? `Arion lists ${pick.among.length} horses called ${name}; her country or sire would tell them apart` : `Arion lists no ${name}${y ? ` foaled ${y}` : ""}`);
       const out = await client.report({ token: pick.one.token, reportId: TATTS_REPORT, userId });
       const pdf = (out?.files ?? []).find((f) => f.kind === "pdf");
@@ -135,7 +135,7 @@ export function createMareTatts({ runQuery, loadArion, chooseCandidate, log = co
     if (!force && !inSeason(new Date(now()))) return { made: 0, skipped: "out of season" };
     running = (async () => {
       await ensure();
-      const mares = await runQuery("SELECT horse_name, foaling_year, country_code, sire_name, user_id FROM my_mares WHERE horse_name IS NOT NULL ORDER BY id", []);
+      const mares = await runQuery("SELECT horse_name, foaling_year, country_code, sire_name, dam_name, user_id FROM my_mares WHERE horse_name IS NOT NULL ORDER BY id", []);
       const kept = await runQuery("SELECT * FROM mare_tatts", []);
       const byKey = new Map(kept.map((r) => [`${r.name_key}|${r.foaling_year}`, r]));
       const seen = new Set();
