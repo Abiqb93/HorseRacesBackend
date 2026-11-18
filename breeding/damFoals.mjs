@@ -54,7 +54,13 @@ const countryOf = (c) => ({ GBR: "GB", FRA: "FR", IRL: "IRE", ITA: "ITY", DEU: "
  * Null when none, or when two remain.
  */
 export function herGroup(groups, { year = null, country = null } = {}) {
-  if (!year) return null;
+  if (!year) {
+    // her row has no year (Shomaria): the one mare of the name, or the one of her country
+    const c = countryOf(country);
+    const byCountry = c ? groups.filter((g) => g.country === c) : [];
+    if (byCountry.length === 1) return byCountry[0];
+    return groups.length === 1 ? groups[0] : null;
+  }
   let same = groups.filter((g) => g.year === Number(year));
   if (same.length <= 1) return same[0] ?? null;
   const c = countryOf(country);
