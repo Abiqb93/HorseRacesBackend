@@ -45,3 +45,14 @@ test("two mares of her year in the same part of the world: not a guess", () => {
   assert.equal(herGroup(groups, { year: 2014, country: "FR" }), null);
   assert.equal(herGroup(groups, { year: 2014, country: "IRE" }).country, "IRE");
 });
+
+test("a mare with no year on her row (Shomaria): the one mare of the name, or of her country", () => {
+  const one = damGroups([c("No Show Sammy Jo", "GB", 2020, "Lope de Vega", "Shomaria (FR) 2015"), c("X", "JPN", 1980, "Y", "Sho Maria (JPN) 1972")], "SHOMARIA");
+  assert.equal(one.length, 1, "Sho Maria is another name");
+  const her = herGroup(one, { year: null, country: "FRA" });
+  assert.equal(her?.year, 2015);
+  assert.equal(judge({ name: "NO SHOW SAMMY JO", foalingYear: 2020 }, one, her), "hers");
+  const two = damGroups([c("A", "GB", 2020, "X", "Twin (GB) 2014"), c("B", "USA", 2021, "Y", "Twin (USA) 2010")], "Twin");
+  assert.equal(herGroup(two, { year: null, country: "GBR" })?.country, "GB");
+  assert.equal(herGroup(two, { year: null, country: null }), null);
+});
