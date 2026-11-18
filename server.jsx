@@ -6872,7 +6872,7 @@ app.get("/api/stallion-profiles", async (req, res) => {
 app.put("/api/stallion-profiles/:id", express.json({ limit: "64kb" }), async (req, res) => {
   try {
     const b = req.body ?? {};
-    const out = await (await profiles()).saveStallion({ id: req.params.id, name: b.name ?? null, physical: b.physical, userId: b.userId ?? null });
+    const out = await (await profiles()).saveStallion({ id: req.params.id, name: b.name ?? null, physical: b.physical, height: b.height, userId: b.userId ?? null });
     return out.error ? res.status(out.status).json({ error: out.error }) : res.json(out.body);
   } catch (err) {
     console.error("stallion profile save:", err.message);
