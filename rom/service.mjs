@@ -123,6 +123,7 @@ export function createRomService({ runQuery, log = console, manifestPath = MANIF
       built,
       building: Boolean(building),
       years: index?.years ?? null,
+      feeYears: index?.feeYears ?? null,
       resultsThrough: index?.resultsThrough ?? null,
       stallions: index?.stallions.size ?? null,
       mares: index?.mares.size ?? null,
@@ -133,14 +134,14 @@ export function createRomService({ runQuery, log = console, manifestPath = MANIF
   /** The overview: each year's totals, every stallion's row, and what moved. */
   async function books() {
     const ix = await ready();
-    return { years: ix.years, resultsThrough: ix.resultsThrough, firstRunners: ix.firstRunners, totals: ix.totals, stallions: ix.list, insights: ix.insights, built };
+    return { years: ix.years, resultsThrough: ix.resultsThrough, firstRunners: ix.firstRunners, feeYears: ix.feeYears, totals: ix.totals, stallions: ix.list, insights: ix.insights, built };
   }
 
   /** One stallion in full, by name. */
   async function stallion(name) {
     const ix = await ready();
     const s = ix.stallions.get(nameKey(name));
-    return s ? { ...detailOf(s, ix), resultsThrough: ix.resultsThrough, firstRunners: ix.firstRunners, allYears: ix.years } : null;
+    return s ? { ...detailOf(s, ix), resultsThrough: ix.resultsThrough, firstRunners: ix.firstRunners, feeYears: ix.feeYears, allYears: ix.years } : null;
   }
 
   /**
@@ -154,13 +155,13 @@ export function createRomService({ runQuery, log = console, manifestPath = MANIF
       const s = ix.stallions.get(nameKey(n));
       out.push(s ? { asked: n, ...rowOf(s, ix), cross: msire ? crossOf(ix, s.key, msire) : null } : { asked: n, missing: true });
     }
-    return { years: ix.years, resultsThrough: ix.resultsThrough, stallions: out };
+    return { years: ix.years, resultsThrough: ix.resultsThrough, feeYears: ix.feeYears, stallions: out };
   }
 
   /** A mare's coverings in the return. */
   async function mare(name, yob = null) {
     const ix = await ready();
-    return { resultsThrough: ix.resultsThrough, ...mareOf(ix, name, yob) };
+    return { resultsThrough: ix.resultsThrough, firstRunners: ix.firstRunners, feeYears: ix.feeYears, ...mareOf(ix, name, yob) };
   }
 
   return { ensure, build, ready, acceptSeed, status, books, stallion, stallions, mare, manifest };

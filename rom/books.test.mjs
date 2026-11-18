@@ -166,3 +166,22 @@ test("insights: what moved, the life of a book, and results against the fee", ()
   assert.equal(ins.value[0].per95, Math.round((20000 * 401) / 41));
   assert.ok(!ins.over.some((o) => o.name === "Jumps Sire"), "jumps stallions are left out");
 });
+
+test("a year whose file carries no fees: the fee is his latest paid, and the year is said", () => {
+  const rows = coverings();
+  // 2022 sent as a coverings file: the mares and the stallion, no fee
+  for (let i = 0; i < 120; i += 1) rows.push({ y: 2022, st: "Flat Sire (IRE)", mare: `Late Mare ${i} (GB)`, myob: 2015, msire: "Galileo (IRE)" });
+  for (let i = 0; i < 50; i += 1) rows.push({ y: 2022, st: "Only Now (GB)", mare: `Only Mare ${i} (GB)`, myob: 2016, msire: "Dubawi (IRE)" });
+  const ix = buildIndex(rows);
+  assert.deepEqual(ix.feeYears, [2016, 2017, 2018, 2019, 2020, 2021]);
+  const row = rowOf(ix.stallions.get("flat sire"), ix);
+  assert.equal(row.latest, 120, "his 2022 book is counted");
+  assert.equal(row.prev, 150);
+  assert.equal(row.feeY, 2021, "his fee is from the latest year with fees");
+  assert.equal(row.fee, 30000);
+  assert.equal(row.fees.at(-1), null, "2022 has no fee");
+  const fresh = rowOf(ix.stallions.get("only now"), ix);
+  assert.equal(fresh.feeY, null, "a stallion new in a year with no fees has none held");
+  assert.equal(fresh.fee, null);
+  assert.equal(ix.totals.at(-1).flat.medianFee, null);
+});

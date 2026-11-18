@@ -268,7 +268,13 @@ export function buildIndex(rows) {
   }
   recode(stallions, rows);
 
-  return { years, resultsThrough, firstRunners, typicalRan: typical, totals: totalsOf(years, stallions), stallions, crosses, mares, names };
+  // The years whose files carry fees at all. A coverings file sent before the
+  // foals are in (2026 on) has none: there a fee is not held, and is not
+  // private.
+  const withFee = new Set(rows.filter((r) => Number.isFinite(r.fee) && r.fee > 0).map((r) => r.y));
+  const feeYears = years.filter((y) => withFee.has(y));
+
+  return { years, resultsThrough, firstRunners, feeYears, typicalRan: typical, totals: totalsOf(years, stallions), stallions, crosses, mares, names };
 }
 
 // What a mare's own page needs of a covering, small enough to hold every
@@ -366,7 +372,8 @@ export function fertilityOf(s) {
 
 /**
  * The table row of a stallion: books by year in `years` order, the latest
- * and the change on the year before, his fee, his book's quality and his
+ * and the change on the year before, his fee (`feeY` the year it was paid:
+ * his latest year whose file carries fees), his book's quality and his
  * results. `seasons` counts the years he covered in the return.
  */
 export function rowOf(s, index) {
@@ -378,6 +385,8 @@ export function rowOf(s, index) {
   const prev = last !== null && s.years[last - 1] ? s.years[last - 1].covers : 0;
   const peakY = active.reduce((b, y) => (b === null || s.years[y].covers > s.years[b].covers ? y : b), null);
   const latestQ = [...active].reverse().find((y) => s.years[y].q.n >= 10);
+  // his fee: the latest year he covered whose file carries fees
+  const feeY = [...active].reverse().find((y) => !index.feeYears || index.feeYears.includes(y)) ?? null;
   return {
     key: s.key,
     name: s.name,
@@ -391,7 +400,8 @@ export function rowOf(s, index) {
     latest: last !== null ? s.years[last].covers : 0,
     prev,
     peak: peakY !== null ? { y: peakY, n: s.years[peakY].covers } : null,
-    fee: last !== null ? s.years[last].fee : null,
+    fee: feeY !== null ? s.years[feeY].fee : null,
+    feeY,
     quality: latestQ ? { y: latestQ, ...pick(s.years[latestQ].q, ["n", "bt", "w", "unr", "dbt"]) } : null,
     fertility: fertilityOf(s),
     results: resultsOf(s, resultsThrough),
