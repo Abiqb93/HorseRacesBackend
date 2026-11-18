@@ -21,6 +21,9 @@ export const STALLION_PROFILES = `CREATE TABLE IF NOT EXISTS stallion_profiles (
   updated_at DATETIME NOT NULL
 )`;
 
+/** His height in inches, set by hand where the stud's own figure is missing or wrong (18 November 2026). */
+export const STALLION_HEIGHT_COLUMN = "ALTER TABLE stallion_profiles ADD COLUMN height_in SMALLINT NULL";
+
 export const MARE_PHOTOS = `CREATE TABLE IF NOT EXISTS mare_photos (
   mare_id INT NOT NULL PRIMARY KEY,
   user_id VARCHAR(64) NOT NULL,
@@ -48,6 +51,25 @@ export function readPhysical(v) {
   return { value: s || null };
 }
 
+/**
+ * A height as stored, in inches: 65, "65", "16.1", "16.1hh" or "16 hh" (a
+ * hand is four inches, so 16.1 is sixty-five). Undefined leaves it as it is;
+ * null or "" clears it; anything outside 14.0hh to 18.3hh is refused.
+ */
+export function readHeight(v) {
+  if (v === undefined) return { leave: true };
+  if (v === null || String(v).trim() === "") return { value: null };
+  const s = String(v).trim();
+  let inches = null;
+  if (/^\d{2}$/.test(s) && Number(s) >= 56) inches = Number(s);
+  else {
+    const m = s.match(/^(\d{2})(?:\.(\d))?\s*(?:hh|h|hands)?$/i);
+    if (m && Number(m[2] ?? 0) <= 3) inches = Number(m[1]) * 4 + Number(m[2] ?? 0);
+  }
+  if (!Number.isInteger(inches) || inches < 56 || inches > 75) return { error: "a height in hands, such as 16.1 (14.0 to 18.3)" };
+  return { value: inches };
+}
+
 /** "data:image/jpeg;base64,..." to its type and bytes, or an error the page can show. */
 export function readPhoto(dataUrl) {
   const m = String(dataUrl ?? "").match(/^data:([a-z/+-]+);base64,([A-Za-z0-9+/=\s]+)$/i);
@@ -63,40 +85,65 @@ export function readPhoto(dataUrl) {
 export function createProfiles({ runQuery }) {
   let ready = null;
   const ensure = () => {
-    ready = ready ?? Promise.all([runQuery(STALLION_PROFILES), runQuery(MARE_PHOTOS)]).catch((err) => {
-      ready = null;
-      throw err;
-    });
+    ready =
+      ready ??
+      Promise.all([runQuery(STALLION_PROFILES), runQuery(MARE_PHOTOS)])
+        // the height column on a table made before it; there already is fine (1060)
+        .then(() => runQuery(STALLION_HEIGHT_COLUMN).catch((err) => (err?.errno === 1060 || /duplicate column/i.test(String(err?.message)) ? null : Promise.reject(err))))
+        .catch((err) => {
+          ready = null;
+          throw err;
+        });
     return ready;
   };
 
-  /** Every stallion's description, by id: a few hundred short rows at most, read once by a page. */
+  const shapeStallion = (r) => ({
+    name: r.stallion_name ?? null,
+    physical: r.physical ?? null,
+    height: r.height_in !== null && r.height_in !== undefined && Number.isFinite(Number(r.height_in)) ? Number(r.height_in) : null,
+    updatedBy: r.updated_by ?? null,
+    updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : null,
+  });
+
+  /** Every stallion's description and hand-set height, by id: a few hundred short rows at most, read once by a page. */
   async function stallionProfiles() {
     await ensure();
-    const rows = await runQuery("SELECT stallion_id, stallion_name, physical, updated_by, updated_at FROM stallion_profiles WHERE physical IS NOT NULL", []);
+    const rows = await runQuery(
+      "SELECT stallion_id, stallion_name, physical, height_in, updated_by, updated_at FROM stallion_profiles WHERE physical IS NOT NULL OR height_in IS NOT NULL",
+      [],
+    );
     const out = {};
-    for (const r of rows) out[r.stallion_id] = { name: r.stallion_name, physical: r.physical, updatedBy: r.updated_by, updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : null };
+    for (const r of rows) out[r.stallion_id] = shapeStallion(r);
     return out;
   }
 
-  /** Write (or, with an empty description, clear) a stallion's description. */
-  async function saveStallion({ id, name = null, physical, userId }) {
+  /**
+   * Write a stallion's description, his height, or both; an empty one clears
+   * it. A field not sent is left as it is, so setting his height keeps his
+   * description.
+   */
+  async function saveStallion({ id, name = null, physical, height, userId }) {
     if (!stallionIdOk(id)) return { status: 400, error: "that is not a stallion id" };
     if (!userId) return { status: 400, error: "userId is required" };
-    const p = readPhysical(physical);
+    if (physical === undefined && height === undefined) return { status: 400, error: "send physical, height or both" };
+    const p = physical === undefined ? { leave: true } : readPhysical(physical);
     if (p.error) return { status: 400, error: p.error };
+    const h = readHeight(height);
+    if (h.error) return { status: 400, error: h.error };
     await ensure();
     const at = new Date();
-    if (p.value === null) {
-      await runQuery("DELETE FROM stallion_profiles WHERE stallion_id = ?", [String(id)]);
-      return { status: 200, body: { id: String(id), physical: null } };
-    }
     await runQuery(
-      `INSERT INTO stallion_profiles (stallion_id, stallion_name, physical, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE stallion_name = COALESCE(VALUES(stallion_name), stallion_name), physical = VALUES(physical), updated_by = VALUES(updated_by), updated_at = VALUES(updated_at)`,
-      [String(id), name ? String(name).slice(0, 191) : null, p.value, String(userId).slice(0, 64), at],
+      `INSERT INTO stallion_profiles (stallion_id, stallion_name, physical, height_in, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE stallion_name = COALESCE(VALUES(stallion_name), stallion_name),
+         physical = ${p.leave ? "physical" : "VALUES(physical)"}, height_in = ${h.leave ? "height_in" : "VALUES(height_in)"},
+         updated_by = VALUES(updated_by), updated_at = VALUES(updated_at)`,
+      [String(id), name ? String(name).slice(0, 191) : null, p.leave ? null : p.value, h.leave ? null : h.value, String(userId).slice(0, 64), at],
     );
-    return { status: 200, body: { id: String(id), physical: p.value, updatedBy: String(userId), updatedAt: at.toISOString() } };
+    // a row with nothing left on it goes
+    await runQuery("DELETE FROM stallion_profiles WHERE stallion_id = ? AND physical IS NULL AND height_in IS NULL", [String(id)]);
+    const rows = await runQuery("SELECT stallion_id, stallion_name, physical, height_in, updated_by, updated_at FROM stallion_profiles WHERE stallion_id = ? LIMIT 1", [String(id)]);
+    const row = rows?.[0] ? shapeStallion(rows[0]) : { physical: null, height: null, updatedBy: null, updatedAt: null };
+    return { status: 200, body: { id: String(id), ...row, updatedBy: row.updatedBy ?? String(userId), updatedAt: row.updatedAt ?? at.toISOString() } };
   }
 
   /** The mare, if she is this user's. */

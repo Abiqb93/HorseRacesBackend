@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { MAX_PHYSICAL, createProfiles, readPhoto, readPhysical, stallionIdOk } from "./profiles.mjs";
+import { MAX_PHYSICAL, createProfiles, readHeight, readPhoto, readPhysical, stallionIdOk } from "./profiles.mjs";
 
 /** The two tables and the mares, in memory, as the module sees them. */
 function fakeDb({ mares = [{ id: 104, user_id: "richardbrown1" }] } = {}) {
@@ -9,14 +9,29 @@ function fakeDb({ mares = [{ id: 104, user_id: "richardbrown1" }] } = {}) {
   const photos = new Map();
   const runQuery = async (sql, args = []) => {
     if (/^CREATE TABLE/.test(sql)) return {};
-    if (/^SELECT stallion_id/.test(sql)) return [...stallions.values()].filter((r) => r.physical !== null);
+    if (/^ALTER TABLE stallion_profiles ADD COLUMN height_in/.test(sql)) return {};
+    if (/^SELECT stallion_id[\s\S]*WHERE stallion_id = \?/.test(sql)) return [stallions.get(args[0])].filter(Boolean);
+    if (/^SELECT stallion_id/.test(sql)) return [...stallions.values()].filter((r) => r.physical !== null || r.height_in !== null);
     if (/^INSERT INTO stallion_profiles/.test(sql)) {
-      const [stallion_id, stallion_name, physical, updated_by, updated_at] = args;
+      const [stallion_id, stallion_name, physical, height_in, updated_by, updated_at] = args;
       const old = stallions.get(stallion_id);
-      stallions.set(stallion_id, { stallion_id, stallion_name: stallion_name ?? old?.stallion_name ?? null, physical, updated_by, updated_at });
+      const keepPhysical = /physical = physical/.test(sql);
+      const keepHeight = /height_in = height_in/.test(sql);
+      stallions.set(stallion_id, {
+        stallion_id,
+        stallion_name: stallion_name ?? old?.stallion_name ?? null,
+        physical: old && keepPhysical ? old.physical : physical,
+        height_in: old && keepHeight ? old.height_in : height_in,
+        updated_by,
+        updated_at,
+      });
       return {};
     }
-    if (/^DELETE FROM stallion_profiles/.test(sql)) return stallions.delete(args[0]), {};
+    if (/^DELETE FROM stallion_profiles/.test(sql)) {
+      const r = stallions.get(args[0]);
+      if (r && r.physical === null && r.height_in === null) stallions.delete(args[0]);
+      return {};
+    }
     if (/^SELECT id FROM my_mares/.test(sql)) return mares.filter((m) => m.id === args[0] && m.user_id === args[1]);
     if (/^INSERT INTO mare_photos/.test(sql)) {
       const [mare_id, user_id, type, bytes, content, updated_at] = args;
@@ -97,4 +112,36 @@ test("a mare's picture is hers: saved, read and deleted only by her owner", asyn
   await p.deleteMarePhoto({ userId: "richardbrown1", mareId: 104 });
   assert.equal(await p.marePhoto({ userId: "richardbrown1", mareId: 104 }), null);
   assert.equal((await p.saveMarePhoto({ userId: "richardbrown1", mareId: 104, data: "nope" })).status, 400);
+});
+
+test("a height is read in hands or inches, and refused outside a stallion's range", () => {
+  assert.deepEqual(readHeight("16.1"), { value: 65 });
+  assert.deepEqual(readHeight("16.1hh"), { value: 65 });
+  assert.deepEqual(readHeight("16 hh"), { value: 64 });
+  assert.deepEqual(readHeight(65), { value: 65 });
+  assert.deepEqual(readHeight(""), { value: null });
+  assert.deepEqual(readHeight(undefined), { leave: true });
+  assert.ok(readHeight("16.5").error, "there is no fifth inch to a hand");
+  assert.ok(readHeight("12.2").error);
+  assert.ok(readHeight("tall").error);
+});
+
+test("a stallion's height is set by hand beside his description, each kept when the other changes (18 November)", async () => {
+  const db = fakeDb();
+  const p = createProfiles(db);
+  const h = await p.saveStallion({ id: "428164", name: "Dubawi", height: "15.3", userId: "richardbrown1" });
+  assert.equal(h.status, 200);
+  assert.equal(h.body.height, 63);
+  assert.equal(h.body.physical, null);
+  await p.saveStallion({ id: "428164", physical: "Compact, powerful", userId: "TomWilson" });
+  let all = await p.stallionProfiles();
+  assert.equal(all["428164"].height, 63, "his height kept when the description is written");
+  assert.equal(all["428164"].physical, "Compact, powerful");
+  await p.saveStallion({ id: "428164", physical: "", userId: "TomWilson" });
+  all = await p.stallionProfiles();
+  assert.equal(all["428164"].height, 63, "clearing the description leaves the height");
+  await p.saveStallion({ id: "428164", height: "", userId: "TomWilson" });
+  assert.deepEqual(await p.stallionProfiles(), {}, "nothing left: the row goes");
+  assert.equal((await p.saveStallion({ id: "428164", height: "19.0", userId: "u" })).status, 400);
+  assert.equal((await p.saveStallion({ id: "428164", userId: "u" })).status, 400, "something to save");
 });
