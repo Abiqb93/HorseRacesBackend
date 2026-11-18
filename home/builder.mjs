@@ -2,7 +2,7 @@
  * Builds every user's home page lists ahead of time and keeps them in
  * home_dashboards, so the page shows them the moment it opens.
  *
- * A round reads the six race feeds and the last three days of results once,
+ * A round reads the six race feeds and the last week of results once,
  * through the same routes the page reads them through (so the lists cannot
  * differ from the page's own), then builds each user's lists in turn from
  * their tracking (home/dashboard.mjs). Rounds run at 04:00 London, at 07:00
@@ -23,6 +23,9 @@ export const VERSION = 1;
 export const FEEDS_FRESH_MS = 30 * 60 * 1000;
 /** A change waits this long for any further change before the rebuild. */
 export const DEBOUNCE_MS = 5000;
+/** Days of results before today on the Results tab (18 November 2026: "why are results not 7 days
+ * in the dashboard"). It was today and two days before. */
+export const RESULTS_DAYS = 7;
 
 export const CREATE_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS ${TABLE} (
@@ -72,7 +75,7 @@ export function createHomeBuilder({ runQuery, fetchJson, offspring, clock = () =
     const day = londonDay(clock());
     const [feeds, results, shares] = await Promise.all([
       Promise.all(RACE_FEED_NAMES.map((name) => fetchJson(`/api/${name}?from=${day}`))),
-      Promise.all([0, -1, -2].map(async (offset) => {
+      Promise.all(Array.from({ length: RESULTS_DAYS + 1 }, (_, i) => -i).map(async (offset) => {
         const date = londonDay(clock(), offset);
         const json = await fetchJson(`/api/APIData_Table2?meetingDate=${date}`);
         return { date, records: json?.data || [] };

@@ -27,7 +27,7 @@ const setup = ({ users = ["Tom", "Katie"], routes = {}, failFor = null } = {}) =
 
 const clock = () => new Date("2026-10-30T07:05:00Z");
 
-test("a round reads the feeds and three days of results once, then stores every user's lists for London's day", async () => {
+test("a round reads the feeds and a week of results once, then stores every user's lists for London's day", async () => {
   const s = setup({
     routes: {
       "/api/RacesAndEntries": { data: [{ Horse: "FRANKEL", FixtureDate: "2026-10-30", RaceTitle: "Dewhurst", RaceTime: "2.30pm" }] },
@@ -40,7 +40,7 @@ test("a round reads the feeds and three days of results once, then stores every 
   assert.deepEqual(feedReads, ["/api/RacesAndEntries?from=2026-10-30"]);
   assert.deepEqual(
     s.asked.filter((p) => p.startsWith("/api/APIData_Table2")),
-    ["/api/APIData_Table2?meetingDate=2026-10-30", "/api/APIData_Table2?meetingDate=2026-10-29", "/api/APIData_Table2?meetingDate=2026-10-28"],
+    ["30", "29", "28", "27", "26", "25", "24", "23"].map((d) => `/api/APIData_Table2?meetingDate=2026-10-${d}`),
   );
   assert.deepEqual([...s.stored.keys()], ["Tom", "Katie"]);
   const tom = await b.read("Tom");
