@@ -7787,6 +7787,10 @@ async function worldwideOutlook({ sire, dam, damsire, damYear, damsireOf }) {
   // smaller sample of the world, it is the best horses of 2014.
   if (!population?.complete) return null;
 
+  {
+    const kept = (await herProduce(damProduce, { dam, year: damYear, sire: damsire, namesakes: femaleRows(damRows) })).kept;
+    damProduce.splice(0, damProduce.length, ...kept);
+  }
   const damOwn =
     damRows.find((r) => damYear && r.foalingYear === damYear) ??
     damRows.find((r) => damsire && r.sire === damsire) ??
@@ -8202,6 +8206,82 @@ async function deskRatingsFor(dam) {
   }
 }
 
+/** The rows of mares of a name, from the results table (sex f or m) and the worldwide file (F). */
+const femaleRows = (rows = []) =>
+  rows.filter((r) => (r?.source === "worldwide" ? String(r?.sex ?? "").toLowerCase() === "f" : /^[fm]$/i.test(String(r?.sex ?? ""))));
+
+/**
+ * Arion's foals of every mare of a name, grouped by dam (breeding/damFoals.mjs),
+ * kept a week per name: the Stallion x Mare match by her birth year. `wait`
+ * is how long a page waits for Arion; past it the rules decide and the answer
+ * is kept for the next read.
+ */
+const damFoalsCache = new Map(); // NAME -> { at, view } | { at, pending }
+const DAM_FOALS_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+async function arionDamView(dam, { wait = 0 } = {}) {
+  const key = String(dam ?? "").toUpperCase();
+  if (!key) return null;
+  const hit = damFoalsCache.get(key);
+  if (hit?.view && Date.now() - hit.at < DAM_FOALS_TTL_MS) return hit.view;
+  if (!wait) return hit?.view ?? null;
+  let pending = hit?.pending;
+  if (!pending) {
+    pending = (async () => {
+      const { client } = await arion();
+      if (typeof client.configured === "function" && !client.configured()) return null;
+      const found = await client.search({ kind: "dam", dam: key });
+      const { damGroups } = await import("./breeding/damFoals.mjs");
+      const candidates = found?.candidates ?? [];
+      return { groups: damGroups(candidates, key), capped: candidates.length >= 30 };
+    })()
+      .then((view) => {
+        if (view) damFoalsCache.set(key, { at: Date.now(), view });
+        else damFoalsCache.delete(key);
+        return view;
+      })
+      .catch((err) => {
+        damFoalsCache.delete(key);
+        console.warn(`dam foals ${key}: ${err.message}`);
+        return null;
+      });
+    damFoalsCache.set(key, { at: Date.now(), pending, view: hit?.view ?? null });
+    if (damFoalsCache.size > 2000) damFoalsCache.delete(damFoalsCache.keys().next().value);
+  }
+  return Promise.race([pending, new Promise((r) => setTimeout(() => r(null), wait))]);
+}
+
+/**
+ * Her produce among foals listed under her name: Arion's list where it
+ * settles a foal, the age and sire rules where it does not (18 November
+ * 2026: "They need to match by Stallion x Mare (using the mares birth
+ * year)"). Returns { kept, left }.
+ */
+async function herProduce(foals, { dam, year = null, sire = null, country = null, namesakes = [], wait = 0 }) {
+  const { hersOnly } = await loadMating();
+  const view = await arionDamView(dam, { wait }).catch(() => null);
+  if (!view) return hersOnly(foals, { year, sire }, namesakes);
+  const { herGroup, judge, otherDams } = await import("./breeding/damFoals.mjs");
+  const her = herGroup(view.groups, { year, country });
+  const kept = [];
+  const left = [];
+  const unknown = [];
+  for (const f of foals) {
+    const j = judge(f, view.groups, her);
+    if (j === "hers") kept.push(f);
+    else if (j === "other") left.push({ name: f.name, year: f.foalingYear ?? null, why: "Arion lists it under another mare of the name" });
+    else unknown.push(f);
+  }
+  // a full list (under thirty) names all her foals: one it does not list is not hers
+  if (!view.capped && year) {
+    for (const f of unknown) left.push({ name: f.name, year: f.foalingYear ?? null, why: her ? "not among her foals on Arion" : "Arion lists no foals of hers" });
+  } else {
+    const r = hersOnly(unknown, { year, sire }, [...namesakes, ...otherDams(view.groups, her)]);
+    kept.push(...r.kept);
+    left.push(...r.left);
+  }
+  return { kept, left, arion: { her: her ? `${her.name} (${her.country ?? "?"}) ${her.year ?? ""}`.trim() : null, capped: view.capped } };
+}
+
 async function matingOutlook({ sire, dam, damsire: askedDamsire = null, damYear = null }) {
   const { studBookName, describe, pickOwnRow } = await loadMating();
   let damsire = askedDamsire ? studBookName(askedDamsire) : null;
@@ -8221,6 +8301,8 @@ async function matingOutlook({ sire, dam, damsire: askedDamsire = null, damYear 
 
   // The mare's own sire, if the caller did not know it: her own rows say.
   if (!damsire && damOwn.horses[0]?.sire) damsire = studBookName(damOwn.horses[0].sire);
+  // her produce only: by her year and her sire, not a namesake's (18 November 2026)
+  outOfDam.horses = (await herProduce(outOfDam.horses, { dam, year: damYear ?? damOwn.horses[0]?.foalingYear ?? null, sire: damsire, namesakes: femaleRows(damRows.horses) })).kept;
 
   // Damsires for the sire's runners, so the same cross can be picked out —
   // only the ones not already known, which for a stored summary is none.
@@ -8316,6 +8398,7 @@ app.get("/api/breeding/mare-side", async (req, res) => {
     }
     const own = pickOwnRow(damRows.horses, { year: damYear, sire: damsire });
     if (!damsire && own?.sire) damsire = studBookName(own.sire);
+    outOfDam.horses = (await herProduce(outOfDam.horses, { dam, year: damYear ?? own?.foalingYear ?? null, sire: damsire, namesakes: femaleRows(damRows.horses) })).kept;
     const byDamsire = await damsireProgeny(damsire);
     const body = {
       asked: { sire: null, dam, damsire, year: damYear },
@@ -8481,8 +8564,11 @@ app.get("/api/breeding/report-data", async (req, res) => {
       dam ? horsesWhere("damName = ?", [dam], 60).catch(() => ({ horses: [], timedOut: false })) : Promise.resolve({ horses: [], timedOut: false }),
     ]);
 
-    const { pickOwnRow, describe } = await loadMating();
+    const { pickOwnRow, describe, hersOnly } = await loadMating();
     const herRow = pickOwnRow(own.horses, { year, sire });
+    // her produce only, by her year and sire (18 November 2026)
+    produce.horses = (await herProduce(produce.horses, { dam: name, year: year ?? herRow?.foalingYear ?? null, sire: sire ?? herRow?.sire ?? null, country: mare?.country_code ?? null, namesakes: femaleRows(own.horses), wait: 12000 })).kept;
+    if (herRow?.damsire) siblings.horses = hersOnly(siblings.horses, { sire: herRow.damsire }).kept;
 
     const marePedigree = await heldGrid({
       reference: mare?.pedigree_reference ?? null,
@@ -9378,11 +9464,29 @@ app.get("/api/breeding/family", async (req, res) => {
     // also prints — the half-sister who won a Group race in Germany, the
     // brother who won three in Japan. An indexed read each, and an empty
     // list where the file has not been filled.
-    const [wwProduce, wwSiblings, wwThird] = await Promise.all([
+    const [wwProduceAll, wwSiblings, wwThird, wwNamesakes] = await Promise.all([
       worldwideWhere("dam_key = ?", [dam], 120),
       secondDam ? worldwideWhere("dam_key = ?", [secondDam], 120) : Promise.resolve([]),
       thirdDam ? worldwideWhere("dam_key = ?", [thirdDam], 120) : Promise.resolve([]),
+      worldwideWhere("horse_name = ?", [dam], 20),
     ]);
+
+    // Her produce and her siblings, as Stallion x Mare: a foal is hers only
+    // by her year and her sire, never by her name alone (18 November 2026:
+    // "They need to match by Stallion x Mare (using the mares birth year)")
+    const { hersOnly } = await loadMating();
+    const herYear = year ?? her?.foalingYear ?? null;
+    const herSire = sire ?? (her?.sire ? studBookName(her.sire) : null);
+    const namesakes = [...femaleRows(own.horses), ...femaleRows(wwNamesakes)];
+    const country = req.query.country ? String(req.query.country).trim().toUpperCase().slice(0, 4) : null;
+    const asHers = { dam, year: herYear, sire: herSire, country, namesakes, wait: 12000 };
+    const [mine, wwMine] = await Promise.all([herProduce(produce.horses, asHers), herProduce(wwProduceAll, asHers)]);
+    produce.horses = mine.kept;
+    const wwProduce = wwMine.kept;
+    // her dam's other foals: their dam's sire is her own damsire
+    const herDamsire = her?.damsire ? studBookName(her.damsire) : null;
+    if (herDamsire) siblings.horses = hersOnly(siblings.horses, { sire: herDamsire }).kept;
+    const leftOut = [...mine.left, ...wwMine.left];
 
     // The mare is her own dam's produce too; she is shown above, not among her siblings.
     const notHer = (list) => list.filter((h) => !(studBookName(h.name) === dam && (!year || h.foalingYear === year)));
@@ -9395,7 +9499,7 @@ app.get("/api/breeding/family", async (req, res) => {
       // "3rd Dam" headings: each one's row where she raced here, else null.
       secondDamOwn: secondDamRow ?? null,
       thirdDamOwn: pickOwnRow(thirdDamRows.horses, {}) ?? null,
-      produce: { horses: produce.horses, timedOut: produce.timedOut },
+      produce: { horses: produce.horses, timedOut: produce.timedOut, leftOut, arion: mine.arion ?? null },
       siblings: { horses: notHer(siblings.horses), timedOut: siblings.timedOut },
       thirdDamProduce: {
         horses: auntsUncles.horses.filter((h) => studBookName(h.name) !== secondDam),

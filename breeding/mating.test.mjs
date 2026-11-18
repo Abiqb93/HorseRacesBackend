@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { FLAT_RUN, HORSE_SUMMARY_SELECT, describe, pickOwnRow, quantile, studBookName, summariseHorse } from "./mating.mjs";
+import { FLAT_RUN, HORSE_SUMMARY_SELECT, describe, pickOwnRow, quantile, studBookName, summariseHorse, hersOnly } from "./mating.mjs";
 
 test("a name is written the way the results table writes it", () => {
   assert.equal(studBookName("=Frankel (GB)"), "FRANKEL");
@@ -85,4 +85,45 @@ test("the mare's own row is picked by year, then by sire, then by career", () =>
 test("the foaling year comes from the grouped column, never from a namesake's row", () => {
   assert.equal(summariseHorse({ horseName: "X", foalYear: "2014", foaled: "2008-03-12" }).foalingYear, 2014);
   assert.equal(summariseHorse({ horseName: "X", foaled: "2019-05-01T00:00:00Z" }).foalingYear, 2019);
+});
+
+/* ------------------------------------------ her produce, not a namesake's */
+
+test("One Look (IRE) 2021 is not given an American One Look's foals of 2018 to 2023 (18 November 2026)", () => {
+  const foals = [
+    { name: "UNO", foalingYear: 2018, sire: "LAOBAN", damsire: null },
+    { name: "FIRST IMPRESSION", foalingYear: 2019, sire: "STREET SENSE", damsire: null },
+    { name: "FINANCIAL DISTRICT", foalingYear: 2021, sire: "YOSHIDA", damsire: null },
+    { name: "GANGSTER FLASH", foalingYear: 2023, sire: "INSTAGRAND", damsire: null },
+  ];
+  const { kept, left } = hersOnly(foals, { year: 2021, sire: "GLENEAGLES" });
+  assert.deepEqual(kept, []);
+  assert.equal(left.length, 4);
+  assert.match(left[3].why, /foaled 2023, before a mare foaled 2021 could breed/);
+});
+
+test("by her sire: a foal whose dam is by another stallion is another mare's", () => {
+  const foals = [
+    { name: "MINE", foalingYear: 2020, damsire: "GALILEO" },
+    { name: "THEIRS", foalingYear: 2020, damsire: "DANSILI" },
+    { name: "UNKNOWN", foalingYear: 2021, damsire: null },
+  ];
+  const { kept, left } = hersOnly(foals, { year: 2014, sire: "Galileo (IRE)" });
+  assert.deepEqual(kept.map((f) => f.name), ["MINE", "UNKNOWN"]);
+  assert.match(left[0].why, /by DANSILI, not GALILEO/);
+});
+
+test("with no dam's sire on the record, a namesake old enough to be its dam leaves it out; her own row does not", () => {
+  const foals = [{ name: "OLD", foalingYear: 2012, damsire: null }, { name: "NEW", foalingYear: 2024, damsire: null }];
+  const namesakes = [{ foalingYear: 2018, sire: "GLENEAGLES" }, { foalingYear: 2005, sire: "STORM CAT" }];
+  const { kept, left } = hersOnly(foals, { year: 2018, sire: "GLENEAGLES" }, namesakes);
+  assert.deepEqual(kept.map((f) => f.name), [], "2012 is before she could breed; 2024 could be the 2005 mare's");
+  assert.equal(left.length, 2);
+  const alone = hersOnly(foals, { year: 2018, sire: "GLENEAGLES" }, [{ foalingYear: 2018, sire: "GLENEAGLES" }]);
+  assert.deepEqual(alone.kept.map((f) => f.name), ["NEW"], "no other mare of the name: hers");
+});
+
+test("nothing known of her: nothing left out", () => {
+  const foals = [{ name: "A", foalingYear: 2019 }, { name: "B", foalingYear: 2022, damsire: "X" }];
+  assert.equal(hersOnly(foals, {}).kept.length, 2);
 });
