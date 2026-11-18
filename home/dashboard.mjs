@@ -2,7 +2,7 @@
  * Each user's home page lists, built here rather than in the browser.
  *
  * The home page (horses-website-deployed src/pages/dashboard/home.jsx) used to
- * build these itself on every visit: six race feeds and three days of results,
+ * build these itself on every visit: six race feeds and a week of results,
  * about 7 MB, then every runner matched against the horses, sires, dams,
  * owners and jockeys the user tracks, about five seconds before anything
  * showed (30 October 2026). This is the same matching, function for function,
@@ -12,7 +12,7 @@
  * shape: `aux` (the sire, dam, owner and jockey update cards, the key sets
  * the other tabs mark their rows with, reviewed results, shares) and `dash`
  * (tracked horses, entries and declarations grouped today/upcoming, the last
- * three days' results). A change to the matching on the page belongs here too.
+ * a week's results). A change to the matching on the page belongs here too.
  */
 
 import { getEntryOwner, sameOwner } from "./vendor/ownerMatch.mjs";
@@ -333,7 +333,7 @@ export function buildAux({ userId, feeds, reviewed, shares, sires, dams, owners,
 
 /**
  * The page's "dash" cache for one user: what its second loader builds from
- * the user's tracking rows, the feeds and `results` (the last three days of
+ * the user's tracking rows, the feeds and `results` (today and the last seven days of
  * APIData_Table2, as [{ date, records }]), marking rows with `aux`'s key sets.
  */
 export function buildDash({ trackingRows, feeds, results, aux, now = new Date() }) {
@@ -455,7 +455,7 @@ export function buildDash({ trackingRows, feeds, results, aux, now = new Date() 
     }
   });
 
-  // RESULTS: the last three days, one row per horse per race, every reason it is there.
+  // RESULTS: today and the last seven days, one row per horse per race, every reason it is there.
   const getResultSources = (horseKey, record) => {
     const sources = [];
     if (trackedSet.has(horseKey)) sources.push("DIRECT");
