@@ -110,6 +110,58 @@ export const pickOwnRow = (rows, { year = null, sire = null } = {}) => {
   return [...rows].sort((a, b) => b.runs - a.runs)[0];
 };
 
+/** A mare foals at three at the earliest; a foal of an earlier year is another mare's. */
+export const MIN_FOALING_AGE = 3;
+/** And past twenty-five a namesake is not counted as a foal's possible dam. */
+export const MAX_FOALING_AGE = 25;
+
+/**
+ * Her produce, and no other mare's of her name (18 November 2026: "They need
+ * to match by Stallion x Mare (using the mares birth year)"). One Look (IRE)
+ * 2021 was shown the foals of a One Look in America born in 2018.
+ *
+ * A foal is hers when
+ *   - it was foaled at least three years after her, where both years are known;
+ *   - its dam's sire is her sire, where the foal's record and her row both
+ *     name him (the results table carries it; the worldwide file does not);
+ *   - with no dam's sire on its record, no other mare of her name, by another
+ *     sire, was old enough to be its dam.
+ * `namesakes` are the rows of mares of her name (hers among them is ignored
+ * by her year). Returns the foals kept and the ones left out, with why.
+ */
+export function hersOnly(foals = [], mare = {}, namesakes = []) {
+  const year = Number(mare.year) > 1900 ? Number(mare.year) : null;
+  const sire = mare.sire ? studBookName(mare.sire) : null;
+  // another mare of the name: one marked not her (Arion's other dams), or a
+  // row of another year and, where both are known, another sire
+  const others = year
+    ? namesakes
+        .map((n) => ({ year: Number(n?.foalingYear ?? n?.year) || null, sire: n?.sire ? studBookName(n.sire) : null, isHer: n?.isHer }))
+        .filter((n) => n.year && (n.isHer === false || (n.isHer === undefined && n.year !== year && !(sire && n.sire === sire))))
+    : [];
+  const kept = [];
+  const left = [];
+  for (const f of foals) {
+    const fy = Number(f?.foalingYear) || null;
+    if (year && fy && fy < year + MIN_FOALING_AGE) {
+      left.push({ name: f.name, year: fy, why: `foaled ${fy}, before a mare foaled ${year} could breed` });
+      continue;
+    }
+    const ds = f?.damsire ? studBookName(f.damsire) : null;
+    if (sire && ds) {
+      if (ds === sire) kept.push(f);
+      else left.push({ name: f.name, year: fy, why: `out of a mare of the name by ${ds}, not ${sire}` });
+      continue;
+    }
+    if (fy && others.some((o) => fy >= o.year + MIN_FOALING_AGE && fy - o.year <= MAX_FOALING_AGE)) {
+      left.push({ name: f.name, year: fy, why: "another mare of the name, by another sire, could be its dam" });
+      continue;
+    }
+    kept.push(f);
+  }
+  return { kept, left };
+}
+
 /** Linear interpolation between order statistics; null on an empty list. */
 export const quantile = (sorted, q) => {
   if (!sorted.length) return null;
