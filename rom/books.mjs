@@ -15,6 +15,8 @@
  *   ret    what she produced: foal, died (a live foal since died), barren,
  *          slipped, dead, abortion, none (not returned)
  *   rt     the foal's Timeform rating;  ran, r95, r105, r115  0 or 1
+ *   fsrc   where the fee came from, for a year whose file has none: roster,
+ *          stud announcement or press announcement (the site's fee records)
  *
  * `buildIndex` reads them into books (coverings per stallion per year), the
  * book's quality (black-type mares, winners, mares already dams of a 95+
@@ -273,8 +275,16 @@ export function buildIndex(rows) {
   // private.
   const withFee = new Set(rows.filter((r) => Number.isFinite(r.fee) && r.fee > 0).map((r) => r.y));
   const feeYears = years.filter((y) => withFee.has(y));
+  // Where a year's fees came from when its file had none (2026 on): the site's
+  // fee records, by source, counted in coverings (`fsrc` on each).
+  const feeFrom = {};
+  for (const r of rows) {
+    if (!r.fsrc) continue;
+    const t = (feeFrom[r.y] ??= {});
+    t[r.fsrc] = (t[r.fsrc] ?? 0) + 1;
+  }
 
-  return { years, resultsThrough, firstRunners, feeYears, typicalRan: typical, totals: totalsOf(years, stallions), stallions, crosses, mares, names };
+  return { years, resultsThrough, firstRunners, feeYears, feeFrom, typicalRan: typical, totals: totalsOf(years, stallions), stallions, crosses, mares, names };
 }
 
 // What a mare's own page needs of a covering, small enough to hold every
