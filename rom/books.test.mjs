@@ -185,3 +185,15 @@ test("a year whose file carries no fees: the fee is his latest paid, and the yea
   assert.equal(fresh.fee, null);
   assert.equal(ix.totals.at(-1).flat.medianFee, null);
 });
+
+test("a year's fees from the site's records say where they came from", () => {
+  const rows = coverings();
+  for (let i = 0; i < 30; i += 1) rows.push({ y: 2022, st: "Flat Sire (IRE)", mare: `Late Mare ${i} (GB)`, myob: 2015, fee: 30000, ccy: "EUR", amt: 35000, fsrc: "roster" });
+  rows.push({ y: 2022, st: "Quiet Sire (GB)", mare: "Quiet Mare (GB)", myob: 2015, fsrc: "roster" });
+  rows.push({ y: 2022, st: "Late Sire (GB)", mare: "Other Mare (GB)", myob: 2015, fee: 5000, fsrc: "stud announcement" });
+  const ix = buildIndex(rows);
+  assert.ok(ix.feeYears.includes(2022));
+  assert.deepEqual(ix.feeFrom, { 2022: { roster: 31, "stud announcement": 1 } });
+  assert.equal(rowOf(ix.stallions.get("flat sire"), ix).feeY, 2022);
+  assert.equal(rowOf(ix.stallions.get("flat sire"), ix).fee, 30000);
+});
