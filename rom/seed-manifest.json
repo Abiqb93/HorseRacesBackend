@@ -1,6 +1,6 @@
 {
   "about": "Fingerprints of the Return of Mares seed parts the seed route accepts (POST /api/rom/seed). The parts are the user's Return of Mares files, one per covering year, breeders left out, and are kept in the private site repository (data/rom/seed), not here.",
-  "built": "2026-10-30",
+  "built": "2026-11-18",
   "parts": [
     {
       "name": "rom-2013",
@@ -105,6 +105,14 @@
       "rows": 17255,
       "bytes": 377104,
       "sha256": "2051318f4cc753af8479ae23fe60016730ce5426b97cb9735ddbac89e66bcdaa"
+    },
+    {
+      "name": "rom-2026",
+      "kind": "coverings",
+      "year": 2026,
+      "rows": 17210,
+      "bytes": 450310,
+      "sha256": "f58b032b2b185b44585063740b19e3b9e547c36293bb5601754180d274859b42"
     }
   ]
 }
