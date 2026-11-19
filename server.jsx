@@ -96,7 +96,7 @@ app.get("/api/version", (req, res) => res.json({ marker: "france-2cb2e46-trigger
 
 app.get("/api/env-status", (req, res) => {
   const names = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT",
-    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN", "ML_SERVICE_URL", "SALES_IMPORT_TOKEN"];
+    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN", "ML_SERVICE_URL", "SALES_IMPORT_TOKEN", "SPORTS_API"];
   res.json({ set: Object.fromEntries(names.map((n) => [n, Boolean(process.env[n])])) });
 });
 
@@ -104,7 +104,7 @@ app.get("/api/env-status", (req, res) => {
 // only, never values. Lets us verify the Railway variable configuration.
 app.get("/api/env-status", (req, res) => {
   const names = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_PORT",
-    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN", "ML_SERVICE_URL", "SALES_IMPORT_TOKEN"];
+    "GMAIL_USER", "GMAIL_PASS", "PARSEBOT_API_KEY", "FRANCE_CRON", "FRANCE_ADMIN_TOKEN", "ML_SERVICE_URL", "SALES_IMPORT_TOKEN", "SPORTS_API"];
   res.json({ set: Object.fromEntries(names.map((n) => [n, Boolean(process.env[n])])) });
 });
 
@@ -839,6 +839,133 @@ transporter.verify((err, success) => {
 
 
 
+
+// =======================================================
+// TIMEFORM GLOBAL SPORTS API — HORSE SALES HISTORY
+// Railway variable: SPORTS_API (never sent to the browser).
+// GET /api/horse-sales?horseCode=519196
+// GET /api/horse-sales?horseCode=000000519196
+// Each request returns the historical sale appearances available from Timeform.
+// =======================================================
+const horseSalesCache = new Map();
+const HORSE_SALES_TTL_MS = 6 * 60 * 60 * 1000;
+const HORSE_SALES_MAX_PAGES = 25;
+const HORSE_SALES_API_ORIGIN = 'https://www.globalsportsapi.com';
+
+// Uses the existing Node https import: no additional npm dependency.
+function requestTimeformSalesPage(url, apiKey) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    // Never follow arbitrary hosts supplied by an upstream nextLink.
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'www.globalsportsapi.com' ||
+        !parsed.pathname.startsWith('/ODATAv1/HorseRacing/')) {
+      return reject(new Error('Timeform returned an unexpected pagination URL'));
+    }
+    const request = https.get(parsed, {
+      headers: {
+        Accept: 'application/json',
+        gsaappkey: apiKey,
+      },
+    }, (response) => {
+      let raw = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => {
+        raw += chunk;
+        if (raw.length > 8 * 1024 * 1024) {
+          request.destroy(new Error('Timeform sales response exceeds size limit'));
+        }
+      });
+      response.on('end', () => {
+        const status = response.statusCode || 502;
+        if (status < 200 || status >= 300) {
+          const error = new Error(`Timeform returned HTTP ${status}`);
+          error.upstreamStatus = status;
+          return reject(error);
+        }
+        try {
+          resolve(JSON.parse(raw));
+        } catch (err) {
+          reject(new Error('Timeform returned invalid JSON'));
+        }
+      });
+    });
+    request.setTimeout(20000, () => request.destroy(new Error('Timeform sales request timed out')));
+    request.on('error', reject);
+  });
+}
+
+app.get('/api/horse-sales', async (req, res) => {
+  const rawCode = String(req.query.horseCode ?? '').trim();
+  if (!/^\d{1,12}$/.test(rawCode)) {
+    return res.status(400).json({ error: 'horseCode must be between 1 and 12 digits' });
+  }
+  const horseCode = rawCode.padStart(12, '0');
+  const apiKey = String(process.env.SPORTS_API || '').trim();
+  if (!apiKey) {
+    console.error('[horse-sales] SPORTS_API environment variable is missing');
+    return res.status(503).json({ error: 'Horse sales service is not configured' });
+  }
+
+  const now = Date.now();
+  const cached = horseSalesCache.get(horseCode);
+  if (cached && now - cached.at < HORSE_SALES_TTL_MS) {
+    res.set('Cache-Control', 'private, max-age=300');
+    return res.json({ ...cached.data, cached: true });
+  }
+
+  // Construct the OData filter server-side; validated digits cannot inject OData.
+  const firstUrl = new URL('/ODATAv1/HorseRacing/horseSales', HORSE_SALES_API_ORIGIN);
+  firstUrl.searchParams.set('$filter', `horseCode eq '${horseCode}'`);
+  firstUrl.searchParams.set('$orderby', 'saleDate desc');
+  firstUrl.searchParams.set('$top', '100');
+
+  try {
+    const sales = [];
+    const visited = new Set();
+    let nextUrl = firstUrl.href;
+    let pages = 0;
+    while (nextUrl) {
+      if (pages >= HORSE_SALES_MAX_PAGES || visited.has(nextUrl)) {
+        throw new Error('Timeform sales pagination did not complete');
+      }
+      visited.add(nextUrl);
+      pages += 1;
+      const result = await requestTimeformSalesPage(nextUrl, apiKey);
+      if (!Array.isArray(result?.value)) {
+        throw new Error('Unexpected Timeform sales response shape');
+      }
+      sales.push(...result.value.filter((r) => String(r?.horseCode || '').padStart(12, '0') === horseCode));
+      const next = result['@odata.nextLink'];
+      nextUrl = next ? new URL(next, nextUrl).href : null;
+    }
+
+    // Guard against repeated records when OData pages overlap.
+    const unique = [...new Map(sales.map((r) => [
+      `${r.horseCode}|${r.saleId}|${r.saleDate}|${r.horseSaleTypeId}`,
+      r,
+    ])).values()].sort((a, b) => String(b.saleDate || '').localeCompare(String(a.saleDate || '')));
+
+    const payload = {
+      horseCode,
+      horseName: unique[0]?.horseName || null,
+      count: unique.length,
+      sales: unique,
+      source: 'Timeform Global Sports API',
+      fetchedAt: new Date().toISOString(),
+    };
+    // Small bounded in-process cache, no database changes required.
+    if (horseSalesCache.size > 500) horseSalesCache.clear();
+    horseSalesCache.set(horseCode, { at: now, data: payload });
+    res.set('Cache-Control', 'private, max-age=300');
+    return res.json(payload);
+  } catch (err) {
+    console.error('[horse-sales] upstream lookup failed:', {
+      horseCode, error: err.message, status: err.upstreamStatus || null,
+    });
+    const status = err.upstreamStatus === 401 || err.upstreamStatus === 403 ? 502 : 502;
+    return res.status(status).json({ error: 'Unable to retrieve Timeform horse sales', detail: err.message });
+  }
+});
 
 // =======================================================
 // ML FUTURE OUTLOOK PREDICTIONS
