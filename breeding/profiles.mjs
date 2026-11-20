@@ -23,6 +23,16 @@ export const STALLION_PROFILES = `CREATE TABLE IF NOT EXISTS stallion_profiles (
 
 /** His height in inches, set by hand where the stud's own figure is missing or wrong (18 November 2026). */
 export const STALLION_HEIGHT_COLUMN = "ALTER TABLE stallion_profiles ADD COLUMN height_in SMALLINT NULL";
+/**
+ * Who looked at him and when, beside the description ("RB", "Nov 2026"),
+ * and half inches in his height (15.2½): the appraisals given on 20 November
+ * 2026 carry both.
+ */
+export const STALLION_APPRAISAL_COLUMNS = [
+  "ALTER TABLE stallion_profiles ADD COLUMN appraiser VARCHAR(64) NULL",
+  "ALTER TABLE stallion_profiles ADD COLUMN appraised VARCHAR(32) NULL",
+];
+export const STALLION_HALF_INCH = "ALTER TABLE stallion_profiles MODIFY COLUMN height_in DECIMAL(4,1) NULL";
 
 export const MARE_PHOTOS = `CREATE TABLE IF NOT EXISTS mare_photos (
   mare_id INT NOT NULL PRIMARY KEY,
@@ -52,22 +62,34 @@ export function readPhysical(v) {
 }
 
 /**
- * A height as stored, in inches: 65, "65", "16.1", "16.1hh" or "16 hh" (a
- * hand is four inches, so 16.1 is sixty-five). Undefined leaves it as it is;
- * null or "" clears it; anything outside 14.0hh to 18.3hh is refused.
+ * A height as stored, in inches: 65, "65", 62.5, "16.1", "16.1hh", "16 hh",
+ * or with a half inch, "15.2½", "15.2 1/2" or "15.2.5" (a hand is four
+ * inches, so 16.1 is sixty-five and 15.2½ is sixty-two and a half).
+ * Undefined leaves it as it is; null or "" clears it; anything outside 14.0hh
+ * to 18.3½hh, or not a whole or half inch, is refused.
  */
 export function readHeight(v) {
   if (v === undefined) return { leave: true };
   if (v === null || String(v).trim() === "") return { value: null };
-  const s = String(v).trim();
+  const s = String(v).trim().replace(/\s+/g, " ");
   let inches = null;
-  if (/^\d{2}$/.test(s) && Number(s) >= 56) inches = Number(s);
+  if (/^\d{2}(?:\.[05])?$/.test(s) && Number(s) >= 56) inches = Number(s);
   else {
-    const m = s.match(/^(\d{2})(?:\.(\d))?\s*(?:hh|h|hands)?$/i);
-    if (m && Number(m[2] ?? 0) <= 3) inches = Number(m[1]) * 4 + Number(m[2] ?? 0);
+    const m = s.match(/^(\d{2})(?:\.(\d))?\s*(½|1\/2|\.5)?\s*(?:hh|h|hands)?$/i);
+    if (m && Number(m[2] ?? 0) <= 3) inches = Number(m[1]) * 4 + Number(m[2] ?? 0) + (m[3] ? 0.5 : 0);
   }
-  if (!Number.isInteger(inches) || inches < 56 || inches > 75) return { error: "a height in hands, such as 16.1 (14.0 to 18.3)" };
+  if (!Number.isFinite(inches) || inches * 2 !== Math.round(inches * 2) || inches < 56 || inches > 75.5) {
+    return { error: "a height in hands, such as 16.1 or 15.2½ (14.0 to 18.3½)" };
+  }
   return { value: inches };
+}
+
+/** Who appraised him ("RB") or when ("Nov 2026"), as stored; undefined leaves it, "" clears it. */
+export function readNote(v, max, what) {
+  if (v === undefined) return { leave: true };
+  const s = v === null ? "" : String(v).replace(/\s+/g, " ").trim();
+  if (s.length > max) return { error: `${what} is at most ${max} characters` };
+  return { value: s || null };
 }
 
 /** "data:image/jpeg;base64,..." to its type and bytes, or an error the page can show. */
@@ -82,6 +104,9 @@ export function readPhoto(dataUrl) {
   return { type, body };
 }
 
+/** A column that is there already is fine (1060). */
+const already = (err) => (err?.errno === 1060 || /duplicate column/i.test(String(err?.message)) ? null : Promise.reject(err));
+
 export function createProfiles({ runQuery }) {
   let ready = null;
   const ensure = () => {
@@ -89,7 +114,9 @@ export function createProfiles({ runQuery }) {
       ready ??
       Promise.all([runQuery(STALLION_PROFILES), runQuery(MARE_PHOTOS)])
         // the height column on a table made before it; there already is fine (1060)
-        .then(() => runQuery(STALLION_HEIGHT_COLUMN).catch((err) => (err?.errno === 1060 || /duplicate column/i.test(String(err?.message)) ? null : Promise.reject(err))))
+        .then(() => runQuery(STALLION_HEIGHT_COLUMN).catch(already))
+        .then(() => Promise.all(STALLION_APPRAISAL_COLUMNS.map((sql) => runQuery(sql).catch(already))))
+        .then(() => runQuery(STALLION_HALF_INCH))
         .catch((err) => {
           ready = null;
           throw err;
@@ -101,6 +128,8 @@ export function createProfiles({ runQuery }) {
     name: r.stallion_name ?? null,
     physical: r.physical ?? null,
     height: r.height_in !== null && r.height_in !== undefined && Number.isFinite(Number(r.height_in)) ? Number(r.height_in) : null,
+    appraiser: r.appraiser ?? null,
+    appraised: r.appraised ?? null,
     updatedBy: r.updated_by ?? null,
     updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : null,
   });
@@ -109,7 +138,7 @@ export function createProfiles({ runQuery }) {
   async function stallionProfiles() {
     await ensure();
     const rows = await runQuery(
-      "SELECT stallion_id, stallion_name, physical, height_in, updated_by, updated_at FROM stallion_profiles WHERE physical IS NOT NULL OR height_in IS NOT NULL",
+      "SELECT stallion_id, stallion_name, physical, height_in, appraiser, appraised, updated_by, updated_at FROM stallion_profiles WHERE physical IS NOT NULL OR height_in IS NOT NULL",
       [],
     );
     const out = {};
@@ -118,31 +147,51 @@ export function createProfiles({ runQuery }) {
   }
 
   /**
-   * Write a stallion's description, his height, or both; an empty one clears
-   * it. A field not sent is left as it is, so setting his height keeps his
-   * description.
+   * Write a stallion's description, his height, who appraised him and when,
+   * or any of them; an empty one clears it. A field not sent is left as it
+   * is, so setting his height keeps his description. Clearing the
+   * description clears who wrote it and when.
    */
-  async function saveStallion({ id, name = null, physical, height, userId }) {
+  async function saveStallion({ id, name = null, physical, height, appraiser, appraised, userId }) {
     if (!stallionIdOk(id)) return { status: 400, error: "that is not a stallion id" };
     if (!userId) return { status: 400, error: "userId is required" };
-    if (physical === undefined && height === undefined) return { status: 400, error: "send physical, height or both" };
+    if ([physical, height, appraiser, appraised].every((v) => v === undefined)) return { status: 400, error: "send physical, height or both" };
     const p = physical === undefined ? { leave: true } : readPhysical(physical);
     if (p.error) return { status: 400, error: p.error };
     const h = readHeight(height);
     if (h.error) return { status: 400, error: h.error };
+    let a = readNote(appraiser, 64, "the appraiser");
+    if (a.error) return { status: 400, error: a.error };
+    let w = readNote(appraised, 32, "when he was seen");
+    if (w.error) return { status: 400, error: w.error };
+    if (!p.leave && p.value === null) {
+      a = { value: null };
+      w = { value: null };
+    }
     await ensure();
     const at = new Date();
+    const keep = (col, r) => (r.leave ? col : `VALUES(${col})`);
     await runQuery(
-      `INSERT INTO stallion_profiles (stallion_id, stallion_name, physical, height_in, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO stallion_profiles (stallion_id, stallion_name, physical, height_in, appraiser, appraised, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE stallion_name = COALESCE(VALUES(stallion_name), stallion_name),
-         physical = ${p.leave ? "physical" : "VALUES(physical)"}, height_in = ${h.leave ? "height_in" : "VALUES(height_in)"},
+         physical = ${keep("physical", p)}, height_in = ${keep("height_in", h)},
+         appraiser = ${keep("appraiser", a)}, appraised = ${keep("appraised", w)},
          updated_by = VALUES(updated_by), updated_at = VALUES(updated_at)`,
-      [String(id), name ? String(name).slice(0, 191) : null, p.leave ? null : p.value, h.leave ? null : h.value, String(userId).slice(0, 64), at],
+      [
+        String(id),
+        name ? String(name).slice(0, 191) : null,
+        p.leave ? null : p.value,
+        h.leave ? null : h.value,
+        a.leave ? null : a.value,
+        w.leave ? null : w.value,
+        String(userId).slice(0, 64),
+        at,
+      ],
     );
     // a row with nothing left on it goes
     await runQuery("DELETE FROM stallion_profiles WHERE stallion_id = ? AND physical IS NULL AND height_in IS NULL", [String(id)]);
-    const rows = await runQuery("SELECT stallion_id, stallion_name, physical, height_in, updated_by, updated_at FROM stallion_profiles WHERE stallion_id = ? LIMIT 1", [String(id)]);
-    const row = rows?.[0] ? shapeStallion(rows[0]) : { physical: null, height: null, updatedBy: null, updatedAt: null };
+    const rows = await runQuery("SELECT stallion_id, stallion_name, physical, height_in, appraiser, appraised, updated_by, updated_at FROM stallion_profiles WHERE stallion_id = ? LIMIT 1", [String(id)]);
+    const row = rows?.[0] ? shapeStallion(rows[0]) : { physical: null, height: null, appraiser: null, appraised: null, updatedBy: null, updatedAt: null };
     return { status: 200, body: { id: String(id), ...row, updatedBy: row.updatedBy ?? String(userId), updatedAt: row.updatedAt ?? at.toISOString() } };
   }
 
