@@ -6974,6 +6974,89 @@ app.patch("/api/mares/:userId/:id", express.json(), async (req, res) => {
  * Declared above `/api/mares/:userId/:id` so "bands" is read as the word it
  * is rather than as a mare's id.
  */
+/* ---------------------------------------------------- stallion and mare videos */
+// A video against a stallion's or a mare's profile (20 November 2026), kept in
+// the database a 4 MB piece at a time and played back a byte range at a time.
+// See breeding/videos.mjs.
+let videosApi = null;
+async function videos() {
+  if (!videosApi) {
+    const { createVideos } = await import("./breeding/videos.mjs");
+    videosApi = createVideos({ runQuery });
+  }
+  return videosApi;
+}
+const sendVideo = (res, out) => (out.error ? res.status(out.status).json({ error: out.error }) : res.json(out.body));
+
+app.put("/api/videos/:id/chunks/:n", express.raw({ type: "application/octet-stream", limit: "5mb" }), async (req, res) => {
+  try {
+    return sendVideo(res, await (await videos()).putChunk({ id: req.params.id, n: req.params.n, body: Buffer.isBuffer(req.body) ? req.body : null, userId: req.query.userId ?? null }));
+  } catch (err) {
+    console.error("video piece:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/videos/:id/finish", express.json({ limit: "16kb" }), async (req, res) => {
+  try {
+    return sendVideo(res, await (await videos()).finish({ id: req.params.id, userId: req.body?.userId ?? null }));
+  } catch (err) {
+    console.error("video finish:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// after finish, which /api/videos/:kind/:subjectId would otherwise take
+app.post("/api/videos/:kind/:subjectId", express.json({ limit: "16kb" }), async (req, res) => {
+  try {
+    const b = req.body ?? {};
+    return sendVideo(res, await (await videos()).start({ kind: req.params.kind, subjectId: req.params.subjectId, name: b.name ?? null, title: b.title ?? null, type: b.type, bytes: b.bytes, userId: b.userId ?? null }));
+  } catch (err) {
+    console.error("video start:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/videos/:id/stream", async (req, res) => {
+  try {
+    const out = await (await videos()).stream({ id: req.params.id, userId: req.query.userId ?? null, range: req.headers.range ?? null });
+    if (out.error) {
+      if (out.headers) res.set(out.headers);
+      return res.status(out.status).json({ error: out.error });
+    }
+    res.status(out.status).set(out.headers);
+    for await (const part of out.parts()) {
+      if (!res.write(part)) await new Promise((r) => res.once("drain", r));
+      if (res.destroyed) return undefined;
+    }
+    return res.end();
+  } catch (err) {
+    console.error("video stream:", err.message);
+    if (!res.headersSent) return res.status(500).json({ error: err.message });
+    return res.end();
+  }
+});
+
+// after the stream route, which /api/videos/:kind/:subjectId would otherwise take
+app.get("/api/videos/:kind/:subjectId", async (req, res) => {
+  try {
+    res.set("Cache-Control", "no-store");
+    return sendVideo(res, await (await videos()).list({ kind: req.params.kind, subjectId: req.params.subjectId, userId: req.query.userId ?? null }));
+  } catch (err) {
+    console.error("videos list:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/videos/:id", async (req, res) => {
+  try {
+    return sendVideo(res, await (await videos()).remove({ id: req.params.id, userId: req.query.userId ?? null }));
+  } catch (err) {
+    console.error("video delete:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 /* -------------------------------------------- descriptions and pictures */
 // A stallion's physical description (shared by everyone) and a mare's
 // picture (hers alone). See breeding/profiles.mjs.
