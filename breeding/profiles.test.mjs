@@ -9,19 +9,20 @@ function fakeDb({ mares = [{ id: 104, user_id: "richardbrown1" }] } = {}) {
   const photos = new Map();
   const runQuery = async (sql, args = []) => {
     if (/^CREATE TABLE/.test(sql)) return {};
-    if (/^ALTER TABLE stallion_profiles ADD COLUMN height_in/.test(sql)) return {};
+    if (/^ALTER TABLE stallion_profiles (ADD|MODIFY) COLUMN/.test(sql)) return {};
     if (/^SELECT stallion_id[\s\S]*WHERE stallion_id = \?/.test(sql)) return [stallions.get(args[0])].filter(Boolean);
     if (/^SELECT stallion_id/.test(sql)) return [...stallions.values()].filter((r) => r.physical !== null || r.height_in !== null);
     if (/^INSERT INTO stallion_profiles/.test(sql)) {
-      const [stallion_id, stallion_name, physical, height_in, updated_by, updated_at] = args;
+      const [stallion_id, stallion_name, physical, height_in, appraiser, appraised, updated_by, updated_at] = args;
       const old = stallions.get(stallion_id);
-      const keepPhysical = /physical = physical/.test(sql);
-      const keepHeight = /height_in = height_in/.test(sql);
+      const kept = (col, v) => (old && new RegExp(`${col} = ${col}\\b`).test(sql) ? old[col] : v);
       stallions.set(stallion_id, {
         stallion_id,
         stallion_name: stallion_name ?? old?.stallion_name ?? null,
-        physical: old && keepPhysical ? old.physical : physical,
-        height_in: old && keepHeight ? old.height_in : height_in,
+        physical: kept("physical", physical),
+        height_in: kept("height_in", height_in),
+        appraiser: kept("appraiser", appraiser),
+        appraised: kept("appraised", appraised),
         updated_by,
         updated_at,
       });
@@ -122,6 +123,13 @@ test("a height is read in hands or inches, and refused outside a stallion's rang
   assert.deepEqual(readHeight(""), { value: null });
   assert.deepEqual(readHeight(undefined), { leave: true });
   assert.ok(readHeight("16.5").error, "there is no fifth inch to a hand");
+  // half inches, as the appraisals of 20 November 2026 give them
+  assert.deepEqual(readHeight("15.2½"), { value: 62.5 });
+  assert.deepEqual(readHeight("15.3 1/2"), { value: 63.5 });
+  assert.deepEqual(readHeight("16.1 ½ HH"), { value: 65.5 });
+  assert.deepEqual(readHeight("16.0"), { value: 64 });
+  assert.deepEqual(readHeight(62.5), { value: 62.5 });
+  assert.ok(readHeight(62.3).error, "a whole or half inch");
   assert.ok(readHeight("12.2").error);
   assert.ok(readHeight("tall").error);
 });
@@ -144,4 +152,34 @@ test("a stallion's height is set by hand beside his description, each kept when 
   assert.deepEqual(await p.stallionProfiles(), {}, "nothing left: the row goes");
   assert.equal((await p.saveStallion({ id: "428164", height: "19.0", userId: "u" })).status, 400);
   assert.equal((await p.saveStallion({ id: "428164", userId: "u" })).status, 400, "something to save");
+});
+
+test("an appraisal: who saw him and when ride with the description, and go when it is cleared (20 November)", async () => {
+  const db = fakeDb();
+  const p = createProfiles(db);
+  const saved = await p.saveStallion({
+    id: "428161",
+    name: "Notable Speech",
+    physical: "16 HH. Quality. Good head.",
+    height: "16.0",
+    appraiser: "RB",
+    appraised: "Nov 2026",
+    userId: "TomWilson",
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.appraiser, "RB");
+  assert.equal(saved.body.appraised, "Nov 2026");
+  assert.equal(saved.body.height, 64);
+  // a new height keeps the appraisal
+  await p.saveStallion({ id: "428161", height: "15.3½", userId: "TomWilson" });
+  let all = await p.stallionProfiles();
+  assert.equal(all["428161"].height, 63.5);
+  assert.equal(all["428161"].appraiser, "RB");
+  // clearing the description clears who wrote it, the height stays
+  await p.saveStallion({ id: "428161", physical: "", userId: "TomWilson" });
+  all = await p.stallionProfiles();
+  assert.equal(all["428161"].appraiser, null);
+  assert.equal(all["428161"].appraised, null);
+  assert.equal(all["428161"].height, 63.5);
+  assert.equal((await p.saveStallion({ id: "428161", appraiser: "x".repeat(65), userId: "u" })).status, 400);
 });
