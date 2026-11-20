@@ -3,9 +3,10 @@
  * 2026: "add a feature so that a video of a stallion or video of mare can be
  * uploaded to the site against their profile").
  *
- * A stallion's videos are shared, as his description is: everyone sees them,
- * and whoever uploaded one can take it down. A mare's videos belong to the
- * user whose mare she is, as her picture does.
+ * Everyone sees every video, a stallion's or a mare's (20 November 2026:
+ * "make mare videos visible to all"). Whoever uploaded one can take it down;
+ * a mare's are uploaded by the user whose mare she is, who can also take any
+ * of hers down.
  *
  * The site holds no file store, so a video is kept in the database in pieces
  * of CHUNK_BYTES, each its own row: the page sends it a piece at a time (no
@@ -111,8 +112,8 @@ export function createVideos({ runQuery }) {
     return Boolean(rows?.[0]);
   };
 
-  /** May this user see the video? A stallion's, anyone; a mare's, her owner. */
-  const canSee = (v, userId) => v.kind === "stallion" || (userId && String(v.owner_id) === String(userId));
+  /** Every video is everyone's to see (20 November 2026: "make mare videos visible to all"). */
+  const canSee = () => true;
   /** May this user take it down? Whoever uploaded it, or the mare's owner. */
   const canDelete = (v, userId) => userId && (String(v.uploaded_by) === String(userId) || (v.kind === "mare" && String(v.owner_id) === String(userId)));
 

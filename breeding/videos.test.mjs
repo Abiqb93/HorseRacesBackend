@@ -115,15 +115,15 @@ test("an upload is checked piece by piece and not listed until every piece is in
   assert.equal((await v.start({ kind: "foal", subjectId: "1", type: "video/mp4", bytes: 10, userId: "u" })).status, 400);
 });
 
-test("a mare's video is her owner's: uploaded, seen and taken down only by them", async () => {
+test("a mare's video is uploaded and taken down by her owner, and seen by everyone", async () => {
   const db = fakeDb();
   const v = createVideos(db);
   assert.equal((await v.start({ kind: "mare", subjectId: "104", type: "video/mp4", bytes: 10, userId: "TomWilson" })).status, 404, "not his mare");
   const { id } = await upload(v, { kind: "mare", subjectId: "104", userId: "richardbrown1", size: 1000 });
   await v.finish({ id, userId: "richardbrown1" });
   assert.equal((await v.list({ kind: "mare", subjectId: "104", userId: "richardbrown1" })).body.videos.length, 1);
-  assert.equal((await v.list({ kind: "mare", subjectId: "104", userId: "TomWilson" })).body.videos.length, 0);
-  assert.equal((await v.stream({ id, userId: "TomWilson" })).status, 404);
+  assert.equal((await v.list({ kind: "mare", subjectId: "104", userId: "TomWilson" })).body.videos.length, 1, "visible to all");
+  assert.equal((await v.stream({ id, userId: "TomWilson" })).status, 200);
   assert.equal((await v.remove({ id, userId: "TomWilson" })).status, 404);
   assert.equal((await v.remove({ id, userId: "richardbrown1" })).status, 200);
   assert.equal(db.chunks.size, 0, "its pieces go with it");
