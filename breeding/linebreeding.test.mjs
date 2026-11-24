@@ -106,16 +106,22 @@ function fakeDb({ runs }) {
     if (/FROM APIData_Table2[\s\S]*GROUP BY sireName/.test(sql)) return [{ sire: "GALILEO", n: 3 }];
     if (/FROM APIData_Table2[\s\S]*WHERE sireName IN/.test(sql)) return runs.filter((r) => a.includes(r.sireName));
     if (/FROM APIData_Table2[\s\S]*WHERE damName IN/.test(sql)) return runs.filter((r) => a.includes(r.damName));
+    // rows go in a few hundred to a statement: take each group of values in turn
+    const groups = (width) => Array.from({ length: a.length / width }, (_, i) => a.slice(i * width, (i + 1) * width));
     if (/REPLACE INTO study_lb_runners/.test(sql)) {
-      t.runners.set(a[0], { horse_key: a[0], name: a[1], crop: a[2], sex: a[3], sire: a[4], dam: a[5], damsire: a[6], best: a[7], runs: a[8], stakes_wins: a[9], group_wins: a[10], group1_wins: a[11] });
+      for (const g of groups(12)) t.runners.set(g[0], { horse_key: g[0], name: g[1], crop: g[2], sex: g[3], sire: g[4], dam: g[5], damsire: g[6], best: g[7], runs: g[8], stakes_wins: g[9], group_wins: g[10], group1_wins: g[11] });
       return {};
     }
+    if (/SELECT name, crop, sire, dam, damsire FROM study_lb_runners/.test(sql)) {
+      const [from, to] = a.slice(-2);
+      return [...t.runners.values()].filter((r) => a.slice(0, -2).includes(r.sire) && r.crop >= from && r.crop <= to);
+    }
     if (/REPLACE INTO study_lb_produce/.test(sql)) {
-      t.produce.set(`${a[0]}#${a[1]}`, { dam_key: a[0], horse_key: a[1], best: a[2] });
+      for (const g of groups(3)) t.produce.set(`${g[0]}#${g[1]}`, { dam_key: g[0], horse_key: g[1], best: g[2] });
       return {};
     }
     if (/INSERT IGNORE INTO study_lb_grids/.test(sql)) {
-      if (!t.grids.has(a[0])) t.grids.set(a[0], { grid_key: a[0], kind: /'sire'/.test(sql) ? "sire" : "dam", name: a[1], sire_hint: a[2] ?? null, status: "todo", tries: 0 });
+      for (const g of groups(4)) if (!t.grids.has(g[0])) t.grids.set(g[0], { grid_key: g[0], kind: g[1], name: g[2], sire_hint: g[3] ?? null, status: "todo", tries: 0 });
       return {};
     }
     if (/SELECT kind, status, COUNT/.test(sql)) {
@@ -188,4 +194,36 @@ test("the job: plans the runners and grids, reads one grid a tick at night, and 
   assert.equal(st.grids["sire:done"], 1);
   assert.equal(st.grids["dam:failed"], 1);
   assert.ok(t.grids.has(sireKey("GALILEO")));
+});
+
+test("a restart part way through planning: the next tick plans again with the sires it was given", async () => {
+  const runs = [run("ONE", 2016, "GALILEO", "MARE A", "DANEHILL", 95, 1), run("TWO", 2017, "GALILEO", "MARE B", "DANZIG", 80)];
+  const db = fakeDb({ runs });
+  const t = db.t;
+  let runnerScans = 0;
+  const runQuery = (sql, a) => {
+    if (/WHERE sireName IN/.test(sql)) runnerScans += 1;
+    return db.runQuery(sql, a);
+  };
+  const study = createLinebreedingStudy({ runQuery, fetchGrid: async () => ({ ancestors: [] }), now: () => new Date("2026-11-24T14:00:00Z"), log: { log() {}, warn() {} } });
+  // the runners were read and saved before the deploy; the produce and grids were not
+  await study.plan({ sires: ["GALILEO"] });
+  t.produce.clear();
+  t.grids.clear();
+  runnerScans = 0;
+  // what the table held after the deploy: planning stopped at the dams, no plan running
+  await runQuery(
+    "INSERT INTO study_lb_state (id, enabled, stage, plan) VALUES (1, ?, ?, ?) ON DUPLICATE KEY UPDATE enabled = VALUES(enabled), stage = VALUES(stage), plan = VALUES(plan)",
+    [1, "reading the dams' produce", JSON.stringify({ sires: ["GALILEO"], crops: [2015, 2019] })],
+  );
+  assert.deepEqual(await study.tick(), { resumed: "reading the dams' produce" });
+  await new Promise((r) => setTimeout(r, 20));
+  const st = await study.status();
+  assert.equal(st.stage, "reading pedigrees");
+  assert.equal(st.note, null);
+  assert.ok(t.grids.has(sireKey("GALILEO")));
+  assert.equal(t.grids.size, 3, "the sire and both dams");
+  assert.equal(t.produce.size, 2);
+  assert.equal(runnerScans, 0, "the saved runners are taken back, not read again");
+  assert.equal((await study.tick()).skipped, "outside the window", "once planned, it reads as before");
 });
