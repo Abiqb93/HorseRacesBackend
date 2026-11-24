@@ -291,6 +291,10 @@ export const runnersSql = (sires) =>
    WHERE sireName IN (${IN(sires)}) AND YEAR(foalingDate) BETWEEN ? AND ? AND countryCode IN ('GBR', 'IRE')
    GROUP BY horseName, YEAR(foalingDate)`;
 
+/** The runners already saved for these sires and crops, for a resumed plan. */
+export const savedRunnersSql = (sires) =>
+  `SELECT name, crop, sire, dam, damsire FROM study_lb_runners WHERE sire IN (${IN(sires)}) AND crop BETWEEN ? AND ?`;
+
 /** The sires with the most runners in Britain and Ireland in these crops. */
 export const topSiresSql = `
   SELECT /*+ MAX_EXECUTION_TIME(600000) */ sireName AS sire, COUNT(DISTINCT horseName) AS n
@@ -298,9 +302,12 @@ export const topSiresSql = `
    WHERE YEAR(foalingDate) BETWEEN ? AND ? AND countryCode IN ('GBR', 'IRE')
    GROUP BY sireName ORDER BY n DESC LIMIT ?`;
 
+/** Dam names in one search of the results table: all of the study's at once. */
+export const PRODUCE_NAMES = 10000;
+
 /** Every runner out of these dams, any sire, any crop: their other produce. */
 export const produceSql = (dams) =>
-  `${HORSE_SUMMARY_SELECT.replace("SELECT ", "SELECT /*+ MAX_EXECUTION_TIME(600000) */ ")}
+  `${HORSE_SUMMARY_SELECT.replace("SELECT ", "SELECT /*+ MAX_EXECUTION_TIME(1800000) */ ")}
    WHERE damName IN (${IN(dams)}) AND countryCode IN ('GBR', 'IRE')
    GROUP BY horseName, YEAR(foalingDate)`;
 
@@ -399,7 +406,18 @@ export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () 
   };
 
   /** Plan the study: its runners, their dams' other produce, the grids to read. */
-  async function plan({ sires = null, crops = DEFAULT_CROPS, topSires = 12 } = {}) {
+  /** Rows written a few hundred to a statement: thousands of single writes took minutes. */
+  async function writeRows(head, rows, per = 500) {
+    if (!rows.length) return;
+    const width = rows[0].length;
+    const group = `(${new Array(width).fill("?").join(", ")})`;
+    for (let i = 0; i < rows.length; i += per) {
+      const part = rows.slice(i, i + per);
+      await runQuery(`${head} VALUES ${part.map(() => group).join(", ")}`, part.flat());
+    }
+  }
+
+  async function plan({ sires = null, crops = DEFAULT_CROPS, topSires = 12, resumeFrom = null } = {}) {
     await ensure();
     const [from, to] = crops;
     await setState({ stage: "choosing sires", note: null });
@@ -408,45 +426,46 @@ export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () 
       const rows = await runQuery(topSiresSql, [from, to, Number(topSires)]);
       chosen = rows.map((r) => studBookName(r.sire)).filter(Boolean);
     }
-    await setState({ stage: "reading runners", plan: JSON.stringify({ sires: chosen, crops: [from, to] }) });
-    const runners = [];
-    for (let i = 0; i < chosen.length; i += 4) {
-      const part = chosen.slice(i, i + 4);
-      const rows = await runQuery(runnersSql(part.length), [...part, from, to]);
-      for (const r of rows) runners.push(summariseHorse(r));
+    let runners = [];
+    if (resumeFrom === "reading the dams' produce") {
+      // the runners were read and saved before the restart: take them back
+      runners = (await runQuery(savedRunnersSql(chosen.length), [...chosen, from, to])).map((r) => ({ name: r.name, foalingYear: r.crop, sire: r.sire, dam: r.dam, damsire: r.damsire }));
     }
-    for (const h of runners) {
-      if (!h.name || !h.foalingYear || !h.sire) continue;
-      await runQuery(
-        `REPLACE INTO study_lb_runners (horse_key, name, crop, sex, sire, dam, damsire, best, runs, stakes_wins, group_wins, group1_wins)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [horseKey(h.name, h.foalingYear), h.name, h.foalingYear, h.sex, studBookName(h.sire), h.dam, h.damsire, h.best, h.runs, h.stakesWins, h.groupWins, h.group1Wins],
+    if (!runners.length) {
+      await setState({ stage: "reading runners", plan: JSON.stringify({ sires: chosen, crops: [from, to] }) });
+      for (let i = 0; i < chosen.length; i += 4) {
+        const part = chosen.slice(i, i + 4);
+        const rows = await runQuery(runnersSql(part.length), [...part, from, to]);
+        for (const r of rows) runners.push(summariseHorse(r));
+      }
+      runners = runners.filter((h) => h.name && h.foalingYear && h.sire);
+      await writeRows(
+        "REPLACE INTO study_lb_runners (horse_key, name, crop, sex, sire, dam, damsire, best, runs, stakes_wins, group_wins, group1_wins)",
+        runners.map((h) => [horseKey(h.name, h.foalingYear), h.name, h.foalingYear, h.sex, studBookName(h.sire), h.dam, h.damsire, h.best, h.runs, h.stakesWins, h.groupWins, h.group1Wins]),
       );
     }
     // the dams, and every runner out of each: her other produce is the
-    // study's measure of the mare
+    // study's measure of the mare. All the dams' names go in one search, so
+    // the results table is gone through once (dam name has no index there).
     const dams = new Map();
     for (const h of runners) if (h.dam) dams.set(damKey(h.dam, h.damsire), { dam: h.dam, damsire: h.damsire });
-    await setState({ stage: "reading the dams' produce" });
     const names = [...new Set([...dams.values()].map((d) => d.dam))];
-    for (let i = 0; i < names.length; i += 300) {
-      await setState({ note: `${i.toLocaleString("en-GB")} of ${names.length.toLocaleString("en-GB")} dams read` });
-      const part = names.slice(i, i + 300);
-      const rows = await runQuery(produceSql(part.length), part);
-      for (const r of rows) {
+    await setState({ stage: "reading the dams' produce", note: `${names.length.toLocaleString("en-GB")} dams` });
+    const produce = [];
+    for (let i = 0; i < names.length; i += PRODUCE_NAMES) {
+      const part = names.slice(i, i + PRODUCE_NAMES);
+      for (const r of await runQuery(produceSql(part.length), part)) {
         const h = summariseHorse(r);
         const dk = damKey(h.dam, h.damsire);
-        if (!dams.has(dk)) continue;
-        await runQuery("REPLACE INTO study_lb_produce (dam_key, horse_key, best) VALUES (?, ?, ?)", [dk, horseKey(h.name, h.foalingYear), h.best]);
+        if (dams.has(dk)) produce.push([dk, horseKey(h.name, h.foalingYear), h.best]);
       }
     }
+    await writeRows("REPLACE INTO study_lb_produce (dam_key, horse_key, best)", produce);
     // the grids: each sire once, each dam once
-    for (const s of chosen) {
-      await runQuery("INSERT IGNORE INTO study_lb_grids (grid_key, kind, name) VALUES (?, 'sire', ?)", [sireKey(s), s]);
-    }
-    for (const [k, d] of dams) {
-      await runQuery("INSERT IGNORE INTO study_lb_grids (grid_key, kind, name, sire_hint) VALUES (?, 'dam', ?, ?)", [k, d.dam, d.damsire ?? null]);
-    }
+    await writeRows("INSERT IGNORE INTO study_lb_grids (grid_key, kind, name, sire_hint)", [
+      ...chosen.map((s) => [sireKey(s), "sire", s, null]),
+      ...[...dams].map(([k, d]) => [k, "dam", d.dam, d.damsire ?? null]),
+    ]);
     await setState({ stage: "reading pedigrees", planned_at: now(), note: null });
     log.log?.(`[study] linebreeding planned: ${chosen.length} sires, ${runners.length} runners, ${dams.size} dams`);
     return { sires: chosen, runners: runners.length, dams: dams.size };
@@ -513,7 +532,7 @@ export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () 
         // a restart (a deploy) stopped the planning part way: start it again
         // with the sires and crops it was given
         const saved = s.stage !== "planning" && s.stage !== "choosing sires" && s.plan ? JSON.parse(s.plan) : {};
-        runPlan({ sires: saved.sires ?? null, crops: saved.crops ?? DEFAULT_CROPS });
+        runPlan({ sires: saved.sires ?? null, crops: saved.crops ?? DEFAULT_CROPS, resumeFrom: s.stage });
         log.log?.(`[study] linebreeding: planning resumed from "${s.stage}"`);
         return { resumed: s.stage };
       }
