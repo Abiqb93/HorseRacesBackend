@@ -366,6 +366,9 @@ export const inWindow = (now = new Date(), [from, to] = WINDOW_UTC) => {
  * read the results back. `fetchGrid` is the Arion grid fetcher;
  * `arionStatus` says how much of Arion's own day is used.
  */
+/** The stages planning passes through before the pedigrees are read. */
+export const PLAN_STAGES = new Set(["planning", "choosing sires", "reading runners", "reading the dams' produce"]);
+
 export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () => ({}), log = console, env = process.env, now = () => new Date() }) {
   let ready = null;
   const ensure = () => {
@@ -381,6 +384,9 @@ export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () 
   };
   const daily = Number(env.STUDY_DAILY_GRIDS) > 0 ? Number(env.STUDY_DAILY_GRIDS) : DAILY_GRIDS;
   let busy = false;
+  // whether this process is planning: a planning stage in the table with no
+  // plan running here means a restart cut it off, and the next tick resumes it
+  let planning = false;
 
   const state = async () => (await runQuery("SELECT * FROM study_lb_state WHERE id = 1"))?.[0] ?? null;
   const setState = (fields) => {
@@ -424,6 +430,7 @@ export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () 
     await setState({ stage: "reading the dams' produce" });
     const names = [...new Set([...dams.values()].map((d) => d.dam))];
     for (let i = 0; i < names.length; i += 300) {
+      await setState({ note: `${i.toLocaleString("en-GB")} of ${names.length.toLocaleString("en-GB")} dams read` });
       const part = names.slice(i, i + 300);
       const rows = await runQuery(produceSql(part.length), part);
       for (const r of rows) {
@@ -440,20 +447,28 @@ export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () 
     for (const [k, d] of dams) {
       await runQuery("INSERT IGNORE INTO study_lb_grids (grid_key, kind, name, sire_hint) VALUES (?, 'dam', ?, ?)", [k, d.dam, d.damsire ?? null]);
     }
-    await setState({ stage: "reading pedigrees", planned_at: now() });
+    await setState({ stage: "reading pedigrees", planned_at: now(), note: null });
     log.log?.(`[study] linebreeding planned: ${chosen.length} sires, ${runners.length} runners, ${dams.size} dams`);
     return { sires: chosen, runners: runners.length, dams: dams.size };
+  }
+
+  /** Plan in the background; the status says where it has got to, or why it failed. */
+  function runPlan(args) {
+    planning = true;
+    return plan(args)
+      .catch(async (err) => {
+        log.warn?.(`[study] linebreeding plan failed: ${err.message}`);
+        await setState({ stage: "plan failed", note: err.message }).catch(() => {});
+      })
+      .finally(() => {
+        planning = false;
+      });
   }
 
   async function start({ userId, sires = null, crops = DEFAULT_CROPS, topSires = 12 } = {}) {
     await ensure();
     await setState({ enabled: 1, started_by: String(userId ?? "").slice(0, 64) || null, started_at: now(), stage: "planning" });
-    // planning reads the results table and can take minutes: it runs on
-    // after the answer, and the status says where it has got to
-    plan({ sires, crops, topSires }).catch(async (err) => {
-      log.warn?.(`[study] linebreeding plan failed: ${err.message}`);
-      await setState({ stage: "plan failed", note: err.message }).catch(() => {});
-    });
+    runPlan({ sires, crops, topSires });
     return { started: true };
   }
 
@@ -494,6 +509,14 @@ export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () 
     try {
       await ensure();
       const s = await state();
+      if (s && Number(s.enabled) && PLAN_STAGES.has(s.stage) && !planning) {
+        // a restart (a deploy) stopped the planning part way: start it again
+        // with the sires and crops it was given
+        const saved = s.stage !== "planning" && s.stage !== "choosing sires" && s.plan ? JSON.parse(s.plan) : {};
+        runPlan({ sires: saved.sires ?? null, crops: saved.crops ?? DEFAULT_CROPS });
+        log.log?.(`[study] linebreeding: planning resumed from "${s.stage}"`);
+        return { resumed: s.stage };
+      }
       if (!s || !Number(s.enabled) || s.stage !== "reading pedigrees") return { skipped: "not reading" };
       if (!inWindow(now())) return { skipped: "outside the window" };
       const t = await runQuery("SELECT COUNT(*) AS n FROM study_lb_grids WHERE fetched_at >= ?", [`${today(now())} 00:00:00`]);

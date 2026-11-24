@@ -189,3 +189,22 @@ test("the job: plans the runners and grids, reads one grid a tick at night, and 
   assert.equal(st.grids["dam:failed"], 1);
   assert.ok(t.grids.has(sireKey("GALILEO")));
 });
+
+test("a restart part way through planning: the next tick plans again with the sires it was given", async () => {
+  const runs = [run("ONE", 2016, "GALILEO", "MARE A", "DANEHILL", 95, 1), run("TWO", 2017, "GALILEO", "MARE B", "DANZIG", 80)];
+  const { runQuery, t } = fakeDb({ runs });
+  const study = createLinebreedingStudy({ runQuery, fetchGrid: async () => ({ ancestors: [] }), now: () => new Date("2026-11-24T14:00:00Z"), log: { log() {}, warn() {} } });
+  await study.status();
+  // what the table held after the deploy: planning stopped at the dams, no plan running
+  await runQuery(
+    "INSERT INTO study_lb_state (id, enabled, stage, plan) VALUES (1, ?, ?, ?) ON DUPLICATE KEY UPDATE enabled = VALUES(enabled), stage = VALUES(stage), plan = VALUES(plan)",
+    [1, "reading the dams' produce", JSON.stringify({ sires: ["GALILEO"], crops: [2015, 2019] })],
+  );
+  assert.deepEqual(await study.tick(), { resumed: "reading the dams' produce" });
+  await new Promise((r) => setTimeout(r, 20));
+  const st = await study.status();
+  assert.equal(st.stage, "reading pedigrees");
+  assert.equal(st.note, null);
+  assert.ok(t.grids.has(sireKey("GALILEO")));
+  assert.equal((await study.tick()).skipped, "outside the window", "once planned, it reads as before");
+});
