@@ -30,10 +30,20 @@ import { normaliseName } from "../pedigree/store.mjs";
 
 /** Arion's menu entry for the five-generation grid. */
 export const GRID_REPORT = "PED05|55#10D_a";
+/**
+ * The grids by depth. The 6x6 and 7x7 reach the generations where a horse
+ * like Northern Dancer now sits in a young horse's pedigree (24 November
+ * 2026, on deep linebreeding: "the eighth and ninth generation ... over 20
+ * crosses").
+ */
+export const GRID_REPORTS = { 5: GRID_REPORT, 6: "PED05|66#11D_a", 7: "PED05|77#12D_a" };
 
-/** Generation by the rowspan the page gives its cells. */
-const BY_ROWSPAN = { 16: 1, 8: 2, 4: 3, 2: 4, 1: 5 };
+/** Generation by the rowspan the page gives its cells, for a grid of `generations`. */
+export const byRowspan = (generations = 5) =>
+  Object.fromEntries(Array.from({ length: generations }, (_, i) => [2 ** (generations - 1 - i), i + 1]));
 export const FULL_ANCESTOR_COUNT = 62;
+/** Every ancestor in a grid of `generations`: 62 in five, 126 in six, 254 in seven. */
+export const ancestorCount = (generations = 5) => 2 ** (generations + 1) - 2;
 
 const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 const unescape = (s) =>
@@ -77,9 +87,10 @@ const progenyOf = (line) => {
   return m ? { foals: Number(m[1]), runners: Number(m[2]), winners: Number(m[3]), stakes_winners: Number(m[4]) } : null;
 };
 
-/** The ancestors on the page, in the cache's order and shape. */
-export function parseAncestors(html) {
-  const counts = [0, 0, 0, 0, 0, 0];
+/** The ancestors on the page, in the cache's order and shape; `generations` is the grid's depth. */
+export function parseAncestors(html, generations = 5) {
+  const BY_ROWSPAN = byRowspan(generations);
+  const counts = new Array(generations + 1).fill(0);
   const out = [];
   for (const m of String(html ?? "").matchAll(/<td\b([^>]*)>([\s\S]*?)<\/td>/gi)) {
     const rowspan = Number(/rowspan\s*=\s*"?(\d+)/i.exec(m[1])?.[1] ?? 1);
@@ -154,11 +165,12 @@ export function parseInbreeding(html) {
  * a page that is not the grid, or a grid Arion cut short, must not be filed
  * as a chart.
  */
-export function parseGrid(html) {
-  const ancestors = parseAncestors(html);
-  const perGeneration = [1, 2, 3, 4, 5].map((g) => ancestors.filter((a) => a.generation === g).length);
-  if (ancestors.length !== FULL_ANCESTOR_COUNT || perGeneration.some((n, i) => n !== 2 ** (i + 1))) {
-    throw new Error(`Arion's page did not read as a five-generation grid (${ancestors.length} ancestors, ${perGeneration.join("/")} by generation)`);
+export function parseGrid(html, { generations = 5 } = {}) {
+  const ancestors = parseAncestors(html, generations);
+  const perGeneration = Array.from({ length: generations }, (_, i) => ancestors.filter((a) => a.generation === i + 1).length);
+  if (ancestors.length !== ancestorCount(generations) || perGeneration.some((n, i) => n !== 2 ** (i + 1))) {
+    const words = { 5: "five", 6: "six", 7: "seven" }[generations] ?? String(generations);
+    throw new Error(`Arion's page did not read as a ${words}-generation grid (${ancestors.length} ancestors, ${perGeneration.join("/")} by generation)`);
   }
   const inbreeding = parseInbreeding(html);
   return {
@@ -182,7 +194,7 @@ const SEX_WORD = { f: "Filly", filly: "Filly", m: "Mare", mare: "Mare", c: "Colt
 export const sexWord = (s) => SEX_WORD[String(s ?? "").trim().toLowerCase()] ?? null;
 
 /** The payload the cache stores and the site reads, in Equineline's shape with Arion's content. */
-export function payloadFor(parsed, { name = "", year = null, country = null, sex = null } = {}) {
+export function payloadFor(parsed, { name = "", year = null, country = null, sex = null, generations = 5 } = {}) {
   const subject = parsed?.subject ?? {};
   const bare = subject.name || splitName(name).name;
   const cc = subject.country ?? splitName(name).country ?? (country ? String(country).toUpperCase() : null);
@@ -193,7 +205,7 @@ export function payloadFor(parsed, { name = "", year = null, country = null, sex
   const damsire = parsed.ancestors.find((a) => a.path === "DS") ?? null;
   return {
     source: "arion",
-    report: "5x5",
+    report: `${generations}x${generations}`,
     horse: {
       name: display,
       reference_number: referenceFor({ name: display, year: foaled }),
@@ -281,7 +293,9 @@ export const asMatch = (c) => {
  * to Arion on its own.
  */
 export function createGridFetcher({ loadArion, log = console }) {
-  async function fetchGrid({ name, year = null, country = null, sire = null, dam = null, userId = null } = {}) {
+  async function fetchGrid({ name, year = null, country = null, sire = null, dam = null, userId = null, generations = 5, keep = true } = {}) {
+    const reportId = GRID_REPORTS[generations];
+    if (!reportId) throw new Error(`Arion's grids are 5x5, 6x6 or 7x7, not ${generations}`);
     if (!String(name ?? "").trim()) throw new Error("a name is needed to ask Arion for a pedigree");
     const { client } = await loadArion();
     if (typeof client.configured === "function" && !client.configured()) {
@@ -308,20 +322,20 @@ export function createGridFetcher({ loadArion, log = console }) {
       err.matches = pick.among.map(asMatch);
       throw err;
     }
-    const out = await client.report({ token: pick.one.token, reportId: GRID_REPORT, userId });
+    const out = await client.report({ token: pick.one.token, reportId, userId, keep });
     const page = (out?.files ?? []).find((f) => f.kind === "html");
-    if (!page) throw new Error(out?.note || "Arion built the 5x5 grid but handed over no page for it");
+    if (!page) throw new Error(out?.note || `Arion built the ${generations}x${generations} grid but handed over no page for it`);
     const got = await client.file(page.id);
     const html = typeof got?.body === "string" ? got.body : decodeHtml(got?.body ?? Buffer.alloc(0), got?.type ?? "");
-    const parsed = parseGrid(html);
+    const parsed = parseGrid(html, { generations });
     if (parsed.subject?.name && normaliseName(parsed.subject.name) !== bareKey(name)) {
       throw new Error(`Arion's grid is for ${parsed.subject.name}, not ${name}`);
     }
-    log.log?.(`[arion] 5x5 grid read for ${pick.one.label}: ${parsed.ancestors.length} ancestors`);
+    log.log?.(`[arion] ${generations}x${generations} grid read for ${pick.one.label}: ${parsed.ancestors.length} ancestors`);
     // found by her parents: the year and country are the candidate's, not the row's
     const cells = pick.one.cells ?? [];
     const asFound = pick.byParents ? { year: Number(cells[2]) > 1700 ? Number(cells[2]) : null, country: cells[1] ? String(cells[1]).toUpperCase() : null } : { year, country };
-    return payloadFor(parsed, { name, ...asFound, sex: cells[5] ?? null });
+    return payloadFor(parsed, { name, ...asFound, sex: cells[5] ?? null, generations });
   }
   return { fetchGrid, chooseCandidate };
 }

@@ -18404,6 +18404,76 @@ function arionBuyer(userId) {
   });
 }
 
+/* ------------------------------------------- deep linebreeding study */
+// Do horses with more crosses of a dominant ancestor than their sire's other
+// foals run better? (24 November 2026, on Northern Dancer as the next St
+// Simon.) Each sire's and dam's 6x6 grid from Arion, read at night within an
+// allowance of its own; see breeding/linebreeding.mjs.
+let linebreedingStudy = null;
+async function linebreeding() {
+  if (!linebreedingStudy) {
+    const { createLinebreedingStudy } = await import("./breeding/linebreeding.mjs");
+    const grids = await arionGrid();
+    linebreedingStudy = createLinebreedingStudy({
+      runQuery,
+      fetchGrid: grids.fetchGrid,
+      arionStatus: async () => (await arion()).client.status(),
+      log: console,
+    });
+  }
+  return linebreedingStudy;
+}
+// one grid every half minute, and only when the window, the study's own
+// allowance and Arion's day all allow it (tick says which held it back)
+setInterval(() => {
+  linebreeding()
+    .then((s) => s.tick())
+    .then((r) => {
+      if (r?.read) console.log(`[study] linebreeding: read ${r.read}`);
+      else if (r?.failed) console.warn(`[study] linebreeding: ${r.failed} not read: ${r.error}`);
+    })
+    .catch((err) => console.warn("[study] linebreeding tick:", err.message));
+}, 30_000).unref?.();
+
+app.get("/api/studies/linebreeding/status", async (req, res) => {
+  try {
+    res.set("Cache-Control", "no-store");
+    return res.json(await (await linebreeding()).status());
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/studies/linebreeding/start", express.json({ limit: "16kb" }), async (req, res) => {
+  const b = req.body ?? {};
+  if (!(await arionBuyer(b.userId))) return res.status(403).json({ error: "Only a signed-in member of the team can start the study." });
+  const crops = Array.isArray(b.crops) && b.crops.length === 2 ? b.crops.map(Number) : undefined;
+  const sires = Array.isArray(b.sires) ? b.sires.map(String).slice(0, 40) : null;
+  try {
+    return res.json(await (await linebreeding()).start({ userId: b.userId, sires, crops, topSires: Number(b.topSires) || 12 }));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/studies/linebreeding/stop", express.json({ limit: "16kb" }), async (req, res) => {
+  if (!(await arionBuyer(req.body?.userId))) return res.status(403).json({ error: "Only a signed-in member of the team can stop the study." });
+  try {
+    return res.json(await (await linebreeding()).stop());
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/studies/linebreeding/results", async (req, res) => {
+  try {
+    res.set("Cache-Control", "no-store");
+    return res.json(await (await linebreeding()).results({ target: String(req.query.target ?? "Northern Dancer").slice(0, 80) }));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/api/arion/status", async (req, res) => {
   const { client } = await arion();
   if (req.query.check === "1" && client.configured()) {

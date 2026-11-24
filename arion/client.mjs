@@ -940,7 +940,7 @@ export function createClient({
      * and if Arion no longer offers it, that is said rather than guessed
      * around.
      */
-    report: ({ token: t, reportId, userId = null } = {}) =>
+    report: ({ token: t, reportId, userId = null, keep: keepIt = true } = {}) =>
       serial(async () => {
         tidy();
         const pick = picks.get(String(t));
@@ -976,7 +976,9 @@ export function createClient({
         const label = `${r.label} · ${subject}`;
         const handed = out.files.map((f) => remember(f, label));
         const made = { at: new Date(now()), by: userId, subject, reportId: r.id, report: r.label, theoretical: Boolean(pick.sire), horseId: out.horseId ?? null };
-        const kept = await keep(made, out.files, handed);
+        // A study's grids are read once and parsed, never listed under My
+        // Reports: thousands of them would bury the team's own reports.
+        const kept = keepIt ? await keep(made, out.files, handed) : null;
         const took = Object.entries(out.steps ?? {}).map(([k, ms]) => `${k} ${(ms / 1000).toFixed(1)}s`).join(", ");
         log(
           `[arion] report made: ${r.label} for ${subject}${out.horseId ? ` (Arion horse ${out.horseId})` : ""}, ${out.files.length} file(s)` +
