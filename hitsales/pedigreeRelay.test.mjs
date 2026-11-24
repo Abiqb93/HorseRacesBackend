@@ -12,6 +12,19 @@ test("the catalogue pages of Tattersalls and Arqana are relayed, as they are add
   assert.equal(pedigreeUrl("https://www.arqana.com/upload/pedigrees/vente414/6.pdf")?.pathname, "/upload/pedigrees/vente414/6.pdf");
 });
 
+test("Tattersalls' December sales, one folder deeper, are relayed too", () => {
+  for (const ok of [
+    "https://www.tattersalls.com/cat/december/mares/2026/1209.pdf",
+    "https://www.tattersalls.com/cat/december/foals/2026/1.pdf",
+    "https://www.tattersalls.com/cat/december/yearlings/2026/56.jpg",
+  ]) assert.equal(pedigreeUrl(ok)?.href, ok);
+  for (const bad of [
+    "https://www.tattersalls.com/cat/a/b/c/2026/1.pdf",
+    "https://www.tattersalls.com/cat/december/mares/2026/x/1.pdf",
+    "https://www.tattersalls.com/cat/december/mares/1209.pdf",
+  ]) assert.equal(pedigreeUrl(bad), null, bad);
+});
+
 test("and the breeding-stock and US sales' pages: Keeneland's and Fasig-Tipton's, as they are addressed", () => {
   for (const ok of [
     "https://secure.keeneland.com/sales/k326/pdfs/1.pdf",

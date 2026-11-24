@@ -24,7 +24,9 @@
 /** Where each sale house keeps its catalogue pages. */
 export const SOURCES = [
   // https://www.tattersalls.com/cat/autumnhit/2026/379.pdf, and the page as a picture, 379.jpg
-  { house: "tattersalls", host: "www.tattersalls.com", path: /^\/cat\/[a-z0-9_-]+\/\d{4}\/[a-z0-9_-]+\.(pdf|jpg)$/i },
+  // and the December sales one folder deeper: /cat/december/mares/2026/1209.pdf (24 November 2026: "Pedigree pack
+  // function is not working", on a December Mares pack whose every page the relay refused)
+  { house: "tattersalls", host: "www.tattersalls.com", path: /^\/cat\/(?:[a-z0-9_-]+\/){1,2}\d{4}\/[a-z0-9_-]+\.(pdf|jpg)$/i },
   // https://www.arqana.com/upload/pedigrees/vente414/fra/6.pdf
   { house: "arqana", host: "www.arqana.com", path: /^\/upload\/pedigrees\/[a-z0-9_-]+\/(?:[a-z]{2,3}\/)?[a-z0-9_-]+\.pdf$/i },
   // the breeding-stock and US sales' pages, paged through and packed as the HIT sales' are (28 October 2026:
