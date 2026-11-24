@@ -65,6 +65,18 @@ const FIELD = {
 
 const VERB = { POST: "added", PUT: "saved", PATCH: "changed", DELETE: "removed" };
 
+/**
+ * Where a change names its row by number ("#812"), the table and column that
+ * hold the horse (or race) it is about, so the stamp reads the name.
+ */
+export const NAME_BY_ID = {
+  "Review List": ["review_horses", "horseName"],
+  "Review List actions": ["review_horse_actions", "horse_name"],
+  "Daily Watch List": ["daily_notifications_all_users", "horseName"],
+  "Race watch list": ["race_watchlist", "race_title"],
+  "Potential stallions": ["potential_stallion", "horseName"],
+};
+
 /** The horse, mare or other name a change body carries, if any. */
 export function bodyName(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return "";

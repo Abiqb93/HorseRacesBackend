@@ -11,6 +11,7 @@ const fakeDb = (grants = [["StuartBoman", "eleanorniel"]]) => {
       if (typeof args === "function") { cb = args; args = []; }
       if (/FROM profile_access/.test(sql)) return cb(null, grants.map(([o, d]) => ({ owner_user_id: o, delegate_user_id: d })));
       if (/INSERT INTO profile_activity/.test(sql)) { inserts.push(args); return cb?.(null); }
+      if (/FROM `review_horses` WHERE id/.test(sql)) return cb(null, args[0] === "812" ? [{ name: "KON TIKI" }] : []);
       cb(new Error("unexpected " + sql));
     },
   };
@@ -31,7 +32,7 @@ test("Eleanor's change in Stuart's profile is stamped with both of them", async 
   const db = fakeDb();
   const out = await run(makeStampMiddleware(db), { headers: { "X-Profile-User": "StuartBoman", "X-Acting-User": "eleanorniel" } });
   assert.equal(out.blocked, false);
-  assert.deepEqual(db.inserts, [["StuartBoman", "eleanorniel", "PATCH", "/api/review_horses/812/notes", "Review List", "notes changed", "#812"]]);
+  assert.deepEqual(db.inserts, [["StuartBoman", "eleanorniel", "PATCH", "/api/review_horses/812/notes", "Review List", "notes changed", "KON TIKI"]]);
 });
 
 test("a user's change in their own profile is stamped with them alone", async () => {
@@ -65,4 +66,10 @@ test("access is matched whatever the case of the ids", async () => {
   const out = await run(makeStampMiddleware(db), { headers: { "X-Profile-User": "stuartboman", "X-Acting-User": "EleanorNiel" } });
   assert.equal(out.blocked, false);
   assert.equal(db.inserts.length, 1);
+});
+
+test("a row saved by number keeps its number when the name cannot be found", async () => {
+  const db = fakeDb();
+  await run(makeStampMiddleware(db), { path: "/api/review_horses/999/notes", headers: { "X-Profile-User": "StuartBoman" } });
+  assert.equal(db.inserts[0][6], "#999");
 });

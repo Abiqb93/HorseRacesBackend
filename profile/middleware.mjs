@@ -2,7 +2,7 @@
  * The middleware that stamps each change (profile/stamp.mjs). server.jsx
  * registers it ahead of every route, so it sees every change the site makes.
  */
-import { cleanId, sameUser, describe, UNSTAMPED } from "./stamp.mjs";
+import { cleanId, sameUser, describe, NAME_BY_ID, UNSTAMPED } from "./stamp.mjs";
 
 const GRANTS_TTL_MS = 60_000;
 
@@ -32,11 +32,20 @@ export function makeStampMiddleware(db, { now = () => Date.now() } = {}) {
       res.on("finish", () => {
         if (res.statusCode >= 400) return;
         const { area, action, target } = describe(req.method, req.path, req.body);
-        db.query(
-          "INSERT INTO profile_activity (profile_user_id, acting_user_id, method, path, area, action, target) VALUES (?, ?, ?, ?, ?, ?, ?)",
-          [profile, acting, req.method, req.path.slice(0, 255), area, action, target || null],
-          (err) => { if (err) console.error("profile_activity insert failed:", err.message); }
-        );
+        const write = (named) =>
+          db.query(
+            "INSERT INTO profile_activity (profile_user_id, acting_user_id, method, path, area, action, target) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [profile, acting, req.method, req.path.slice(0, 255), area, action, (named || target || "").slice(0, 255) || null],
+            (err) => { if (err) console.error("profile_activity insert failed:", err.message); }
+          );
+        const lookup = NAME_BY_ID[area];
+        const id = /^#(\d+)$/.exec(target || "")?.[1];
+        if (!lookup || !id) return write();
+        // The table and column are this module's own constants, never the request's.
+        db.query(`SELECT \`${lookup[1]}\` AS name FROM \`${lookup[0]}\` WHERE id = ? LIMIT 1`, [id], (err, rows) => {
+          const name = !err && rows?.[0]?.name ? String(rows[0].name).trim() : "";
+          write(name || null);
+        });
       });
       next();
     };
