@@ -127,7 +127,7 @@ test("a mare is searched, her 5x5 made, the page read, and the payload is hers",
   assert.equal(payload.horse.sex, "Filly");
   assert.equal(payload.ancestors.length, 62);
   assert.deepEqual(calls.map((c) => c[0]), ["search", "report", "file"]);
-  assert.deepEqual(calls[1][1], { token: "a", reportId: "PED05|55#10D_a", userId: "desk" });
+  assert.deepEqual(calls[1][1], { token: "a", reportId: "PED05|55#10D_a", userId: "desk", keep: true });
   assert.equal(calls[2][1], "html1");
 });
 
@@ -166,4 +166,26 @@ test("Arion's best match is not taken against her sire and dam; with the year wr
   assert.equal(pick.byParents, true);
   assert.equal(chooseCandidate(cands, { name: "ARAMINTA", year: 2021, sire: "GLENEAGLES" }).one, null, "her sire alone does not overrule the year");
   assert.equal(chooseCandidate(cands, { name: "Araminta", year: 2021 }).one.token, "fr", "with nothing against it, the best match stands");
+});
+
+test("a seven-generation grid reads all 254 ancestors (24 November 2026, deep linebreeding)", async () => {
+  const fs = await import("node:fs");
+  const { parseGrid, GRID_REPORTS, ancestorCount, byRowspan } = await import("./pedigreeGrid.mjs");
+  assert.equal(ancestorCount(7), 254);
+  assert.deepEqual(byRowspan(5), { 16: 1, 8: 2, 4: 3, 2: 4, 1: 5 });
+  assert.equal(GRID_REPORTS[6], "PED05|66#11D_a");
+  const g = parseGrid(fs.readFileSync(new URL("./fixtures/frankel-7x7.html", import.meta.url), "utf8"), { generations: 7 });
+  assert.equal(g.subject.name, "Frankel");
+  assert.deepEqual([1, 2, 3, 4, 5, 6, 7].map((n) => g.ancestors.filter((a) => a.generation === n).length), [2, 4, 8, 16, 32, 64, 128]);
+  assert.equal(g.ancestors.find((a) => a.path === "SSS").name, "Northern Dancer");
+  assert.equal(g.inbreeding.length, 16);
+  assert.throws(() => parseGrid(fs.readFileSync(new URL("./fixtures/frankel-7x7.html", import.meta.url), "utf8")), /five-generation grid/, "a 7x7 is not a 5x5");
+});
+
+test("a study's grid is made without being kept under My Reports", async () => {
+  const { calls, loadArion } = fakeArion();
+  const f = createGridFetcher({ loadArion, log: { log: () => {} } });
+  await f.fetchGrid({ name: "Prudenzia", year: 2005, country: "IRE", userId: "linebreeding-study", keep: false }).catch(() => {});
+  const report = calls.find((c) => c[0] === "report");
+  assert.equal(report[1].keep, false);
 });
