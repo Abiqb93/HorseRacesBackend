@@ -56,7 +56,9 @@ app.use(cors({
     }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', "PATCH"], // Allow all HTTP methods you need
-  allowedHeaders: ['Content-Type', 'Authorization'], // Specify allowed headers
+  // X-Profile-User and X-Acting-User stamp each change with whose profile it
+  // was made in and who made it (profile/stamp.mjs).
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Profile-User', 'X-Acting-User'],
   credentials: true, // Allow cookies or credentials
 }));
 
@@ -88,6 +90,104 @@ const db = mysql.createPool({
   database: process.env.DB_NAME || "horseprofileshub",
   port: Number(process.env.DB_PORT) || 3306,
   connectionLimit: Number(process.env.DB_CONNECTION_LIMIT) || 10,
+});
+
+// ---------------------------------------------------------------------------
+// Working in another user's profile, and the stamp on every change
+// (profile/stamp.mjs). profile_access says who may work in whose profile;
+// profile_activity holds one row per change, with the profile it was made in
+// and who made it.
+// ---------------------------------------------------------------------------
+const profileStamp = import("./profile/stamp.mjs");
+db.query(
+  `CREATE TABLE IF NOT EXISTS profile_access (
+    owner_user_id VARCHAR(64) NOT NULL,
+    delegate_user_id VARCHAR(64) NOT NULL,
+    granted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (owner_user_id, delegate_user_id)
+  )`,
+  (err) => {
+    if (err) return console.error("profile_access table check failed:", err.message);
+    // 24 November 2026: "Eleanor Niel is often working in Stuart Boman's profile."
+    db.query(
+      "INSERT IGNORE INTO profile_access (owner_user_id, delegate_user_id) VALUES ('StuartBoman', 'eleanorniel')",
+      (e) => { if (e) console.error("profile_access grant failed:", e.message); }
+    );
+  }
+);
+db.query(
+  `CREATE TABLE IF NOT EXISTS profile_activity (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+    profile_user_id VARCHAR(64) NOT NULL,
+    acting_user_id VARCHAR(64) NOT NULL,
+    method VARCHAR(8) NOT NULL,
+    path VARCHAR(255) NOT NULL,
+    area VARCHAR(64) NULL,
+    action VARCHAR(96) NULL,
+    target VARCHAR(255) NULL,
+    INDEX idx_profile_at (profile_user_id, at),
+    INDEX idx_acting_at (acting_user_id, at)
+  )`,
+  (err) => { if (err) console.error("profile_activity table check failed:", err.message); }
+);
+
+// Registered here, ahead of every route, so every change is seen. The module
+// loads asynchronously; until it has, a change passes through unstamped.
+const stampChanges = import("./profile/middleware.mjs").then(({ makeStampMiddleware }) => makeStampMiddleware(db));
+app.use((req, res, next) => {
+  if (req.method === "GET" || req.method === "OPTIONS") return next();
+  stampChanges.then((mw) => mw(req, res, next)).catch((err) => { console.error("stamp middleware failed:", err.message); next(); });
+});
+
+/** The profiles a user may work in besides their own, with their names. */
+app.get("/api/profile_access/:userId", (req, res) => {
+  db.query(
+    `SELECT a.owner_user_id AS userId, u.name, u.email
+       FROM profile_access a LEFT JOIN UserAccounts u ON u.user_id = a.owner_user_id
+      WHERE LOWER(a.delegate_user_id) = LOWER(?)
+      ORDER BY u.name`,
+    [req.params.userId],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: "Database error" });
+      res.json({ profiles: (rows || []).map((r) => ({ userId: r.userId, name: r.name || r.userId, email: r.email || "" })) });
+    }
+  );
+});
+
+/** Changes made in a profile, newest first, each with its stamp. ?before=<id> pages back. */
+app.get("/api/profile_activity/:userId", (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 1000);
+  const before = Number(req.query.before) || null;
+  db.query(
+    `SELECT a.id, a.at, a.profile_user_id, a.acting_user_id, a.method, a.path, a.area, a.action, a.target,
+            p.name AS profile_name, u.name AS acting_name
+       FROM profile_activity a
+       LEFT JOIN UserAccounts p ON p.user_id = a.profile_user_id
+       LEFT JOIN UserAccounts u ON u.user_id = a.acting_user_id
+      WHERE LOWER(a.profile_user_id) = LOWER(?) ${before ? "AND a.id < ?" : ""}
+      ORDER BY a.id DESC LIMIT ?`,
+    before ? [req.params.userId, before, limit] : [req.params.userId, limit],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: "Database error" });
+      profileStamp.then(({ stampText }) => {
+        res.json({
+          rows: (rows || []).map((r) => ({
+            id: r.id,
+            at: r.at,
+            profileUserId: r.profile_user_id,
+            actingUserId: r.acting_user_id,
+            stamp: stampText(r.profile_name, r.acting_name, r.profile_user_id, r.acting_user_id),
+            area: r.area,
+            action: r.action,
+            target: r.target,
+            method: r.method,
+            path: r.path,
+          })),
+        });
+      });
+    }
+  );
 });
 
 // Which credential env vars are visible to the process - names and booleans
