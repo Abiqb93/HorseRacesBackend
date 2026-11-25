@@ -174,6 +174,8 @@ export function buildIndex(rows) {
   // with none given has bred no black type, before it nothing is known
   const firstMbpYear = rows.reduce((m, r) => (r.mbp && Number.isFinite(r.y) && (m === null || r.y < m) ? r.y : m), null);
   const dbtKnown = (r) => Boolean(r.mbp) || (firstMbpYear !== null && r.y >= firstMbpYear);
+  // the latest covering year whose file says what each covering produced
+  const lastReturnYear = rows.reduce((m, r) => (r.ret && Number.isFinite(r.y) && (m === null || r.y > m) ? r.y : m), null);
   const years = [...new Set(rows.map((r) => r.y))].filter(Number.isFinite).sort((a, b) => a - b);
 
   // When each mare first had a 95+ foal: the foal born the year after a
@@ -291,7 +293,7 @@ export function buildIndex(rows) {
     t[r.fsrc] = (t[r.fsrc] ?? 0) + 1;
   }
 
-  return { years, resultsThrough, firstRunners, feeYears, feeFrom, firstMbpYear, typicalRan: typical, totals: totalsOf(years, stallions), stallions, crosses, mares, names };
+  return { years, resultsThrough, firstRunners, feeYears, feeFrom, firstMbpYear, lastReturnYear, typicalRan: typical, totals: totalsOf(years, stallions), stallions, crosses, mares, names };
 }
 
 // What a mare's own page needs of a covering, small enough to hold every
@@ -680,6 +682,8 @@ export function maresOf(index, name) {
         msire: m.msire ? splitName(m.msire).name : null,
         mdam: m.mdam ? splitName(m.mdam).name : null,
         age: Number(m.myob) > 1900 ? c.y - m.myob : null,
+        // covered before, by any stallion: no maiden
+        covered: m.c.some((x) => x[0] < c.y),
         mf: c.mf ?? null,
         mfSrc: c.mfSrc ?? null,
         mbp: c.mbp ?? null,
@@ -697,7 +701,7 @@ export function maresOf(index, name) {
   }
   out.sort((a, b) => b.y - a.y || a.mare.localeCompare(b.mare));
   const strength = (bookStrength(index).get(k) ?? []).map(({ key, ...r }) => r).sort((a, b) => b.y - a.y);
-  return { name: s.name, country: s.country ?? null, resultsThrough: index.resultsThrough, minBook: MIN_BOOK, years: [...new Set(out.map((r) => r.y))], strength, mares: out };
+  return { name: s.name, country: s.country ?? null, resultsThrough: index.resultsThrough, lastReturnYear: index.lastReturnYear ?? null, minBook: MIN_BOOK, years: [...new Set(out.map((r) => r.y))], strength, mares: out };
 }
 
 /**

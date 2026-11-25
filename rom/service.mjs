@@ -15,6 +15,8 @@ import zlib from "node:zlib";
 import fs from "node:fs";
 import path from "node:path";
 
+import { enrichMares, mapsFrom } from "./enrich.mjs";
+import { studBookName } from "../breeding/mating.mjs";
 import { buildIndex, classFromRunners, crossOf, detailOf, fillClasses, insights, mareOf, maresOf, nameKey, rowOf } from "./books.mjs";
 
 export const SEED_TABLE = "rom_seed";
@@ -30,7 +32,7 @@ const MANIFEST = path.join(path.dirname(new URL(import.meta.url).pathname), "see
 
 const notReady = (why) => Object.assign(new Error(why), { code: "ROM_EMPTY" });
 
-export function createRomService({ runQuery, log = console, manifestPath = MANIFEST, rebuildDelayMs = 4000 } = {}) {
+export function createRomService({ runQuery, log = console, manifestPath = MANIFEST, rebuildDelayMs = 4000, sireRunners = null, now = () => new Date() } = {}) {
   let index = null;
   let built = null;
   let building = null;
@@ -188,9 +190,69 @@ export function createRomService({ runQuery, log = console, manifestPath = MANIF
     return { years: ix.years, resultsThrough: ix.resultsThrough, feeYears: ix.feeYears, feeFrom: ix.feeFrom, stallions: out };
   }
 
-  /** A stallion's mares, covering by covering. */
+  const maresCache = new Map();
+  const MARES_TTL_MS = 30 * 60 * 1000;
+  const RUNNER_COLS = "horse_name, foaling_year, sex, dam_key, dam, runs, ls_wins, ls_top3, s_wins, s_top3, g_wins, g_top3, g1_wins, turf_wins, aw_wins";
+
+  /** Rows of the runners file where `col` is one of `values`, a thousand at a time; none if it cannot be read. */
+  async function runnersWhere(col, values, extra = "") {
+    const out = [];
+    const list = [...new Set(values.filter(Boolean))];
+    try {
+      for (let i = 0; i < list.length; i += 1000) {
+        const part = list.slice(i, i + 1000);
+        out.push(...((await runQuery(`SELECT ${RUNNER_COLS} FROM breeding_horses WHERE ${col} IN (${part.map(() => "?").join(", ")})${extra}`, part)) ?? []));
+      }
+    } catch (err) {
+      log.warn?.(`[rom] runners file not read (${col}): ${err.message}`);
+    }
+    return out;
+  }
+
+  /**
+   * A stallion's mares, covering by covering, made whole from the runners
+   * file and his runners on our results table (rom/enrich.mjs). Kept half an
+   * hour, since a page opens it again and again.
+   */
   async function stallionMares(name) {
-    return maresOf(await ready(), name);
+    const ix = await ready();
+    const key = nameKey(name);
+    const hit = maresCache.get(key);
+    if (hit && hit.built === ix && Date.now() - hit.at < MARES_TTL_MS) return hit.out;
+    const out = maresOf(ix, name);
+    if (!out) return null;
+    const upper = (v) => studBookName(v);
+    const names = out.mares.map((r) => upper(r.mare));
+    const [mares, foals, sireFoals] = await Promise.all([
+      runnersWhere("horse_name", names, " AND sex IN ('F', 'M')"),
+      runnersWhere("dam_key", names),
+      runnersWhere("sire_key", [upper(out.name)]),
+    ]);
+    // the parent map for the dams the runners file does not name
+    const noDam = out.mares.filter((r) => !r.mdam).map((r) => upper(r.mare));
+    let parents = [];
+    try {
+      const list = [...new Set(noDam)];
+      for (let i = 0; i < list.length; i += 1000) {
+        const part = list.slice(i, i + 1000);
+        parents.push(...((await runQuery(`SELECT horse_key, sire_key, dam_key FROM horse_parents WHERE dam_key IS NOT NULL AND horse_key IN (${part.map(() => "?").join(", ")})`, part)) ?? []));
+      }
+    } catch (err) {
+      parents = [];
+      log.warn?.(`[rom] parent map not read: ${err.message}`);
+    }
+    let ratings = [];
+    if (sireRunners) {
+      try {
+        ratings = (await sireRunners(upper(out.name))) ?? [];
+      } catch (err) {
+        log.warn?.(`[rom] his runners not read for ${out.name}: ${err.message}`);
+      }
+    }
+    enrichMares(out, { ...mapsFrom({ mares, foals, sireFoals, ratings, parents }), year: now().getUTCFullYear(), lastReturnYear: out.lastReturnYear });
+    out.year = now().getUTCFullYear();
+    maresCache.set(key, { at: Date.now(), built: ix, out });
+    return out;
   }
 
   /** A mare's coverings in the return. */

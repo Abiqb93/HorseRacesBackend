@@ -11209,7 +11209,21 @@ let romService = null;
 async function rom() {
   if (!romService) {
     const { createRomService } = await import("./rom/service.mjs");
-    romService = createRomService({ runQuery, log: { log: (m) => console.log(m), warn: (m) => console.warn(m) } });
+    romService = createRomService({
+      runQuery,
+      log: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+      // his runners on our results table, for his foals' Timeform figures in
+      // the mare list: the night's summary, else a short live read, and a
+      // read that runs out of time is left to the background for next time
+      sireRunners: async (sire) => {
+        const kept = await storedGroup("sire", sire);
+        if (kept) return kept.horses;
+        const got = await horsesWhere("sireName = ?", [sire]);
+        if (got.timedOut) buildInBackground("sire", [sire]);
+        else keepGroup("sire", sire, got);
+        return got.horses ?? [];
+      },
+    });
   }
   return romService;
 }
