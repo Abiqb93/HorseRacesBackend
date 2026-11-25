@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildIndex, codeOf, crossOf, detailOf, feeBand, insights, mareOf, maresOf, nameKey, readableYears, rowOf, splitName } from "./books.mjs";
+import { bookStrength, buildIndex, codeOf, crossOf, detailOf, feeBand, insights, mareOf, maresOf, nameKey, produceBefore, readableYears, rowOf, splitName } from "./books.mjs";
 
 // A small return: a flat stallion with results, a jumps stallion whose foals
 // never run on the flat, a newcomer, and years whose foals have not run yet.
@@ -214,4 +214,38 @@ test("a stallion's mares, covering by covering, latest year first", () => {
   );
   assert.ok(m.mares.every((r) => r.y !== undefined && r.mare));
   assert.equal(maresOf(ix, "Nobody"), null);
+});
+
+test("what a mare had produced before a covering: foals old enough to have run", () => {
+  const ix = buildIndex(coverings());
+  const m = mareOf(ix, "Prudenzia");
+  assert.deepEqual(produceBefore(m.coverings, 2016), { foals: 0, runners: 0, best: null, r95: 0 });
+  assert.deepEqual(produceBefore(m.coverings, 2018), { foals: 0, runners: 0, best: null, r95: 0 }, "her 2016 foal had not run by 2018");
+  assert.deepEqual(produceBefore(m.coverings, 2020), { foals: 1, runners: 1, best: 116, r95: 1 });
+  const row = maresOf(ix, "New Horse").mares.find((r) => r.mare === "Prudenzia");
+  assert.deepEqual(row.before, { foals: 1, runners: 1, best: 116, r95: 1 });
+  assert.equal(row.age, 16);
+});
+
+test("book strength: each flat book's mares, ranked against the year's books of 30 or more", () => {
+  const ix = buildIndex(coverings());
+  const st = bookStrength(ix);
+  assert.equal(st.get(nameKey("Jumps Sire")), undefined, "jumps books are left out");
+  const flat2016 = st.get(nameKey("Flat Sire")).find((r) => r.y === 2016);
+  assert.equal(flat2016.n, 101);
+  assert.equal(flat2016.bt, 0.1);
+  assert.equal(flat2016.w, 0.3);
+  assert.equal(flat2016.dbt, 0.1);
+  assert.equal(flat2016.age, 8);
+  assert.equal(flat2016.strength, undefined, "a book alone in its year has nothing to be ranked against");
+  const y2021 = (k) => st.get(nameKey(k)).find((r) => r.y === 2021);
+  assert.equal(y2021("New Horse").bt, 1);
+  assert.equal(y2021("New Horse").proven, 0.012);
+  assert.equal(y2021("New Horse").bestMean, 116);
+  assert.equal(y2021("New Horse").strength.rank, 1);
+  assert.equal(y2021("Flat Sire").strength.rank, 2);
+  assert.deepEqual(y2021("Flat Sire").ranks.bt, { rank: 2, of: 2 });
+  const m = maresOf(ix, "Flat Sire");
+  assert.equal(m.strength[0].y, 2021, "latest year first");
+  assert.equal(m.minBook, 30);
 });
