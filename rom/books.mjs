@@ -466,6 +466,44 @@ export function mareOf(index, name, yob = null) {
 }
 
 /**
+ * A stallion's mares, every covering in the return, latest year first and
+ * then by name: who she is, her own class and her best progeny's, what she
+ * produced and how the foal has done. Null when he is not in the return.
+ */
+export function maresOf(index, name) {
+  const k = nameKey(name);
+  const s = index.stallions.get(k);
+  if (!s) return null;
+  const out = [];
+  for (const m of index.mares.values()) {
+    for (const t of m.c) {
+      if (t[1] !== k) continue;
+      const c = openCovering(t);
+      const mare = splitName(m.mare);
+      out.push({
+        y: c.y,
+        mare: mare.name,
+        country: mare.country,
+        myob: m.myob ?? null,
+        msire: m.msire ? splitName(m.msire).name : null,
+        mdam: m.mdam ? splitName(m.mdam).name : null,
+        mf: c.mf ?? null,
+        ret: c.ret ?? null,
+        fsex: c.fsex ?? null,
+        rt: Number(c.rt) > 0 ? c.rt : null,
+        ran: c.ran,
+        r95: c.r95,
+        r105: c.r105,
+        r115: c.r115,
+        readable: index.resultsThrough !== null && c.y <= index.resultsThrough,
+      });
+    }
+  }
+  out.sort((a, b) => b.y - a.y || a.mare.localeCompare(b.mare));
+  return { name: s.name, country: s.country ?? null, resultsThrough: index.resultsThrough, years: [...new Set(out.map((r) => r.y))], mares: out };
+}
+
+/**
  * What moved, and what it means: risers and fallers on the year; the usual
  * life of a book from his first season on, and who has held his; the books
  * that got the best mares; results against what the fee paid for, and the
