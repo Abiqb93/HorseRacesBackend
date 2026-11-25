@@ -27,9 +27,9 @@
  */
 
 /** The classes the returns write for a mare's racing, best last. */
-export const CLASSES = ["Unr", "Upl", "Pl", "W", "SPl", "GrPl", "LW", "G3W", "G2W", "G1W"];
-export const BLACK_TYPE = new Set(["SPl", "GrPl", "LW", "G3W", "G2W", "G1W"]);
-export const WINNER = new Set(["W", "LW", "G3W", "G2W", "G1W"]);
+export const CLASSES = ["Unr", "Upl", "NW", "Pl", "W", "SPl", "GrPl", "LW", "GW", "G3W", "G2W", "G1W"];
+export const BLACK_TYPE = new Set(["SPl", "GrPl", "LW", "GW", "G3W", "G2W", "G1W"]);
+export const WINNER = new Set(["W", "LW", "GW", "G3W", "G2W", "G1W"]);
 const RAN_OVER_JUMPS = new Set(["Pl", "W", "SPl", "GrPl", "LW", "G3W", "G2W", "G1W"]);
 
 const strip = (v) => (v === null || v === undefined ? "" : String(v).replace(/\s+/g, " ").trim());
@@ -73,7 +73,7 @@ export const FEE_BANDS = [
 ];
 export const feeBand = (fee) => (Number.isFinite(fee) && fee > 0 ? FEE_BANDS.find((b) => fee >= b.lo && fee < b.hi)?.key ?? null : null);
 
-const blank = () => ({ covers: 0, fees: [], q: { n: 0, bt: 0, w: 0, pl: 0, upl: 0, unr: 0, dbt: 0, nhN: 0, nh: 0, proven: 0, provenN: 0 }, ret: null, res: null });
+const blank = () => ({ covers: 0, fees: [], q: { n: 0, bt: 0, w: 0, pl: 0, upl: 0, unr: 0, dbt: 0, dbtN: 0, nhN: 0, nh: 0, proven: 0, provenN: 0 }, ret: null, res: null });
 
 /**
  * The years whose foals have run enough to be read: runners per mare covered
@@ -170,6 +170,12 @@ export function recode(stallions, rows) {
  */
 export function buildIndex(rows) {
   const { resultsThrough, firstRunners, typical } = readableYears(rows);
+  // her best progeny's class is in the files from 2018; from then on a mare
+  // with none given has bred no black type, before it nothing is known
+  const firstMbpYear = rows.reduce((m, r) => (r.mbp && Number.isFinite(r.y) && (m === null || r.y < m) ? r.y : m), null);
+  const dbtKnown = (r) => Boolean(r.mbp) || (firstMbpYear !== null && r.y >= firstMbpYear);
+  // the latest covering year whose file says what each covering produced
+  const lastReturnYear = rows.reduce((m, r) => (r.ret && Number.isFinite(r.y) && (m === null || r.y > m) ? r.y : m), null);
   const years = [...new Set(rows.map((r) => r.y))].filter(Number.isFinite).sort((a, b) => a - b);
 
   // When each mare first had a 95+ foal: the foal born the year after a
@@ -209,7 +215,10 @@ export function buildIndex(rows) {
       if (r.mf === "Pl") q.pl += 1;
       if (r.mf === "Upl") q.upl += 1;
       if (r.mf === "Unr") q.unr += 1;
-      if (BLACK_TYPE.has(r.mbp)) q.dbt += 1;
+      if (dbtKnown(r)) {
+        q.dbtN += 1;
+        if (BLACK_TYPE.has(r.mbp)) q.dbt += 1;
+      }
     }
     if (r.mnh) {
       q.nhN += 1;
@@ -284,7 +293,7 @@ export function buildIndex(rows) {
     t[r.fsrc] = (t[r.fsrc] ?? 0) + 1;
   }
 
-  return { years, resultsThrough, firstRunners, feeYears, feeFrom, typicalRan: typical, totals: totalsOf(years, stallions), stallions, crosses, mares, names };
+  return { years, resultsThrough, firstRunners, feeYears, feeFrom, firstMbpYear, lastReturnYear, typicalRan: typical, totals: totalsOf(years, stallions), stallions, crosses, mares, names };
 }
 
 // What a mare's own page needs of a covering, small enough to hold every
@@ -292,13 +301,13 @@ export function buildIndex(rows) {
 // date, rating, ran/95/105/115 as bits, her class].
 function compactCovering(r, stallionKey) {
   const bits = (r.ran ? 1 : 0) | (r.r95 ? 2 : 0) | (r.r105 ? 4 : 0) | (r.r115 ? 8 : 0) | (r.ran === undefined || r.ran === null ? 16 : 0);
-  return [r.y, stallionKey, r.fee ?? null, r.amt ?? null, r.ccy ?? null, r.ret ?? null, r.fsex ?? null, r.fdate ?? null, rated(r.rt) ? r.rt : null, bits, r.mf ?? null, r.mbp ?? null];
+  return [r.y, stallionKey, r.fee ?? null, r.amt ?? null, r.ccy ?? null, r.ret ?? null, r.fsex ?? null, r.fdate ?? null, rated(r.rt) ? r.rt : null, bits, r.mf ?? null, r.mbp ?? null, r.mfSrc ?? null];
 }
 
 function openCovering(t) {
-  const [y, st, fee, amt, ccy, ret, fsex, fdate, rt, bits, mf, mbp] = t;
+  const [y, st, fee, amt, ccy, ret, fsex, fdate, rt, bits, mf, mbp, mfSrc] = t;
   const known = !(bits & 16);
-  return { y, st, fee, amt, ccy, ret, fsex, fdate, rt, ran: known ? Boolean(bits & 1) : null, r95: known ? Boolean(bits & 2) : null, r105: known ? Boolean(bits & 4) : null, r115: known ? Boolean(bits & 8) : null, mf, mbp: mbp ?? null };
+  return { y, st, fee, amt, ccy, ret, fsex, fdate, rt, ran: known ? Boolean(bits & 1) : null, r95: known ? Boolean(bits & 2) : null, r105: known ? Boolean(bits & 4) : null, r115: known ? Boolean(bits & 8) : null, mf, mbp: mbp ?? null, mfSrc: mfSrc ?? null };
 }
 
 /** Each year across every stallion, flat and jumps apart. */
@@ -360,7 +369,7 @@ export function resultsOf(s, resultsThrough) {
 
 /** His book's mares over the years their class is known. */
 export function qualityOf(s, { from = null } = {}) {
-  const q = { n: 0, bt: 0, w: 0, unr: 0, dbt: 0, proven: 0, provenN: 0 };
+  const q = { n: 0, bt: 0, w: 0, unr: 0, dbt: 0, dbtN: 0, proven: 0, provenN: 0 };
   for (const [y, yr] of Object.entries(s.years)) {
     if (from && Number(y) < from) continue;
     for (const f of Object.keys(q)) q[f] += yr.q[f] ?? 0;
@@ -412,7 +421,7 @@ export function rowOf(s, index) {
     peak: peakY !== null ? { y: peakY, n: s.years[peakY].covers } : null,
     fee: feeY !== null ? s.years[feeY].fee : null,
     feeY,
-    quality: latestQ ? { y: latestQ, ...pick(s.years[latestQ].q, ["n", "bt", "w", "unr", "dbt"]) } : null,
+    quality: latestQ ? { y: latestQ, ...pick(s.years[latestQ].q, ["n", "bt", "w", "unr", "dbt", "dbtN"]) } : null,
     fertility: fertilityOf(s),
     results: resultsOf(s, resultsThrough),
   };
@@ -466,6 +475,72 @@ export function mareOf(index, name, yob = null) {
 }
 
 /**
+ * A mare's class from the worldwide runners file (breeding/horses.mjs): her
+ * best on the track as the return would write it, with GW a group winner of
+ * a grade the file does not give and NW a runner that never won. Null when
+ * she has no runs there.
+ */
+export function classFromRunners(h) {
+  if (!h) return null;
+  const n = (v) => Number(v) || 0;
+  if (n(h.g1_wins)) return "G1W";
+  if (n(h.g_wins)) return "GW";
+  if (n(h.s_wins) || n(h.ls_wins)) return "LW";
+  if (n(h.g_top3)) return "GrPl";
+  if (n(h.s_top3) || n(h.ls_top3)) return "SPl";
+  if (n(h.turf_wins) + n(h.aw_wins)) return "W";
+  if (n(h.runs)) return "NW";
+  return null;
+}
+
+/**
+ * The years whose files give no class (before 2018, and 2025 on) filled in
+ * (25 November 2026: "we need to fill this", black-type mares, winners and
+ * dams of black type). A mare's own class is the same in every year once she
+ * has stopped racing, so a covering with none takes her class from her
+ * latest covering that gives one (`mfSrc` "other year"); failing that, from
+ * `own`, the runners file's record keyed `nameKey|yob` ("runners"). Her best
+ * progeny's class carries forward only, from her latest earlier covering
+ * that gives one, so it never holds a foal that came good after the
+ * covering. Returns the rows, filled in place, and the mares still without a
+ * class as { key, name, yob }.
+ */
+export function fillClasses(rows, { own = null } = {}) {
+  const byMare = new Map();
+  for (const r of rows) {
+    if (!r.mare) continue;
+    const k = `${nameKey(r.mare)}|${r.myob ?? ""}`;
+    (byMare.get(k) ?? byMare.set(k, []).get(k)).push(r);
+  }
+  const missing = [];
+  for (const [k, list] of byMare) {
+    list.sort((a, b) => a.y - b.y);
+    const given = list.filter((r) => r.mf && r.mfSrc !== "runners");
+    const latest = given.length ? given[given.length - 1].mf : null;
+    let bp = null;
+    let lacking = false;
+    for (const r of list) {
+      if (!r.mf) {
+        if (latest) {
+          r.mf = latest;
+          r.mfSrc = "other year";
+        } else if (own?.has(k) && own.get(k)) {
+          r.mf = own.get(k);
+          r.mfSrc = "runners";
+        } else lacking = true;
+      }
+      if (r.mbp && !r.mbpSrc) bp = r.mbp;
+      else if (!r.mbp && bp) {
+        r.mbp = bp;
+        r.mbpSrc = "earlier year";
+      }
+    }
+    if (lacking) missing.push({ key: k, name: splitName(list[0].mare).name, yob: list[0].myob ?? null });
+  }
+  return { rows, missing };
+}
+
+/**
  * What a mare had produced before a covering in year `y`, from her other
  * coverings in the return: the foals conceived three or more years earlier
  * (old enough to have run by then) whose results are held. `runners` ran,
@@ -508,13 +583,16 @@ export function bookStrength(index) {
       const s = index.stallions.get(c.st);
       if (!s || s.code === "jumps") continue;
       const byYear = books.get(c.st) ?? books.set(c.st, new Map()).get(c.st);
-      const b = byYear.get(c.y) ?? byYear.set(c.y, { n: 0, classN: 0, bt: 0, w: 0, dbt: 0, ages: [], proven: 0, withRunners: 0, bestSum: 0, bestN: 0 }).get(c.y);
+      const b = byYear.get(c.y) ?? byYear.set(c.y, { n: 0, classN: 0, bt: 0, w: 0, dbt: 0, dbtN: 0, ages: [], proven: 0, withRunners: 0, bestSum: 0, bestN: 0 }).get(c.y);
       b.n += 1;
       if (c.mf) {
         b.classN += 1;
         if (BLACK_TYPE.has(c.mf)) b.bt += 1;
         if (WINNER.has(c.mf)) b.w += 1;
-        if (BLACK_TYPE.has(c.mbp)) b.dbt += 1;
+        if (c.mbp || (index.firstMbpYear && c.y >= index.firstMbpYear)) {
+          b.dbtN += 1;
+          if (BLACK_TYPE.has(c.mbp)) b.dbt += 1;
+        }
       }
       if (Number(m.myob) > 1900 && c.y - m.myob >= 2) b.ages.push(c.y - m.myob);
       const p = produceBefore(m.c, c.y);
@@ -539,7 +617,7 @@ export function bookStrength(index) {
         n: b.n,
         bt: b.classN ? round(b.bt / b.classN) : null,
         w: b.classN ? round(b.w / b.classN) : null,
-        dbt: b.classN ? round(b.dbt / b.classN) : null,
+        dbt: b.dbtN ? round(b.dbt / b.dbtN) : null,
         classN: b.classN,
         age: median(b.ages),
         proven: round(b.proven / b.n),
@@ -604,7 +682,10 @@ export function maresOf(index, name) {
         msire: m.msire ? splitName(m.msire).name : null,
         mdam: m.mdam ? splitName(m.mdam).name : null,
         age: Number(m.myob) > 1900 ? c.y - m.myob : null,
+        // covered before, by any stallion: no maiden
+        covered: m.c.some((x) => x[0] < c.y),
         mf: c.mf ?? null,
+        mfSrc: c.mfSrc ?? null,
         mbp: c.mbp ?? null,
         before: produceBefore(m.c, c.y),
         ret: c.ret ?? null,
@@ -620,7 +701,7 @@ export function maresOf(index, name) {
   }
   out.sort((a, b) => b.y - a.y || a.mare.localeCompare(b.mare));
   const strength = (bookStrength(index).get(k) ?? []).map(({ key, ...r }) => r).sort((a, b) => b.y - a.y);
-  return { name: s.name, country: s.country ?? null, resultsThrough: index.resultsThrough, minBook: MIN_BOOK, years: [...new Set(out.map((r) => r.y))], strength, mares: out };
+  return { name: s.name, country: s.country ?? null, resultsThrough: index.resultsThrough, lastReturnYear: index.lastReturnYear ?? null, minBook: MIN_BOOK, years: [...new Set(out.map((r) => r.y))], strength, mares: out };
 }
 
 /**
