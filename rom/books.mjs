@@ -292,13 +292,13 @@ export function buildIndex(rows) {
 // date, rating, ran/95/105/115 as bits, her class].
 function compactCovering(r, stallionKey) {
   const bits = (r.ran ? 1 : 0) | (r.r95 ? 2 : 0) | (r.r105 ? 4 : 0) | (r.r115 ? 8 : 0) | (r.ran === undefined || r.ran === null ? 16 : 0);
-  return [r.y, stallionKey, r.fee ?? null, r.amt ?? null, r.ccy ?? null, r.ret ?? null, r.fsex ?? null, r.fdate ?? null, rated(r.rt) ? r.rt : null, bits, r.mf ?? null];
+  return [r.y, stallionKey, r.fee ?? null, r.amt ?? null, r.ccy ?? null, r.ret ?? null, r.fsex ?? null, r.fdate ?? null, rated(r.rt) ? r.rt : null, bits, r.mf ?? null, r.mbp ?? null];
 }
 
 function openCovering(t) {
-  const [y, st, fee, amt, ccy, ret, fsex, fdate, rt, bits, mf] = t;
+  const [y, st, fee, amt, ccy, ret, fsex, fdate, rt, bits, mf, mbp] = t;
   const known = !(bits & 16);
-  return { y, st, fee, amt, ccy, ret, fsex, fdate, rt, ran: known ? Boolean(bits & 1) : null, r95: known ? Boolean(bits & 2) : null, r105: known ? Boolean(bits & 4) : null, r115: known ? Boolean(bits & 8) : null, mf };
+  return { y, st, fee, amt, ccy, ret, fsex, fdate, rt, ran: known ? Boolean(bits & 1) : null, r95: known ? Boolean(bits & 2) : null, r105: known ? Boolean(bits & 4) : null, r115: known ? Boolean(bits & 8) : null, mf, mbp: mbp ?? null };
 }
 
 /** Each year across every stallion, flat and jumps apart. */
@@ -466,6 +466,122 @@ export function mareOf(index, name, yob = null) {
 }
 
 /**
+ * What a mare had produced before a covering in year `y`, from her other
+ * coverings in the return: the foals conceived three or more years earlier
+ * (old enough to have run by then) whose results are held. `runners` ran,
+ * `best` is the best Timeform rating among them, `r95` how many reached 95.
+ * The return starts in 2013, so a mare's older foals are not counted.
+ */
+export function produceBefore(coverings = [], y) {
+  let runners = 0;
+  let best = null;
+  let r95 = 0;
+  let foals = 0;
+  for (const t of coverings) {
+    const c = Array.isArray(t) ? openCovering(t) : t;
+    if (c.y > y - 3 || c.ran === null || c.ran === undefined) continue;
+    foals += 1;
+    if (!c.ran) continue;
+    runners += 1;
+    if (c.r95) r95 += 1;
+    if (Number(c.rt) > 0 && (best === null || c.rt > best)) best = c.rt;
+  }
+  return { foals, runners, best, r95 };
+}
+
+const MIN_BOOK = 30;
+const strengthMemo = new WeakMap();
+
+/**
+ * The strength of every flat book, year by year: what its mares were (their
+ * own class, their best progeny's, their age) and what they had produced
+ * before (runners, their best rating, 95+ horses), each ranked against the
+ * year's other flat books of 30 mares or more. `rank` is the book's place on
+ * the mean of its four ranked measures. Built once per index.
+ */
+export function bookStrength(index) {
+  if (strengthMemo.has(index)) return strengthMemo.get(index);
+  const books = new Map(); // stallion key -> year -> tally
+  for (const m of index.mares.values()) {
+    for (const t of m.c) {
+      const c = openCovering(t);
+      const s = index.stallions.get(c.st);
+      if (!s || s.code === "jumps") continue;
+      const byYear = books.get(c.st) ?? books.set(c.st, new Map()).get(c.st);
+      const b = byYear.get(c.y) ?? byYear.set(c.y, { n: 0, classN: 0, bt: 0, w: 0, dbt: 0, ages: [], proven: 0, withRunners: 0, bestSum: 0, bestN: 0 }).get(c.y);
+      b.n += 1;
+      if (c.mf) {
+        b.classN += 1;
+        if (BLACK_TYPE.has(c.mf)) b.bt += 1;
+        if (WINNER.has(c.mf)) b.w += 1;
+        if (BLACK_TYPE.has(c.mbp)) b.dbt += 1;
+      }
+      if (Number(m.myob) > 1900 && c.y - m.myob >= 2) b.ages.push(c.y - m.myob);
+      const p = produceBefore(m.c, c.y);
+      if (p.r95) b.proven += 1;
+      if (p.runners) b.withRunners += 1;
+      if (p.best !== null) {
+        b.bestSum += p.best;
+        b.bestN += 1;
+      }
+    }
+  }
+  const out = new Map();
+  const round = (v, dp = 3) => (v === null ? null : Math.round(v * 10 ** dp) / 10 ** dp);
+  for (const y of index.years) {
+    const rows = [];
+    for (const [k, byYear] of books) {
+      const b = byYear.get(y);
+      if (!b) continue;
+      rows.push({
+        key: k,
+        y,
+        n: b.n,
+        bt: b.classN ? round(b.bt / b.classN) : null,
+        w: b.classN ? round(b.w / b.classN) : null,
+        dbt: b.classN ? round(b.dbt / b.classN) : null,
+        classN: b.classN,
+        age: median(b.ages),
+        proven: round(b.proven / b.n),
+        withRunners: round(b.withRunners / b.n),
+        bestMean: b.bestN ? round(b.bestSum / b.bestN, 1) : null,
+        bestN: b.bestN,
+      });
+    }
+    // the year's books of 30 mares or more, ranked on each measure, best first
+    const ranked = rows.filter((r) => r.n >= MIN_BOOK);
+    const measures = ["bt", "dbt", "proven", "bestMean"];
+    for (const key of measures) {
+      const held = ranked.filter((r) => r[key] !== null).sort((a, b) => b[key] - a[key]);
+      // a measure every book shares (no mare yet with a 95+ runner the
+      // return can see, before 2016) ranks nobody
+      if (held.length < 2 || held[0][key] === held.at(-1)[key]) continue;
+      for (const r of held) {
+        // books level on a measure share its place
+        const rank = held.findIndex((x) => x[key] === r[key]) + 1;
+        r.ranks = r.ranks ?? {};
+        r.ranks[key] = { rank, of: held.length };
+        r.pctls = r.pctls ?? [];
+        r.pctls.push(1 - (rank - 1) / (held.length - 1));
+      }
+    }
+    const scored = ranked.filter((r) => r.pctls?.length).map((r) => ({ r, score: r.pctls.reduce((a, b) => a + b, 0) / r.pctls.length }));
+    scored.sort((a, b) => b.score - a.score);
+    scored.forEach(({ r, score }, i) => {
+      r.strength = { rank: i + 1, of: scored.length, score: round(score) };
+      delete r.pctls;
+    });
+    for (const r of rows) {
+      delete r.pctls;
+      const byKey = out.get(r.key) ?? out.set(r.key, []).get(r.key);
+      byKey.push(r);
+    }
+  }
+  strengthMemo.set(index, out);
+  return out;
+}
+
+/**
  * A stallion's mares, every covering in the return, latest year first and
  * then by name: who she is, her own class and her best progeny's, what she
  * produced and how the foal has done. Null when he is not in the return.
@@ -487,7 +603,10 @@ export function maresOf(index, name) {
         myob: m.myob ?? null,
         msire: m.msire ? splitName(m.msire).name : null,
         mdam: m.mdam ? splitName(m.mdam).name : null,
+        age: Number(m.myob) > 1900 ? c.y - m.myob : null,
         mf: c.mf ?? null,
+        mbp: c.mbp ?? null,
+        before: produceBefore(m.c, c.y),
         ret: c.ret ?? null,
         fsex: c.fsex ?? null,
         rt: Number(c.rt) > 0 ? c.rt : null,
@@ -500,7 +619,8 @@ export function maresOf(index, name) {
     }
   }
   out.sort((a, b) => b.y - a.y || a.mare.localeCompare(b.mare));
-  return { name: s.name, country: s.country ?? null, resultsThrough: index.resultsThrough, years: [...new Set(out.map((r) => r.y))], mares: out };
+  const strength = (bookStrength(index).get(k) ?? []).map(({ key, ...r }) => r).sort((a, b) => b.y - a.y);
+  return { name: s.name, country: s.country ?? null, resultsThrough: index.resultsThrough, minBook: MIN_BOOK, years: [...new Set(out.map((r) => r.y))], strength, mares: out };
 }
 
 /**
