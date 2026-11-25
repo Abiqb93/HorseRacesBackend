@@ -373,6 +373,21 @@ export const inWindow = (now = new Date(), [from, to] = WINDOW_UTC) => {
  * read the results back. `fetchGrid` is the Arion grid fetcher;
  * `arionStatus` says how much of Arion's own day is used.
  */
+/**
+ * Of the horses Arion lists under one name, the one old enough to be this
+ * sire or this dam: foaled at least four years before the study's first foal
+ * by him or out of her, and no more than 30 (a sire) or 27 (a dam) before
+ * the last. Null unless exactly one fits.
+ */
+export function oldEnough(matches = [], { kind = "dam", lo = null, hi = null } = {}) {
+  const first = Number(lo);
+  const last = Number(hi);
+  if (!Number.isFinite(first) || !Number.isFinite(last) || first <= 0) return null;
+  const span = kind === "sire" ? 30 : 27;
+  const fit = matches.filter((m) => Number(m?.foaling_year) > 1700 && m.foaling_year <= first - 4 && m.foaling_year >= last - span);
+  return fit.length === 1 ? fit[0] : null;
+}
+
 /** The stages planning passes through before the pedigrees are read. */
 export const PLAN_STAGES = new Set(["planning", "choosing sires", "reading runners", "reading the dams' produce"]);
 
@@ -518,7 +533,15 @@ export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () 
       dailyGrids: daily,
       window: `${WINDOW_UTC[0]}:00-${WINDOW_UTC[1]}:00 UTC`,
       daysLeft: Math.ceil(todo / daily),
+      failures: (await runQuery("SELECT kind, name, error FROM study_lb_grids WHERE status = 'failed' ORDER BY fetched_at DESC LIMIT 15")) ?? [],
     };
+  }
+
+  /** The failed grids back in the queue, to be asked for again. */
+  async function retryFailed() {
+    await ensure();
+    const r = await runQuery("UPDATE study_lb_grids SET status = 'todo', tries = 0, error = NULL WHERE status = 'failed'");
+    return { requeued: Number(r?.affectedRows ?? 0) };
   }
 
   /** One grid, if the window, the study's allowance and Arion's own allow it. */
@@ -549,26 +572,52 @@ export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () 
         await setState({ stage: "pedigrees read" });
         return { skipped: "nothing left" };
       }
+      const ask = (year = null) =>
+        fetchGrid({ name: next.name, sire: next.sire_hint ?? null, year, generations: GRID_GENERATIONS, userId: "linebreeding-study", keep: false });
+      let grid = null;
+      let failure = null;
       try {
-        const grid = await fetchGrid({ name: next.name, sire: next.sire_hint ?? null, generations: GRID_GENERATIONS, userId: "linebreeding-study", keep: false });
+        grid = await ask();
+      } catch (err) {
+        failure = err;
+      }
+      // several of the name: the one old enough to be this sire or this dam,
+      // asked for again by its year (Kodiac (GB) 2001, not Kodiac (CHI) 2012)
+      if (failure?.ambiguous && Array.isArray(failure.matches)) {
+        const crops = (await runQuery(
+          next.kind === "sire"
+            ? "SELECT MIN(crop) AS lo, MAX(crop) AS hi FROM study_lb_runners WHERE sire = ?"
+            : "SELECT MIN(crop) AS lo, MAX(crop) AS hi FROM study_lb_runners WHERE dam = ? AND damsire <=> ?",
+          next.kind === "sire" ? [next.name] : [next.name, next.sire_hint ?? null],
+        ))?.[0];
+        const one = oldEnough(failure.matches, { kind: next.kind, lo: crops?.lo, hi: crops?.hi });
+        if (one) {
+          try {
+            grid = await ask(one.foaling_year);
+            failure = null;
+          } catch (err) {
+            failure = err;
+          }
+        }
+      }
+      if (grid) {
         await runQuery(
           "UPDATE study_lb_grids SET status = 'done', tries = tries + 1, error = NULL, ancestors = ?, inbreeding = ?, fetched_at = ? WHERE grid_key = ?",
           [JSON.stringify(compactGrid(grid.ancestors)), grid.inbreeding_text ?? null, now(), next.grid_key],
         );
         return { read: next.name };
-      } catch (err) {
-        const tries = Number(next.tries) + 1;
-        // a name Arion cannot tell apart, or does not hold, will not change by asking again
-        const final = tries >= MAX_TRIES || err.ambiguous || err.notFound;
-        await runQuery("UPDATE study_lb_grids SET status = ?, tries = ?, error = ?, fetched_at = ? WHERE grid_key = ?", [
-          final ? "failed" : "todo",
-          tries,
-          String(err.message).slice(0, 500),
-          now(),
-          next.grid_key,
-        ]);
-        return { failed: next.name, error: err.message };
       }
+      const tries = Number(next.tries) + 1;
+      // a name Arion cannot tell apart, or does not hold, will not change by asking again
+      const final = tries >= MAX_TRIES || failure.ambiguous || failure.notFound;
+      await runQuery("UPDATE study_lb_grids SET status = ?, tries = ?, error = ?, fetched_at = ? WHERE grid_key = ?", [
+        final ? "failed" : "todo",
+        tries,
+        String(failure.message).slice(0, 500),
+        now(),
+        next.grid_key,
+      ]);
+      return { failed: next.name, error: failure.message };
     } finally {
       busy = false;
     }
@@ -606,5 +655,5 @@ export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () 
     return { ...reading, mostRepeated: mostRepeated(foals.map((f) => f.pedigree), { top: 12 }), status: await status() };
   }
 
-  return { plan, start, stop, status, tick, results };
+  return { plan, start, stop, status, tick, results, retryFailed };
 }

@@ -18556,6 +18556,16 @@ app.post("/api/studies/linebreeding/start", express.json({ limit: "16kb" }), asy
   }
 });
 
+// the failed grids back in the queue, after a fix to how a horse is found
+app.post("/api/studies/linebreeding/retry", express.json({ limit: "16kb" }), async (req, res) => {
+  if (!(await arionBuyer(req.body?.userId))) return res.status(403).json({ error: "Only a signed-in member of the team can retry the study's grids." });
+  try {
+    res.json(await (await linebreeding()).retryFailed());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/studies/linebreeding/stop", express.json({ limit: "16kb" }), async (req, res) => {
   if (!(await arionBuyer(req.body?.userId))) return res.status(403).json({ error: "Only a signed-in member of the team can stop the study." });
   try {

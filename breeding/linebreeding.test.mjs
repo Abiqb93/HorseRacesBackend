@@ -4,6 +4,7 @@ import fs from "node:fs";
 
 import { parseGrid } from "../arion/pedigreeGrid.mjs";
 import {
+  oldEnough,
   closestDuplication,
   compactGrid,
   createLinebreedingStudy,
@@ -124,6 +125,22 @@ function fakeDb({ runs }) {
       for (const g of groups(4)) if (!t.grids.has(g[0])) t.grids.set(g[0], { grid_key: g[0], kind: g[1], name: g[2], sire_hint: g[3] ?? null, status: "todo", tries: 0 });
       return {};
     }
+    if (/SELECT MIN\(crop\) AS lo, MAX\(crop\) AS hi FROM study_lb_runners WHERE sire = \?/.test(sql)) {
+      const c = [...t.runners.values()].filter((r) => r.sire === a[0]).map((r) => r.crop);
+      return [{ lo: c.length ? Math.min(...c) : null, hi: c.length ? Math.max(...c) : null }];
+    }
+    if (/SELECT MIN\(crop\) AS lo, MAX\(crop\) AS hi FROM study_lb_runners WHERE dam = \?/.test(sql)) {
+      const c = [...t.runners.values()].filter((r) => r.dam === a[0] && (r.damsire ?? null) === (a[1] ?? null)).map((r) => r.crop);
+      return [{ lo: c.length ? Math.min(...c) : null, hi: c.length ? Math.max(...c) : null }];
+    }
+    if (/SELECT kind, name, error FROM study_lb_grids WHERE status = 'failed'/.test(sql)) {
+      return [...t.grids.values()].filter((g) => g.status === "failed").map((g) => ({ kind: g.kind, name: g.name, error: g.error }));
+    }
+    if (/UPDATE study_lb_grids SET status = 'todo', tries = 0/.test(sql)) {
+      let n = 0;
+      for (const g of t.grids.values()) if (g.status === "failed") Object.assign(g, { status: "todo", tries: 0, error: null }, (n += 1) && {});
+      return { affectedRows: n };
+    }
     if (/SELECT kind, status, COUNT/.test(sql)) {
       const m = new Map();
       for (const g of t.grids.values()) m.set(`${g.kind}|${g.status}`, (m.get(`${g.kind}|${g.status}`) ?? 0) + 1);
@@ -226,4 +243,53 @@ test("a restart part way through planning: the next tick plans again with the si
   assert.equal(t.produce.size, 2);
   assert.equal(runnerScans, 0, "the saved runners are taken back, not read again");
   assert.equal((await study.tick()).skipped, "outside the window", "once planned, it reads as before");
+});
+
+test("of the horses of one name, the one old enough to be the sire or the dam", () => {
+  const kodiacs = [
+    { name: "Kodiac (CHI)", foaling_year: 2012 },
+    { name: "Kodiac (GB)", foaling_year: 2001 },
+  ];
+  assert.equal(oldEnough(kodiacs, { kind: "sire", lo: 2015, hi: 2019 })?.name, "Kodiac (GB)");
+  assert.equal(oldEnough(kodiacs, { kind: "sire", lo: null, hi: null }), null, "no crops, no choice");
+  const mares = [
+    { name: "Mare A (IRE)", foaling_year: 2008 },
+    { name: "Mare A (GB)", foaling_year: 1985 },
+    { name: "Mare A (FR)", foaling_year: 2009 },
+  ];
+  assert.equal(oldEnough(mares, { kind: "dam", lo: 2016, hi: 2017 }), null, "two of the right age is not a guess to make");
+  assert.equal(oldEnough(mares.slice(0, 2), { kind: "dam", lo: 2016, hi: 2017 })?.name, "Mare A (IRE)");
+});
+
+test("a sire Arion lists twice is asked for again by the year that fits; failures show and can be retried", async () => {
+  const runs = [run("ONE", 2015, "KODIAC", "MARE A", "DANEHILL", 95), run("TWO", 2017, "KODIAC", "MARE B", "DANZIG", 80)];
+  const { runQuery, t } = fakeDb({ runs });
+  const asked = [];
+  const fetchGrid = async ({ name, year }) => {
+    asked.push({ name, year });
+    if (name === "KODIAC" && !year) {
+      const err = new Error("Arion lists 2 horses called KODIAC");
+      err.ambiguous = true;
+      err.matches = [{ name: "Kodiac (CHI)", foaling_year: 2012 }, { name: "Kodiac (GB)", foaling_year: 2001 }];
+      throw err;
+    }
+    if (name === "MARE B") {
+      const err = new Error("Arion lists no MARE B; 3 other horses of the name");
+      err.notFound = true;
+      throw err;
+    }
+    return { ancestors: [{ path: "S", name: "Danehill", foaling_year: 1986 }], inbreeding_text: null };
+  };
+  const study = createLinebreedingStudy({ runQuery, fetchGrid, now: () => new Date("2026-11-25T01:00:00Z"), log: { log() {}, warn() {} } });
+  await study.start({ userId: "TomWilson", sires: ["Kodiac"] });
+  await new Promise((r) => setTimeout(r, 20));
+  const first = await study.tick();
+  assert.equal(first.read, "KODIAC", JSON.stringify(first));
+  assert.deepEqual(asked.slice(0, 2), [{ name: "KODIAC", year: null }, { name: "KODIAC", year: 2001 }]);
+  assert.equal((await study.tick()).read, "MARE A");
+  assert.equal((await study.tick()).failed, "MARE B");
+  const st = await study.status();
+  assert.deepEqual(st.failures, [{ kind: "dam", name: "MARE B", error: "Arion lists no MARE B; 3 other horses of the name" }]);
+  assert.deepEqual(await study.retryFailed(), { requeued: 1 });
+  assert.equal(t.grids.get(damKey("MARE B", "DANZIG")).status, "todo");
 });
