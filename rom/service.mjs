@@ -15,7 +15,7 @@ import zlib from "node:zlib";
 import fs from "node:fs";
 import path from "node:path";
 
-import { buildIndex, crossOf, detailOf, insights, mareOf, maresOf, nameKey, rowOf } from "./books.mjs";
+import { buildIndex, classFromRunners, crossOf, detailOf, fillClasses, insights, mareOf, maresOf, nameKey, rowOf } from "./books.mjs";
 
 export const SEED_TABLE = "rom_seed";
 const CREATE = `
@@ -46,6 +46,34 @@ export function createRomService({ runQuery, log = console, manifestPath = MANIF
     }
   };
 
+  /**
+   * The classes the files leave out, filled: from her other years in the
+   * return, then from the worldwide runners file (breeding_horses) for the
+   * mares still without one. The runners file is read for those names only;
+   * if it is not there the return's own fill stands.
+   */
+  async function fillFromRunners(rows) {
+    const { missing } = fillClasses(rows);
+    if (!missing.length) return;
+    const own = new Map();
+    const names = [...new Set(missing.map((m) => m.name.toUpperCase()))];
+    try {
+      for (let i = 0; i < names.length; i += 1000) {
+        const part = names.slice(i, i + 1000);
+        const found = await runQuery(
+          `SELECT horse_name, foaling_year, runs, ls_wins, ls_top3, s_wins, s_top3, g_wins, g_top3, g1_wins, turf_wins, aw_wins
+             FROM breeding_horses WHERE sex IN ('F', 'M') AND horse_name IN (${part.map(() => "?").join(", ")})`,
+          part,
+        );
+        for (const h of found ?? []) own.set(`${nameKey(h.horse_name)}|${h.foaling_year}`, classFromRunners(h));
+      }
+    } catch (err) {
+      log.warn?.(`[rom] runners file not read for mares' classes: ${err.message}`);
+      return;
+    }
+    fillClasses(rows, { own });
+  }
+
   async function ensure() {
     if (ensured) return;
     await runQuery(CREATE);
@@ -67,6 +95,7 @@ export function createRomService({ runQuery, log = console, manifestPath = MANIF
         used += 1;
         for (const line of zlib.gunzipSync(p.body).toString("utf8").split("\n")) if (line) rows.push(JSON.parse(line));
       }
+      if (rows.length) await fillFromRunners(rows);
       const ix = rows.length ? buildIndex(rows) : null;
       if (ix) {
         ix.list = [...ix.stallions.values()].map((s) => rowOf(s, ix)).sort((a, b) => b.latest - a.latest || a.name.localeCompare(b.name));

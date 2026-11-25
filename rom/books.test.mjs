@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { bookStrength, buildIndex, codeOf, crossOf, detailOf, feeBand, insights, mareOf, maresOf, nameKey, produceBefore, readableYears, rowOf, splitName } from "./books.mjs";
+import { bookStrength, buildIndex, classFromRunners, fillClasses, codeOf, crossOf, detailOf, feeBand, insights, mareOf, maresOf, nameKey, produceBefore, readableYears, rowOf, splitName } from "./books.mjs";
 
 // A small return: a flat stallion with results, a jumps stallion whose foals
 // never run on the flat, a newcomer, and years whose foals have not run yet.
@@ -248,4 +248,39 @@ test("book strength: each flat book's mares, ranked against the year's books of 
   const m = maresOf(ix, "Flat Sire");
   assert.equal(m.strength[0].y, 2021, "latest year first");
   assert.equal(m.minBook, 30);
+});
+
+test("a mare's class from the runners file", () => {
+  assert.equal(classFromRunners({ runs: 6, g1_wins: 1, g_wins: 2, s_wins: 2 }), "G1W");
+  assert.equal(classFromRunners({ runs: 9, g_wins: 1, s_wins: 1 }), "GW");
+  assert.equal(classFromRunners({ runs: 9, ls_wins: 1 }), "LW");
+  assert.equal(classFromRunners({ runs: 9, g_top3: 1, turf_wins: 2 }), "GrPl");
+  assert.equal(classFromRunners({ runs: 9, s_top3: 1 }), "SPl");
+  assert.equal(classFromRunners({ runs: 4, aw_wins: 1 }), "W");
+  assert.equal(classFromRunners({ runs: 4 }), "NW");
+  assert.equal(classFromRunners(null), null);
+});
+
+test("classes filled: from her other years, then the runners file; her best foal only carried forward", () => {
+  const rows = [
+    { y: 2016, st: "A Sire", mare: "Old Mare (GB)", myob: 2005 },
+    { y: 2019, st: "A Sire", mare: "Old Mare (GB)", myob: 2005, mf: "LW", mbp: "W" },
+    { y: 2022, st: "A Sire", mare: "Old Mare (GB)", myob: 2005, mf: "LW", mbp: "G2W" },
+    { y: 2025, st: "A Sire", mare: "Old Mare (GB)", myob: 2005 },
+    { y: 2026, st: "A Sire", mare: "Maiden (IRE)", myob: 2021 },
+    { y: 2026, st: "A Sire", mare: "Nobody (FR)", myob: 2020 },
+  ];
+  const first = fillClasses(rows);
+  assert.deepEqual([rows[0].mf, rows[0].mfSrc, rows[0].mbp ?? null], ["LW", "other year", null], "2016 takes her class, never a later foal's");
+  assert.deepEqual([rows[3].mf, rows[3].mbp, rows[3].mbpSrc], ["LW", "G2W", "earlier year"]);
+  assert.deepEqual(first.missing.map((m) => m.name).sort(), ["Maiden", "Nobody"]);
+  fillClasses(rows, { own: new Map([["maiden|2021", "GW"]]) });
+  assert.deepEqual([rows[4].mf, rows[4].mfSrc], ["GW", "runners"]);
+  assert.equal(rows[5].mf, undefined, "no record anywhere stays blank");
+  const ix = buildIndex(rows);
+  assert.equal(ix.firstMbpYear, 2019);
+  const y2016 = ix.stallions.get(nameKey("A Sire")).years[2016].q;
+  assert.deepEqual([y2016.n, y2016.bt, y2016.dbtN], [1, 1, 0], "class known in 2016, her produce not");
+  const y2026 = ix.stallions.get(nameKey("A Sire")).years[2026].q;
+  assert.deepEqual([y2026.n, y2026.bt, y2026.dbtN, y2026.dbt], [1, 1, 1, 0], "a maiden is no dam of black type");
 });
