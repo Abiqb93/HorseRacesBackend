@@ -11247,6 +11247,21 @@ app.get("/api/rom/stallion", async (req, res) => {
   }
 });
 
+// His mares, covering by covering: the full record on his stallion page
+// (25 November 2026: "a tab where you could see the full return of mares
+// history and record").
+app.get("/api/rom/stallion/mares", async (req, res) => {
+  const name = String(req.query.name ?? "").slice(0, 80);
+  if (!name.trim()) return res.status(400).json({ error: "name required" });
+  try {
+    const out = await (await rom()).stallionMares(name);
+    if (!out) return res.status(404).json({ error: "not in the Return of Mares", name });
+    res.json(out);
+  } catch (err) {
+    romError(res, "stallion mares", err);
+  }
+});
+
 // Several stallions at once, as a mating plan reads them: `names` split by
 // "|", and `msire` her sire, for each stallion's record with mares by him.
 app.get("/api/rom/stallions", async (req, res) => {

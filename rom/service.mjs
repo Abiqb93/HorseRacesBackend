@@ -15,7 +15,7 @@ import zlib from "node:zlib";
 import fs from "node:fs";
 import path from "node:path";
 
-import { buildIndex, crossOf, detailOf, insights, mareOf, nameKey, rowOf } from "./books.mjs";
+import { buildIndex, crossOf, detailOf, insights, mareOf, maresOf, nameKey, rowOf } from "./books.mjs";
 
 export const SEED_TABLE = "rom_seed";
 const CREATE = `
@@ -159,13 +159,18 @@ export function createRomService({ runQuery, log = console, manifestPath = MANIF
     return { years: ix.years, resultsThrough: ix.resultsThrough, feeYears: ix.feeYears, feeFrom: ix.feeFrom, stallions: out };
   }
 
+  /** A stallion's mares, covering by covering. */
+  async function stallionMares(name) {
+    return maresOf(await ready(), name);
+  }
+
   /** A mare's coverings in the return. */
   async function mare(name, yob = null) {
     const ix = await ready();
     return { resultsThrough: ix.resultsThrough, firstRunners: ix.firstRunners, feeYears: ix.feeYears, feeFrom: ix.feeFrom, ...mareOf(ix, name, yob) };
   }
 
-  return { ensure, build, ready, acceptSeed, status, books, stallion, stallions, mare, manifest };
+  return { ensure, build, ready, acceptSeed, status, books, stallion, stallionMares, stallions, mare, manifest };
 }
 
 export default { createRomService, SEED_TABLE };

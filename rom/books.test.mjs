@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildIndex, codeOf, crossOf, detailOf, feeBand, insights, mareOf, nameKey, readableYears, rowOf, splitName } from "./books.mjs";
+import { buildIndex, codeOf, crossOf, detailOf, feeBand, insights, mareOf, maresOf, nameKey, readableYears, rowOf, splitName } from "./books.mjs";
 
 // A small return: a flat stallion with results, a jumps stallion whose foals
 // never run on the flat, a newcomer, and years whose foals have not run yet.
@@ -196,4 +196,22 @@ test("a year's fees from the site's records say where they came from", () => {
   assert.deepEqual(ix.feeFrom, { 2022: { roster: 31, "stud announcement": 1 } });
   assert.equal(rowOf(ix.stallions.get("flat sire"), ix).feeY, 2022);
   assert.equal(rowOf(ix.stallions.get("flat sire"), ix).fee, 30000);
+});
+
+test("a stallion's mares, covering by covering, latest year first", () => {
+  const ix = buildIndex(coverings());
+  const m = maresOf(ix, "Flat Sire (IRE)");
+  assert.equal(m.name, "Flat Sire");
+  assert.equal(m.mares.length, 4 * 100 + 102 + 150 + 2);
+  assert.deepEqual(m.years, [2021, 2020, 2019, 2018, 2017, 2016]);
+  const p = m.mares.filter((r) => r.mare === "Prudenzia");
+  assert.deepEqual(
+    p.map((r) => [r.y, r.myob, r.msire, r.mdam, r.ret, r.fsex, r.rt, r.r95, r.readable]),
+    [
+      [2020, 2005, "Dansili", "Platonic", "foal", "F", null, false, false],
+      [2016, 2005, "Dansili", "Platonic", null, null, 116, true, true],
+    ],
+  );
+  assert.ok(m.mares.every((r) => r.y !== undefined && r.mare));
+  assert.equal(maresOf(ix, "Nobody"), null);
 });
