@@ -11,8 +11,8 @@ function fetchHorse(code,key,signal) {
   return new Promise((resolve,reject)=>{
     const url = new URL(`https://www.globalsportsapi.com/RESTv1/HorseRacing/GetHorsePastPerformanceRace/${code}`);
     url.searchParams.set('gsaappkey',key);
-    const req=https.get(url,{headers:{Accept:'application/json'},signal},res=>{
-      if(res.statusCode!==200){res.resume();return reject(new Error('Sports API returned a non-success status'));}
+    const req=https.get(url,{headers:{Accept:'application/json',gsaappkey:key},signal},res=>{
+      if(res.statusCode!==200){res.resume();const e=new Error('Sports API returned a non-success status');e.upstreamStatus=res.statusCode;return reject(e);}
       let raw='';res.setEncoding('utf8');res.on('error',reject);
       res.on('data',c=>{raw+=c;if(raw.length>16*1024*1024)req.destroy(new Error('Response too large'));});
       res.on('end',()=>{try{const body=JSON.parse(raw);if(body['@odata.nextLink'])throw new Error('Incomplete paginated response');if(!Array.isArray(body.value))throw new Error('Unexpected sports data format');const horse=body.value.find(h=>h&&norm(h.horseCode)===code);if(!horse){const e=new Error('Horse not found');e.status=404;throw e;}resolve(horse);}catch(e){reject(e);}});
@@ -56,9 +56,15 @@ function createHandler({loadAiAgent}){
   if(!process.env.SPORTS_API||!process.env.ANTHROPIC_API_KEY)return res.status(503).json({error:'Horse Catalog credentials are not configured.'});
   const now=Date.now();if(now-windowStart>=3600000){windowStart=now;count=0;attempts.clear();}const key=String(req.ip||'unknown');const prior=attempts.get(key)||0;if(prior>=30||count>=60||active>=2)return res.status(429).json({error:'Catalog request limit reached. Try again later.'});attempts.set(key,prior+1);count++;active++;
   const controller=new AbortController();const close=()=>{if(!res.writableEnded)controller.abort();};res.on('close',close);const timer=setTimeout(()=>controller.abort(),150000);
+  let stage='PDF dependency';
   try{
-   const code=norm(horseCode);let entry=cache.get(code);if(!entry||now-entry.at>3600000){const horse=await fetchHorse(code,process.env.SPORTS_API,controller.signal);const data=prepare(horse);const agent=await loadAiAgent();const report=await narrative(data,agent,controller.signal);const pdf=await render(data,report);entry={at:Date.now(),pdf};if(cache.size>=50)cache.delete(cache.keys().next().value);cache.set(code,entry);}if(!controller.signal.aborted)res.set({'Content-Type':'application/pdf','Content-Disposition':`attachment; filename="Horse-Catalog-${code}.pdf"`,'Cache-Control':'private, no-store'}).send(entry.pdf);
-  }catch(e){console.error('[horse-catalog] failed:',e.name||'Error',e.status||'');if(!res.headersSent&&!res.destroyed)res.status(e.status===404?404:502).json({error:e.status===404?'Horse not found.':'Unable to generate the catalog. Check service configuration or try again.'});}finally{clearTimeout(timer);res.off('close',close);active--;}
+   require.resolve('pdfkit');
+   const code=norm(horseCode);let entry=cache.get(code);if(!entry||now-entry.at>3600000){stage='Sports API';const horse=await fetchHorse(code,process.env.SPORTS_API.trim(),controller.signal);stage='Data preparation';const data=prepare(horse);stage='AI agent initialization';const agent=await loadAiAgent();stage='Claude analysis';const report=await narrative(data,agent,controller.signal);stage='PDF rendering';const pdf=await render(data,report);entry={at:Date.now(),pdf};if(cache.size>=50)cache.delete(cache.keys().next().value);cache.set(code,entry);}if(!controller.signal.aborted)res.set({'Content-Type':'application/pdf','Content-Disposition':`attachment; filename="Horse-Catalog-${code}.pdf"`,'Cache-Control':'private, no-store'}).send(entry.pdf);
+  }catch(e){const status=Number(e.upstreamStatus || e.status);const safeStatus=Number.isInteger(status)&&status>=400&&status<=599?status:null;
+   const known=['Unexpected sports data format','Incomplete paginated response','Sports API timeout','Response too large','Horse not found','Model not configured','Incomplete model output','Invalid model report section'];
+   const reason=stage==='PDF dependency'?'pdfkit is not installed in the deployed backend.':known.includes(e.message)?e.message:controller.signal.aborted?'Request timed out or was cancelled.':safeStatus?`Upstream HTTP ${safeStatus}.`:e instanceof SyntaxError?'Invalid JSON returned.':'See Railway logs for the failing stage.';
+   console.error('[horse-catalog] failed:',{stage,horseCode:norm(horseCode),errorType:e.name,upstreamStatus:safeStatus,reason});
+   if(!res.headersSent&&!res.destroyed)res.status(stage==='Sports API'&&e.message==='Horse not found'?404:502).json({error:`Horse Catalog failed at ${stage}: ${reason}`,stage,upstreamStatus:safeStatus});}finally{clearTimeout(timer);res.off('close',close);active--;}
  };
 }
 module.exports={createHandler,prepare,render,narrative};
