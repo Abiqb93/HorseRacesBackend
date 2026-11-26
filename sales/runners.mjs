@@ -10,7 +10,7 @@
  * yearling in its second, a two-year-old in its third); a horse in training
  * without one can be any age, so it is left out rather than guessed.
  */
-import { KINDS } from "./metrics.mjs";
+import { RECORD_KINDS } from "./metrics.mjs";
 import { nameKey } from "./normalise.mjs";
 
 // Statuses that say something about the horse. A lot withdrawn before the
@@ -35,7 +35,7 @@ function lotsByDam(lots) {
   if (!map) {
     map = new Map();
     for (const l of lots) {
-      if (!l.dam_key || !KINDS.includes(l.sale_type)) continue;
+      if (!l.dam_key || !RECORD_KINDS.includes(l.sale_type)) continue;
       (map.get(l.dam_key) ?? map.set(l.dam_key, []).get(l.dam_key)).push(l);
     }
     byDamCache.set(lots, map);
@@ -55,7 +55,7 @@ export function runnerSales(lots, { dam, sire, foaled }) {
   const sireKey = nameKey(sire);
   return (lotsByDam(lots).get(damKey) ?? [])
     .filter((l) => SHOWN.has(l.status) && foaledOf(l) === year && (!sireKey || !l.sire_key || l.sire_key === sireKey))
-    .sort((a, b) => a.year - b.year || KINDS.indexOf(a.sale_type) - KINDS.indexOf(b.sale_type))
+    .sort((a, b) => a.year - b.year || RECORD_KINDS.indexOf(a.sale_type) - RECORD_KINDS.indexOf(b.sale_type))
     .map((l) => ({
       year: l.year,
       sale: l.sale_name,

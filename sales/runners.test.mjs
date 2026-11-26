@@ -41,3 +41,15 @@ test("no dam or no foaling year, no lots", () => {
   assert.deepEqual(runnerSales([lot({})], { dam: "", sire: "Minzaal", foaled: 2024 }), []);
   assert.deepEqual(runnerSales([lot({})], { dam: "In The Present", sire: "Minzaal", foaled: null }), []);
 });
+
+test("a mare's sale as breeding stock is on her record (26 November 2026: Via Sistina, Tattersalls December Mares 2023)", () => {
+  const nigh = (o) => ({ dam_key: "NIGH", sire_key: "FASTNET ROCK", region: "EU", currency: "GNS", company: "Tattersalls", foaling_year: 2018, ...o });
+  const lots = [
+    nigh({ sale_type: "yearling", year: 2019, status: "sold", price: 5000, sale_name: "Tattersalls December Yearlings", lot: "178" }),
+    nigh({ sale_type: "breeding", year: 2023, status: "sold", price: 2700000, sale_name: "Tattersalls December Mares", lot: "1788" }),
+    // her half-sister by another sire, sold the next year: not hers
+    nigh({ sire_key: "BATED BREATH", foaling_year: 2020, sale_type: "breeding", year: 2024, status: "sold", price: 250000, lot: "1542" }),
+  ];
+  const got = runnerSales(lots, { dam: "Nigh", sire: "Fastnet Rock", foaled: 2018 });
+  assert.deepEqual(got.map((g) => [g.year, g.lot, g.price]), [[2019, "178", 5000], [2023, "1788", 2700000]]);
+});
