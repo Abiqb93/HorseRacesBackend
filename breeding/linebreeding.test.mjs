@@ -293,3 +293,26 @@ test("a sire Arion lists twice is asked for again by the year that fits; failure
   assert.deepEqual(await study.retryFailed(), { requeued: 1 });
   assert.equal(t.grids.get(damKey("MARE B", "DANZIG")).status, "todo");
 });
+
+test("a dam Arion lists more than once is asked for again by her year from the Return of Mares", async () => {
+  const runs = [run("ONE", 2016, "GALILEO", "ALL THE RAGE", "DANEHILL", 95)];
+  const { runQuery } = fakeDb({ runs });
+  const asked = [];
+  const fetchGrid = async ({ name, year }) => {
+    asked.push({ name, year });
+    if (name === "ALL THE RAGE" && !year) {
+      const err = new Error("Arion lists 17 horses called ALL THE RAGE");
+      err.ambiguous = true;
+      err.matches = [];
+      throw err;
+    }
+    return { ancestors: [{ path: "S", name: "Danehill", foaling_year: 1986 }], inbreeding_text: null };
+  };
+  const damYear = async (name, sire) => (name === "ALL THE RAGE" && sire === "DANEHILL" ? 2006 : null);
+  const study = createLinebreedingStudy({ runQuery, fetchGrid, damYear, now: () => new Date("2026-11-26T01:00:00Z"), log: { log() {}, warn() {} } });
+  await study.start({ userId: "TomWilson", sires: ["Galileo"] });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal((await study.tick()).read, "GALILEO");
+  assert.equal((await study.tick()).read, "ALL THE RAGE");
+  assert.deepEqual(asked.slice(1), [{ name: "ALL THE RAGE", year: null }, { name: "ALL THE RAGE", year: 2006 }]);
+});

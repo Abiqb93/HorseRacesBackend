@@ -18552,6 +18552,8 @@ async function linebreeding() {
       runQuery,
       fetchGrid: grids.fetchGrid,
       arionStatus: async () => (await arion()).client.status(),
+      // a dam's foaling year from the Return of Mares, for a name Arion lists twice
+      damYear: async (name, damsire) => (await rom()).mareYear(name, damsire),
       log: console,
     });
   }

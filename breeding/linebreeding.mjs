@@ -391,7 +391,7 @@ export function oldEnough(matches = [], { kind = "dam", lo = null, hi = null } =
 /** The stages planning passes through before the pedigrees are read. */
 export const PLAN_STAGES = new Set(["planning", "choosing sires", "reading runners", "reading the dams' produce"]);
 
-export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () => ({}), log = console, env = process.env, now = () => new Date() }) {
+export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () => ({}), damYear = null, log = console, env = process.env, now = () => new Date() }) {
   let ready = null;
   const ensure = () => {
     ready =
@@ -583,6 +583,20 @@ export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () 
       }
       // several of the name: the one old enough to be this sire or this dam,
       // asked for again by its year (Kodiac (GB) 2001, not Kodiac (CHI) 2012)
+      // a dam Arion lists twice: her foaling year from the Return of Mares,
+      // where one mare of the name is by her sire (26 November 2026: "Arion
+      // lists 17 horses called ALL THE RAGE")
+      if (failure?.ambiguous && next.kind === "dam" && damYear) {
+        const y = await Promise.resolve(damYear(next.name, next.sire_hint ?? null)).catch(() => null);
+        if (y) {
+          try {
+            grid = await ask(y);
+            failure = null;
+          } catch (err) {
+            failure = err;
+          }
+        }
+      }
       if (failure?.ambiguous && Array.isArray(failure.matches)) {
         const crops = (await runQuery(
           next.kind === "sire"
