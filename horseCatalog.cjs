@@ -39,14 +39,57 @@ async function narrative(data,agent,signal){
  for(const k of Object.keys(sections))if(typeof obj[k]!=='string'||!obj[k].trim()||obj[k].length>1800)throw new Error('Invalid model report section');return obj;
 }
 function render(data,report){
- const PDFDocument=require('pdfkit');return new Promise((resolve,reject)=>{
- const h=data.identity,c=data.career,green='#173D33',gold='#B99B61',muted='#53645F';const doc=new PDFDocument({size:'A4',margin:44,bufferPages:true,info:{Title:`Horse Catalog - ${h.horseName||h.horseCode}`,Author:'Blandford Bloodstock'}});const chunks=[];doc.on('data',x=>chunks.push(x));doc.on('error',reject);doc.on('end',()=>resolve(Buffer.concat(chunks)));
- const width=doc.page.width-88;const show=v=>v===null||v===undefined||v===''?'Not recorded':String(v);const heading=t=>{doc.moveDown(.7).font('Helvetica-Bold').fontSize(15).fillColor(green).text(t,{width});doc.moveDown(.25);};const text=t=>doc.font('Helvetica').fontSize(10).fillColor('#23342E').text(show(t),{width,lineGap:3});const sec=k=>{heading(sections[k]);text(report[k]);};
- const table=(headers,rows,weights)=>{const widths=weights.map(w=>width*w);const row=(vals,header)=>{const y=doc.y;const heights=vals.map((v,i)=>doc.font(header?'Helvetica-Bold':'Helvetica').fontSize(9).heightOfString(show(v),{width:widths[i]-12}));const height=Math.max(...heights)+14;if(y+height>doc.page.height-65){doc.addPage();return row(vals,header);}doc.rect(44,y,width,height).fill(header?'#DDE8DF':'#F4F7F4');let x=44;vals.forEach((v,i)=>{doc.font(header?'Helvetica-Bold':'Helvetica').fontSize(9).fillColor(green).text(show(v),x+6,y+7,{width:widths[i]-12});x+=widths[i];});doc.x=44;doc.y=y+height+2;};row(headers,true);rows.forEach(r=>row(r,false));};
- doc.font('Helvetica-Bold').fontSize(28).fillColor(green).text(h.horseName||h.horseCode,{width});text(`${show(h.sireName)} x ${show(h.damName)} | Code ${h.horseCode}`);text(`Age: ${show(h.horseAge)} | Sex: ${({g:'Gelding',c:'Colt',f:'Filly',m:'Mare',h:'Horse'})[h.horseGender]||show(h.horseGender)} | Foaled: ${date(h.foalingDate)}`);doc.moveDown();table(['Starts*','Wins','Top three','Peak rating','Flat master'],[[c.starts,c.wins,c.topThree,c.peak,h.flatMasterRating]],[.2,.2,.2,.2,.2]);sec('executive');sec('pedigree');heading('Recorded pedigree');table(['Relationship','Name','Historical rating'],[['Sire',h.sireName,h.sireHistoricalRating],['Dam',h.damName,h.damHistoricalRating],['Damsire',h.damSireName,h.damSireHistoricalRating]],[.22,.53,.25]);
- doc.addPage();sec('career');heading('Recorded trainers');table(['Trainer','Starts','Wins','Peak'],data.trainers.map(r=>[r.name,r.starts,r.wins,r.peak]),[.55,.15,.15,.15]);heading('Season performance');table(['Season','Starts','Wins','Peak'],data.years.map(r=>[r.name,r.starts,r.wins,r.peak]),[.4,.2,.2,.2]);sec('suitability');
- doc.addPage();sec('purchase');sec('market');heading('Historical market evidence');table(['BSP sample','Net units*','ROI %*'],[[c.bspCoverage,c.bspProfit,c.bspROI]],[.33,.33,.34]);sec('diligence');heading('Methodology and limitations');text(`Global Sports API past performance data. ${data.recordCount} deduplicated records; ${data.excluded} excluded from classified-start metrics. First/last classified result: ${data.first} / ${data.last}. Positive ratings below 200 included. *Returns assume one unit per classified start with valid BSP, before commission, ignoring dead heats. Prize-money currency is not verified. AI interpretation is not independently validated. No verified current fitness, sale availability or live betting recommendation.`);
- const pages=doc.bufferedPageRange();for(let i=0;i<pages.count;i++){doc.switchToPage(pages.start+i);const originalBottom=doc.page.margins.bottom;doc.page.margins.bottom=0;const w=doc.page.width,ht=doc.page.height;doc.rect(0,0,w,32).fill(green);doc.font('Helvetica-Bold').fontSize(10).fillColor('#FFFFFF').text('BLANDFORD BLOODSTOCK',44,11,{lineBreak:false});doc.font('Helvetica').fontSize(9).fillColor(gold).text('HORSE CATALOG / RESEARCH',w-230,11,{width:186,align:'right',lineBreak:false});doc.moveTo(44,ht-36).lineTo(w-44,ht-36).strokeColor(gold).stroke();doc.fontSize(8).fillColor(muted).text(`Historical research | ${new Date().toISOString().slice(0,10)} UTC`,44,ht-25,{lineBreak:false});doc.text(`${i+1} / ${pages.count}`,w-90,ht-25,{width:46,align:'right',lineBreak:false});doc.page.margins.bottom=originalBottom;}doc.end();
+ // Avoid buffered-page switching and implicit cursor-based table layout.
+ // Each page is decorated at creation; content is placed inside explicit bounds.
+ const imported=require('pdfkit');
+ const PDFDocument=typeof imported==='function'?imported:imported.default;
+ if(typeof PDFDocument!=='function')throw new Error('PDFKit export is not a constructor');
+ return new Promise((resolve,reject)=>{
+  const h=data.identity,c=data.career,green='#173D33',gold='#B99B61',muted='#53645F';
+  const doc=new PDFDocument({size:'A4',margin:44,autoFirstPage:false,info:{Title:`Horse Catalog - ${h.horseName||h.horseCode}`,Author:'Blandford Bloodstock'}});
+  const chunks=[];doc.on('data',x=>chunks.push(x));doc.once('error',reject);doc.once('end',()=>resolve(Buffer.concat(chunks)));
+  const left=44;let width,bottom,y,page=0;
+  const show=v=>v===null||v===undefined||v===''?'Not recorded':String(v).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g,'').replace(/[–—]/g,'-').replace(/[‘’]/g,"'").replace(/[“”]/g,'"');
+  const font=(bold,size,color)=>doc.font(bold?'Helvetica-Bold':'Helvetica').fontSize(size).fillColor(color);
+  const put=(s,x,yy,w,bold=false,size=10,color='#23342E',align='left')=>{font(bold,size,color);doc.text(show(s),x,yy,{width:w,align,lineGap:2});};
+  const measure=(s,w,bold=false,size=10)=>{font(bold,size,'#23342E');const n=doc.heightOfString(show(s),{width:w,lineGap:2});if(!Number.isFinite(n))throw new Error('Invalid PDF text height');return n;};
+  function newPage(){
+   doc.addPage();page++;const w=doc.page.width,ht=doc.page.height;width=w-2*left;bottom=ht-72;
+   // Zero bottom margin only while writing footer, to prevent an automatic page break.
+   const old=doc.page.margins.bottom;doc.page.margins.bottom=0;
+   doc.rect(0,0,w,34).fill(green);
+   put('BLANDFORD BLOODSTOCK',left,10,260,true,10,'#FFFFFF');
+   put('HORSE CATALOG / RESEARCH',w-240,10,196,false,9,gold,'right');
+   doc.moveTo(left,ht-42).lineTo(w-left,ht-42).strokeColor(gold).stroke();
+   put(`Historical research | ${new Date().toISOString().slice(0,10)} UTC`,left,ht-31,360,false,8,muted);
+   put(`Page ${page}`,w-120,ht-31,76,false,8,muted,'right');
+   doc.page.margins.bottom=old;y=54;doc.x=left;doc.y=y;
+  }
+  function ensure(n){if(!Number.isFinite(n)||n>bottom-54)throw new Error('PDF content block exceeds page height');if(y+n>bottom)newPage();}
+  function paragraph(s,size=10,bold=false,color='#23342E'){
+   // Split unusually long text at word boundaries so no block overflows a page.
+   const words=show(s).split(/\s+/).flatMap(w=>w.length>100?w.match(/.{1,100}/gu)||[w]:[w]);let part='';
+   const flush=()=>{if(!part)return;const hh=measure(part,width,bold,size);ensure(hh+5);put(part,left,y,width,bold,size,color);y+=hh+5;part='';};
+   for(const word of words){const next=part?`${part} ${word}`:word;if(part&&measure(next,width,bold,size)>Math.min(260,bottom-54)){flush();}part=part?`${part} ${word}`:word;}flush();
+  }
+  function heading(s){const hh=measure(s,width,true,15);ensure(hh+43);y+=9;put(s,left,y,width,true,15,green);y+=hh+6;}
+  function section(k){heading(sections[k]);paragraph(report[k]);}
+  function table(headers,rows,weights){
+   const widths=weights.map(w=>width*w);
+   const height=(vals,bold)=>Math.max(...vals.map((v,i)=>measure(v,widths[i]-12,bold,9)))+14;
+   function draw(vals,bold){const hh=height(vals,bold);ensure(hh+2);doc.rect(left,y,width,hh).fill(bold?'#DDE8DF':'#F4F7F4');let x=left;vals.forEach((v,i)=>{put(v,x+6,y+6,widths[i]-12,bold,9,green);x+=widths[i];});y+=hh+2;}
+   const headerHeight=height(headers,true)+2;
+   ensure(headerHeight+(rows.length?height(rows[0],false)+2:0));draw(headers,true);
+   for(const row of rows){const hh=height(row,false)+2;if(y+hh>bottom){newPage();ensure(headerHeight+hh);draw(headers,true);}draw(row,false);}
+  }
+  try{
+   newPage();paragraph(h.horseName||h.horseCode,26,true,green);paragraph(`${show(h.sireName)} x ${show(h.damName)} | Code ${h.horseCode}`);paragraph(`Age: ${show(h.horseAge)} | Sex: ${({g:'Gelding',c:'Colt',f:'Filly',m:'Mare',h:'Horse'})[h.horseGender]||show(h.horseGender)} | Foaled: ${date(h.foalingDate)}`);
+   table(['Starts*','Wins','Top three','Peak rating','Flat master'],[[c.starts,c.wins,c.topThree,c.peak,h.flatMasterRating]],[.2,.2,.2,.2,.2]);
+   section('executive');section('pedigree');heading('Recorded pedigree');table(['Relationship','Name','Historical rating'],[['Sire',h.sireName,h.sireHistoricalRating],['Dam',h.damName,h.damHistoricalRating],['Damsire',h.damSireName,h.damSireHistoricalRating]],[.22,.53,.25]);
+   newPage();section('career');heading('Recorded trainers');table(['Trainer','Starts','Wins','Peak'],data.trainers.map(r=>[r.name,r.starts,r.wins,r.peak]),[.55,.15,.15,.15]);heading('Season performance');table(['Season','Starts','Wins','Peak'],data.years.map(r=>[r.name,r.starts,r.wins,r.peak]),[.4,.2,.2,.2]);section('suitability');
+   newPage();section('purchase');section('market');heading('Historical market evidence');table(['BSP sample','Net units*','ROI %*'],[[c.bspCoverage,c.bspProfit,c.bspROI]],[.33,.33,.34]);section('diligence');heading('Methodology and limitations');paragraph(`Global Sports API past performance data. ${data.recordCount} deduplicated records; ${data.excluded} excluded from classified-start metrics. First/last classified result: ${data.first} / ${data.last}. Positive ratings below 200 included. *Returns assume one unit per classified start with valid BSP, before commission, ignoring dead heats. Prize-money currency is not verified. AI interpretation is not independently validated. No verified current fitness, sale availability or live betting recommendation.`);
+   doc.end();
+  }catch(e){reject(e);doc.destroy();}
  });
 }
 function createHandler({loadAiAgent}){
@@ -63,7 +106,8 @@ function createHandler({loadAiAgent}){
   }catch(e){const status=Number(e.upstreamStatus || e.status);const safeStatus=Number.isInteger(status)&&status>=400&&status<=599?status:null;
    const known=['Unexpected sports data format','Incomplete paginated response','Sports API timeout','Response too large','Horse not found','Model not configured','Incomplete model output','Invalid model report section'];
    const reason=stage==='PDF dependency'?'pdfkit is not installed in the deployed backend.':known.includes(e.message)?e.message:controller.signal.aborted?'Request timed out or was cancelled.':safeStatus?`Upstream HTTP ${safeStatus}.`:e instanceof SyntaxError?'Invalid JSON returned.':'See Railway logs for the failing stage.';
-   console.error('[horse-catalog] failed:',{stage,horseCode:norm(horseCode),errorType:e.name,upstreamStatus:safeStatus,reason});
+   const redact=v=>{let out=String(v||'');for(const key of [process.env.SPORTS_API,process.env.ANTHROPIC_API_KEY])if(key)out=out.split(key).join('[REDACTED]');return out.slice(0,2500);};
+   console.error('[horse-catalog] failed:',{stage,horseCode:norm(horseCode),errorType:e.name,upstreamStatus:safeStatus,reason,...(stage==='PDF rendering'?{pdfError:redact(e.message),pdfStack:redact(e.stack)}:{})});
    if(!res.headersSent&&!res.destroyed)res.status(stage==='Sports API'&&e.message==='Horse not found'?404:502).json({error:`Horse Catalog failed at ${stage}: ${reason}`,stage,upstreamStatus:safeStatus});}finally{clearTimeout(timer);res.off('close',close);active--;}
  };
 }
