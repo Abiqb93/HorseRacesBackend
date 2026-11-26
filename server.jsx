@@ -18145,6 +18145,11 @@ if (String(process.env.FRANCE_CRON || "").toLowerCase() === "on") {
 // ---------------------------------------------------------------------------
 const loadAiAgent = () => import("./ai/agent.mjs");
 
+// Horse Catalog: shared Claude client, Sports API and server-side PDF generation.
+app.post("/api/ai/horse-catalog", express.json({ limit: "16kb" }),
+  require("./horseCatalog.cjs").createHandler({ db, bcrypt, loadAiAgent }));
+
+
 
 
 /**
