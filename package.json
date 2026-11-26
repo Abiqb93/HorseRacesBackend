@@ -34,9 +34,14 @@
     "node-cron": "^4.6.0",
     "nodemailer": "^7.0.5",
     "openai": "^6.26.0",
-    "pdfkit": "^0.21.0",
+    "pdfkit": "0.17.2",
     "playwright-core": "^1.63.0",
     "redis": "^4.7.0",
     "sqlite3": "^5.1.7"
+  },
+  "overrides": {
+    "pdfkit": {
+      "fontkit": "2.0.4"
+    }
   }
 }
