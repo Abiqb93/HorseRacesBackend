@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -188,4 +189,20 @@ test("a study's grid is made without being kept under My Reports", async () => {
   await f.fetchGrid({ name: "Prudenzia", year: 2005, country: "IRE", userId: "linebreeding-study", keep: false }).catch(() => {});
   const report = calls.find((c) => c[0] === "report");
   assert.equal(report[1].keep, false);
+});
+
+test("a name of more than one word is read whole from the heading (26 November 2026)", () => {
+  const page = (head) => `<html><b>${head}</b><br/>by Hard Spun - Some Dam, by A Sire<table></table></html>`;
+  assert.equal(parseSubject(page("ALLEGHENY CREEK (USA) 2010 Bay mare")).name, "Allegheny Creek");
+  assert.equal(parseSubject(page("ALLEGHENY CREEK (USA) 2010 Bay mare")).year, 2010);
+  assert.equal(parseSubject(page("SEA THE STARS (IRE) 2006 Bay colt")).name, "Sea The Stars");
+  assert.equal(parseSubject(page("ALL FOR LAURA 2011 Bay mare")).name, "All For Laura");
+  assert.equal(parseSubject(page("LOPE DE VEGA (IRE)")).name, "Lope De Vega");
+  assert.equal(parseSubject(page("FRANKEL (GB) 2008 Bay colt")).name, "Frankel");
+});
+
+test("a cell with a name in it after the grid is not one more ancestor", () => {
+  const html = fs.readFileSync(new URL("./fixtures/frankel-7x7.html", import.meta.url), "utf8");
+  const extra = html.replace(/<\/table>/i, "</table><table><tr><td>Northern Dancer (CAN) 1961</td></tr></table>");
+  assert.equal(parseGrid(extra, { generations: 7 }).ancestors.length, 254);
 });

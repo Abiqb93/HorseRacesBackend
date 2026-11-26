@@ -92,7 +92,14 @@ export function parseAncestors(html, generations = 5) {
   const BY_ROWSPAN = byRowspan(generations);
   const counts = new Array(generations + 1).fill(0);
   const out = [];
-  for (const m of String(html ?? "").matchAll(/<td\b([^>]*)>([\s\S]*?)<\/td>/gi)) {
+  // the grid's own table only: a cell after it with a horse's name in it (a
+  // note, a table of lines) read as one more ancestor in the last generation
+  // ("127 ancestors, 2/4/8/16/32/65", 26 November 2026)
+  const page = String(html ?? "");
+  const start = page.search(/<td\b[^>]*rowspan/i);
+  const end = start >= 0 ? page.indexOf("</table>", start) : -1;
+  const grid = start >= 0 && end > start ? page.slice(page.lastIndexOf("<table", start) >= 0 ? page.lastIndexOf("<table", start) : 0, end) : page;
+  for (const m of grid.matchAll(/<td\b([^>]*)>([\s\S]*?)<\/td>/gi)) {
     const rowspan = Number(/rowspan\s*=\s*"?(\d+)/i.exec(m[1])?.[1] ?? 1);
     const generation = BY_ROWSPAN[rowspan];
     const lines = m[2].split(/<br\s*\/?>/i).map(clean).filter(Boolean);
@@ -130,7 +137,16 @@ export function parseSubject(html) {
   const above = String(html ?? "").split(/<table\b/i)[0];
   const h = above.match(/<b>\s*([^<]+?)\s*<\/b>\s*(?:<br\s*\/?>\s*)?(by\s+[^<]+)?/i);
   if (!h) return null;
-  const head = clean(h[1]).match(/^(.+?)(?:\s+\(([A-Za-z]{2,3})\))?(?:\s+(1[89]\d\d|20\d\d))?(?:\s+(.*))?$/);
+  // the name runs to her country or, without one, to her year: a lazy match
+  // alone stopped at the first word, and "ALLEGHENY CREEK (USA) 2010 Bay mare"
+  // read as Allegheny (26 November 2026)
+  const text = clean(h[1]);
+  const head =
+    text.match(/^(.+?)\s+\(([A-Za-z]{2,3})\)(?:\s+(1[89]\d\d|20\d\d))?(?:\s+(.*))?$/) ??
+    (() => {
+      const m = text.match(/^(.+?)\s+(1[89]\d\d|20\d\d)(?:\s+(.*))?$/);
+      return m ? [m[0], m[1], undefined, m[2], m[3]] : [text, text, undefined, undefined, undefined];
+    })();
   if (!head || !head[1]) return null;
   const words = clean(head[4]).split(" ").filter(Boolean);
   const sex = words.length ? words[words.length - 1].toLowerCase() : null;

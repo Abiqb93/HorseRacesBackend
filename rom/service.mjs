@@ -255,13 +255,31 @@ export function createRomService({ runQuery, log = console, manifestPath = MANIF
     return out;
   }
 
+  /**
+   * A mare's foaling year from the return, by her name and her sire: the
+   * one mare of the name by that sire, or null where there is none or more
+   * than one. The linebreeding study asks it of a dam Arion lists twice.
+   */
+  async function mareYear(name, sire) {
+    const ix = await ready();
+    const k = nameKey(name);
+    const want = sire ? nameKey(sire) : null;
+    const years = new Set();
+    for (const [mk, m] of ix.mares) {
+      if (!mk.startsWith(`${k}|`) || !m.myob) continue;
+      if (want && (!m.msire || nameKey(m.msire) !== want)) continue;
+      years.add(Number(m.myob));
+    }
+    return years.size === 1 ? [...years][0] : null;
+  }
+
   /** A mare's coverings in the return. */
   async function mare(name, yob = null) {
     const ix = await ready();
     return { resultsThrough: ix.resultsThrough, firstRunners: ix.firstRunners, feeYears: ix.feeYears, feeFrom: ix.feeFrom, ...mareOf(ix, name, yob) };
   }
 
-  return { ensure, build, ready, acceptSeed, status, books, stallion, stallionMares, stallions, mare, manifest };
+  return { ensure, build, ready, acceptSeed, status, books, stallion, stallionMares, stallions, mare, mareYear, manifest };
 }
 
 export default { createRomService, SEED_TABLE };
