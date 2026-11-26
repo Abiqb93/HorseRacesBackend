@@ -29,6 +29,12 @@
  */
 
 export const KINDS = ["foal", "yearling", "2yo", "hit"];
+/**
+ * The kinds a horse's own sale-ring record reads: the market's four and breeding stock too, so a mare's sale as a
+ * broodmare is on her profile (26 November 2026: "Check why the sales history for Via Sistina is not fully there. Eg
+ * December sale mares": her 2,700,000gns at the Tattersalls December Mares Sale 2023 was in the lots table and left out).
+ */
+export const RECORD_KINDS = [...KINDS, "breeding"];
 const SOLD = (l) => l.status === "sold" && Number(l.price_gbp) > 0;
 const OFFERED = (l) => !["withdrawn", "catalogued"].includes(l.status);
 
@@ -365,13 +371,15 @@ export function hitTable(lots, { region = null, window = 3 } = {}) {
  * means her foals have made 40% more than their sires' stock did.
  */
 export function damRecord(lots, damKey, { sireMedians = new Map() } = {}) {
-  const mine = lots.filter((l) => l.dam_key === damKey && KINDS.includes(l.sale_type));
+  const mine = lots.filter((l) => l.dam_key === damKey && RECORD_KINDS.includes(l.sale_type));
   const ratios = [];
   const items = mine
     .sort((a, b) => a.year - b.year)
     .map((l) => {
       const ref = sireMedians.get(`${l.sire_key}|${l.sale_type}|${l.region}|${l.year}`);
-      const ratio = SOLD(l) && ref ? Number(l.price_gbp) / ref : null;
+      // the dam's index is her produce against their sires' markets as foals, yearlings, 2yos and horses in training:
+      // a daughter sold as breeding stock is on the record and not in the index
+      const ratio = SOLD(l) && ref && KINDS.includes(l.sale_type) ? Number(l.price_gbp) / ref : null;
       if (ratio) ratios.push(ratio);
       return { year: l.year, sale: l.sale_name, type: l.sale_type, lot: l.lot, sire: l.sire, sex: l.sex, status: l.status, price: l.price, currency: l.currency, priceGbp: l.price_gbp, vendor: l.vendor ?? null, buyer: l.buyer ?? null, foaled: l.foaling_year ?? null, sireMedianGbp: ref ? Math.round(ref) : null, ratio: round(ratio, 2) };
     });
@@ -403,4 +411,4 @@ export function marketMedians(lots) {
   return new Map([...groups].map(([k, ps]) => [k, median(ps)]));
 }
 
-export default { KINDS, median, figures, feeFinder, marketTable, marketLines, sireTable, verdictOf, hitTable, damRecord, sireMedians, marketMedians };
+export default { KINDS, RECORD_KINDS, median, figures, feeFinder, marketTable, marketLines, sireTable, verdictOf, hitTable, damRecord, sireMedians, marketMedians };

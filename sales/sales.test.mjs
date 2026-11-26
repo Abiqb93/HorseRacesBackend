@@ -210,6 +210,11 @@ test("a mare's produce against its sires' medians: her commercial index", () => 
   assert.equal(rec.sold, 1);
   assert.equal(rec.lots[1].ratio, 3, "1.2m against the 400k median of Dubawi's yearlings that year");
   assert.ok(rec.index > 1.5);
+  // a daughter sold as breeding stock is on the record, and not in the index (26 November 2026)
+  const withMare = damRecord([...lots, lot({ sire_key: "DUBAWI", dam_key: "PRUDENZIA", sale_type: "breeding", year: 2025, price_gbp: 9000000 })], "PRUDENZIA", { sireMedians: sireMedians(lots) });
+  assert.equal(withMare.lots.length, 3);
+  assert.equal(withMare.lots.find((l) => l.type === "breeding").ratio, null);
+  assert.equal(withMare.index, rec.index, "the index is the produce's market, unmoved");
 });
 
 test("a lot's row: the same lot hashes the same; every column has a value", () => {
