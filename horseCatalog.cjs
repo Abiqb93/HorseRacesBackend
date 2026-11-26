@@ -49,15 +49,14 @@ function render(data,report){
  const pages=doc.bufferedPageRange();for(let i=0;i<pages.count;i++){doc.switchToPage(pages.start+i);const originalBottom=doc.page.margins.bottom;doc.page.margins.bottom=0;const w=doc.page.width,ht=doc.page.height;doc.rect(0,0,w,32).fill(green);doc.font('Helvetica-Bold').fontSize(10).fillColor('#FFFFFF').text('BLANDFORD BLOODSTOCK',44,11,{lineBreak:false});doc.font('Helvetica').fontSize(9).fillColor(gold).text('HORSE CATALOG / RESEARCH',w-230,11,{width:186,align:'right',lineBreak:false});doc.moveTo(44,ht-36).lineTo(w-44,ht-36).strokeColor(gold).stroke();doc.fontSize(8).fillColor(muted).text(`Historical research | ${new Date().toISOString().slice(0,10)} UTC`,44,ht-25,{lineBreak:false});doc.text(`${i+1} / ${pages.count}`,w-90,ht-25,{width:46,align:'right',lineBreak:false});doc.page.margins.bottom=originalBottom;}doc.end();
  });
 }
-function createHandler({db,bcrypt,loadAiAgent}){
+function createHandler({loadAiAgent}){
  let active=0;const cache=new Map(),attempts=new Map();let windowStart=Date.now(),count=0;
  return async(req,res)=>{
-  const {horseCode,userId,password}=req.body||{};if(typeof horseCode!=='string'||!/^\d{1,12}$/.test(horseCode)||!/[1-9]/.test(horseCode))return res.status(400).json({error:'Invalid horse code.'});
-  if(typeof userId!=='string'||!userId.trim()||userId.length>64||typeof password!=='string'||!password||password.length>256)return res.status(401).json({error:'Confirm your account password to generate a report.'});
+  const {horseCode}=req.body||{};if(typeof horseCode!=='string'||!/^\d{1,12}$/.test(horseCode)||!/[1-9]/.test(horseCode))return res.status(400).json({error:'Invalid horse code.'});
   if(!process.env.SPORTS_API||!process.env.ANTHROPIC_API_KEY)return res.status(503).json({error:'Horse Catalog credentials are not configured.'});
   const now=Date.now();if(now-windowStart>=3600000){windowStart=now;count=0;attempts.clear();}const key=String(req.ip||'unknown');const prior=attempts.get(key)||0;if(prior>=30||count>=60||active>=2)return res.status(429).json({error:'Catalog request limit reached. Try again later.'});attempts.set(key,prior+1);count++;active++;
   const controller=new AbortController();const close=()=>{if(!res.writableEnded)controller.abort();};res.on('close',close);const timer=setTimeout(()=>controller.abort(),150000);
-  try{const users=await new Promise((resolve,reject)=>db.query('SELECT password_hash FROM UserAccounts WHERE user_id = ? LIMIT 1',[userId],(e,r)=>e?reject(e):resolve(r)));if(!users.length||!await bcrypt.compare(password,users[0].password_hash))return res.status(401).json({error:'Account password is incorrect.'});
+  try{
    const code=norm(horseCode);let entry=cache.get(code);if(!entry||now-entry.at>3600000){const horse=await fetchHorse(code,process.env.SPORTS_API,controller.signal);const data=prepare(horse);const agent=await loadAiAgent();const report=await narrative(data,agent,controller.signal);const pdf=await render(data,report);entry={at:Date.now(),pdf};if(cache.size>=50)cache.delete(cache.keys().next().value);cache.set(code,entry);}if(!controller.signal.aborted)res.set({'Content-Type':'application/pdf','Content-Disposition':`attachment; filename="Horse-Catalog-${code}.pdf"`,'Cache-Control':'private, no-store'}).send(entry.pdf);
   }catch(e){console.error('[horse-catalog] failed:',e.name||'Error',e.status||'');if(!res.headersSent&&!res.destroyed)res.status(e.status===404?404:502).json({error:e.status===404?'Horse not found.':'Unable to generate the catalog. Check service configuration or try again.'});}finally{clearTimeout(timer);res.off('close',close);active--;}
  };
