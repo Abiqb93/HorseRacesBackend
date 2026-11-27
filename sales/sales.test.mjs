@@ -464,3 +464,15 @@ test("a horse the new reading files under another key loses its old row; nothing
     ],
   );
 });
+
+test("the Australian and New Zealand workbook: Karaka prices are read back to the hammer", async () => {
+  const { auReadings, fromAuRow: read } = await import("./normalise.mjs");
+  const rows = [
+    { SaleName: "Karaka Book 1", Year: 2019, LOT: 1, Sire: "Savabeel", Dam: "A", Buyer: "Go Racing", Price: 234000, Sold: 1, BirthYear: 2017 },
+    { SaleName: "Karaka Book 1", Year: 2019, LOT: 2, Sire: "Savabeel", Dam: "B", Buyer: "Te Akau", Price: 67500, Sold: 1, BirthYear: 2017 },
+    { SaleName: "MM GC Yearling Sale", Year: 2019, LOT: 3, Sire: "Snitzel", Dam: "C", Buyer: "X", Price: 85000, Sold: 1, BirthYear: 2017 },
+  ];
+  const readings = auReadings(rows);
+  assert.deepEqual(rows.map((r) => read(r, readings).price), [260000, 75000, 85000]);
+  assert.equal(read(rows[0]).price, 234000);
+});

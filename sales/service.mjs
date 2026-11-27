@@ -790,6 +790,9 @@ export function createSalesService({ runQuery, log = console, fetchImpl = fetch,
     );
     const keep = lines.filter((l) => !housed.has(`${l.sale_key}|${l.year}`));
     await upsertLots(runQuery, keep);
+    // A lot whose sale was read again under a new key (Karaka's Select and
+    // Festival sales) leaves its old row behind otherwise.
+    for (const source of new Set(keep.map((l) => l.source))) await dropRekeyed(runQuery, { source, lots: keep.filter((l) => l.source === source) });
     await logImport(runQuery, { source: part.source ?? "seed", saleLabel: part.name, lots: keep.length, sold: keep.filter((l) => l.status === "sold").length, note: `seed part; ${lines.length - keep.length} held by a house feed` });
     return { accepted: true, part: part.name, rows: keep.length, skipped: lines.length - keep.length };
   }
