@@ -6592,10 +6592,45 @@ db.query(
     loadBookings()
       .then(({ ensureBookingsSchema }) => ensureBookingsSchema(runQuery))
       .catch((e) => console.error("bookings schema check failed:", e.message));
+    // Matings notes, one per mare per season, and the text each save replaced.
+    loadMareNotes()
+      .then(({ ensureNotesSchema }) => ensureNotesSchema(runQuery))
+      .catch((e) => console.error("mare notes schema check failed:", e.message));
   },
 );
 
 const loadMares = () => import("./breeding/mares.mjs");
+const loadMareNotes = () => import("./breeding/mareNotes.mjs");
+
+// A mare's matings notes, every season's, for one user: ?mare=<name>&year=<foaling year>.
+app.get("/api/mare-notes/:userId", async (req, res) => {
+  try {
+    const { mareKey, listNotes } = await loadMareNotes();
+    const key = mareKey(req.query.mare, req.query.year);
+    if (!key) return res.status(400).json({ error: "mare is required" });
+    res.json({ mare: key, notes: await listNotes(runQuery, String(req.params.userId), key) });
+  } catch (err) {
+    console.error("mare notes read failed:", err.message);
+    res.status(500).json({ error: "database error" });
+  }
+});
+
+// Save one season's note: { mare, year, season, body }.
+app.put("/api/mare-notes/:userId", express.json({ limit: "256kb" }), async (req, res) => {
+  try {
+    const { readSave, saveNote } = await loadMareNotes();
+    let save;
+    try {
+      save = readSave(req.body ?? {});
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+    res.json({ ok: true, note: await saveNote(runQuery, String(req.params.userId), save) });
+  } catch (err) {
+    console.error("mare notes write failed:", err.message);
+    res.status(500).json({ error: "database error" });
+  }
+});
 
 // A mare's pedigree, fetched in the background the moment she is added, for
 // every way she can be added. See breeding/pedigreeFetch.mjs.
