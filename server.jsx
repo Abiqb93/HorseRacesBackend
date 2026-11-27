@@ -18612,6 +18612,30 @@ app.post("/api/studies/linebreeding/start", express.json({ limit: "16kb" }), asy
   }
 });
 
+// A grid page that did not read, as Arion sent it, for fixing the reader:
+// the one the study kept (?key=, or the latest), or with ?name= a dam or
+// sire fetched now at six generations (one Arion report, not kept).
+app.get("/api/studies/linebreeding/page", async (req, res) => {
+  if (!(await arionBuyer(req.query.userId))) return res.status(403).json({ error: "Only a signed-in member of the team can read the study's pages." });
+  try {
+    const name = String(req.query.name ?? "").trim();
+    if (name) {
+      try {
+        const g = await (await arionGrid()).fetchGrid({ name, sire: req.query.sire ? String(req.query.sire) : null, year: Number(req.query.year) || null, generations: Number(req.query.generations) || 6, userId: "linebreeding-study", keep: false });
+        return res.json({ read: true, ancestors: g.ancestors?.length ?? null });
+      } catch (err) {
+        if (!err.html) return res.status(502).json({ error: err.message });
+        return res.type("html").send(err.html);
+      }
+    }
+    const p = await (await linebreeding()).page(req.query.key ? String(req.query.key) : null);
+    if (!p) return res.status(404).json({ error: "no page kept" });
+    res.type("html").send(p.html);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // the failed grids back in the queue, after a fix to how a horse is found
 app.post("/api/studies/linebreeding/retry", express.json({ limit: "16kb" }), async (req, res) => {
   if (!(await arionBuyer(req.body?.userId))) return res.status(403).json({ error: "Only a signed-in member of the team can retry the study's grids." });

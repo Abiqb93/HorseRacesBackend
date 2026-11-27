@@ -206,3 +206,8 @@ test("a cell with a name in it after the grid is not one more ancestor", () => {
   const extra = html.replace(/<\/table>/i, "</table><table><tr><td>Northern Dancer (CAN) 1961</td></tr></table>");
   assert.equal(parseGrid(extra, { generations: 7 }).ancestors.length, 254);
 });
+
+test("a page that will not read as a grid goes with the error, to be looked at", async () => {
+  const { loadArion } = fakeArion({ page: "<html><b>PRUDENZIA (IRE) 2005 Bay filly</b><table><tr><td rowspan=\"16\">Dansili</td></tr></table></html>" });
+  await assert.rejects(createGridFetcher({ loadArion, log: { log() {} } }).fetchGrid({ name: "Prudenzia", year: 2005, country: "IRE" }), (e) => /did not read/.test(e.message) && /PRUDENZIA/.test(e.html));
+});

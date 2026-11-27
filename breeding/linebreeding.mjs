@@ -314,6 +314,13 @@ export const produceSql = (dams) =>
 /* --------------------------------------------------------------- tables */
 
 export const TABLES = [
+  // the pages Arion sent that did not read as a grid, kept to be looked at
+  `CREATE TABLE IF NOT EXISTS study_lb_pages (
+     grid_key VARCHAR(191) NOT NULL PRIMARY KEY,
+     html MEDIUMTEXT NOT NULL,
+     error TEXT NULL,
+     saved_at DATETIME NOT NULL
+   )`,
   `CREATE TABLE IF NOT EXISTS study_lb_state (
      id TINYINT NOT NULL PRIMARY KEY,
      enabled TINYINT NOT NULL DEFAULT 0,
@@ -537,6 +544,15 @@ export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () 
     };
   }
 
+  /** A page that did not read as a grid, as Arion sent it; the latest when no key is given. */
+  async function page(key = null) {
+    await ensure();
+    const rows = key
+      ? await runQuery("SELECT grid_key, html, error, saved_at FROM study_lb_pages WHERE grid_key = ?", [key])
+      : await runQuery("SELECT grid_key, html, error, saved_at FROM study_lb_pages ORDER BY saved_at DESC LIMIT 1");
+    return rows?.[0] ?? null;
+  }
+
   /** The failed grids back in the queue, to be asked for again. */
   async function retryFailed() {
     await ensure();
@@ -621,6 +637,9 @@ export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () 
         );
         return { read: next.name };
       }
+      if (failure?.html) {
+        await runQuery("REPLACE INTO study_lb_pages (grid_key, html, error, saved_at) VALUES (?, ?, ?, ?)", [next.grid_key, String(failure.html).slice(0, 4_000_000), String(failure.message).slice(0, 500), now()]).catch(() => {});
+      }
       const tries = Number(next.tries) + 1;
       // a name Arion cannot tell apart, or does not hold, will not change by asking again
       const final = tries >= MAX_TRIES || failure.ambiguous || failure.notFound;
@@ -669,5 +688,5 @@ export function createLinebreedingStudy({ runQuery, fetchGrid, arionStatus = () 
     return { ...reading, mostRepeated: mostRepeated(foals.map((f) => f.pedigree), { top: 12 }), status: await status() };
   }
 
-  return { plan, start, stop, status, tick, results, retryFailed };
+  return { plan, start, stop, status, tick, results, retryFailed, page };
 }

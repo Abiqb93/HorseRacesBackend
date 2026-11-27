@@ -343,7 +343,14 @@ export function createGridFetcher({ loadArion, log = console }) {
     if (!page) throw new Error(out?.note || `Arion built the ${generations}x${generations} grid but handed over no page for it`);
     const got = await client.file(page.id);
     const html = typeof got?.body === "string" ? got.body : decodeHtml(got?.body ?? Buffer.alloc(0), got?.type ?? "");
-    const parsed = parseGrid(html, { generations });
+    let parsed;
+    try {
+      parsed = parseGrid(html, { generations });
+    } catch (err) {
+      // the page goes with the error, so a grid that will not read can be looked at
+      err.html = html;
+      throw err;
+    }
     if (parsed.subject?.name && normaliseName(parsed.subject.name) !== bareKey(name)) {
       throw new Error(`Arion's grid is for ${parsed.subject.name}, not ${name}`);
     }
