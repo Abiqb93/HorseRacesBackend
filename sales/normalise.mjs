@@ -128,9 +128,12 @@ const SALES = [
   [/^\(none\)$|magic|inglis|nzb|htba/i, /inglis classic|^classic/i, "ING-CLASSIC", "Inglis Classic", 2, "Inglis"],
   [/^\(none\)$|magic|inglis|nzb|htba/i, /^premier yearling sale$|inglis premier/i, "ING-PREMIER", "Inglis Premier", 2, "Inglis"],
   [/^\(none\)$|magic|inglis|nzb|htba/i, /melbourne vobis|vobis gold/i, "ING-VOBIS", "Inglis Melbourne VOBIS Gold", 3, "Inglis"],
-  [/^\(none\)$|magic|inglis|nzb|htba/i, /festival yearling/i, "ING-FEST", "Inglis Festival", 3, "Inglis"],
+  // Karaka's Select and Festival sales (2015-2017) became Books 2 and 3 in
+  // 2018. The workbook files them with no house; their prices read as
+  // Karaka's do (0.90 of the hammer for every one of those sale-years).
+  [/^\(none\)$|magic|inglis|nzb|htba/i, /festival yearling/i, "NZB-B3", "NZB Karaka Book 3", 3, "NZB"],
   [/^\(none\)$|magic|inglis|nzb|htba/i, /scone yearling/i, "ING-SCONE", "Inglis Scone", 3, "Inglis"],
-  [/^\(none\)$|magic|inglis|nzb|htba/i, /^select yearling/i, "ING-SELECT", "Inglis Select", 3, "Inglis"],
+  [/^\(none\)$|magic|inglis|nzb|htba/i, /^select yearling/i, "NZB-B2", "NZB Karaka Book 2", 2, "NZB"],
   [/^\(none\)$|magic|inglis|nzb|htba/i, /htba/i, "HTBA", "HTBA Yearling Sale", 3, "Hunter Thoroughbred Breeders"],
   [/^\(none\)$|magic|inglis|nzb|htba/i, /karaka book 1/i, "NZB-B1", "NZB Karaka Book 1", 1, "NZB"],
   [/^\(none\)$|magic|inglis|nzb|htba/i, /karaka book 2/i, "NZB-B2", "NZB Karaka Book 2", 2, "NZB"],
@@ -365,12 +368,88 @@ export function fromUsRow(r) {
 }
 
 /**
+ * The Australian and New Zealand workbook's price column, read back to the
+ * hammer price. Its Karaka prices were filed at a fixed share of the hammer:
+ * 0.90 for the 2018-2023 sales and 0.87 for 2024 and 2025 (NZ$153,000 in the
+ * workbook is the NZ$170,000 NZB's own results give), while the Australian
+ * houses' prices are the hammer itself. Measured on the whole file: each
+ * sale-year takes the reading that gives round prices, as the European
+ * workbook does; every Karaka sale-year reads round for 99% of its lots or
+ * more under its reading, and every Australian one under its own price.
+ */
+export const AU_READINGS = {
+  price: (p) => p,
+  "price/0.90": (p) => p / 0.9,
+  "price/0.87": (p) => p / 0.87,
+};
+
+const auPrice = (p, reading) => (p > 0 && reading && reading !== "price" ? hammer(AU_READINGS[reading](p)) : p);
+
+/** The reading that gives round prices for most of a sale-year's prices. */
+export function bestAuReading(prices) {
+  // Ties (a handful of prices round under more than one reading) go to the
+  // reading with more prices on a 5,000 step, where hammers cluster.
+  const coarse = (v) => v > 0 && Math.abs(v - Math.round(v / (v < 10000 ? 500 : 5000)) * (v < 10000 ? 500 : 5000)) < 0.51;
+  let best = null;
+  for (const [name, read] of Object.entries(AU_READINGS)) {
+    let hits = 0;
+    let fives = 0;
+    let n = 0;
+    for (const p of prices) {
+      if (!(p > 0)) continue;
+      n += 1;
+      if (isRound(read(p))) hits += 1;
+      if (coarse(read(p))) fives += 1;
+    }
+    if (n && (!best || hits > best.hits || (hits === best.hits && fives > best.fives))) best = { name, hits, fives, n, share: hits / n };
+  }
+  return best;
+}
+
+/** The readings for the Australian and New Zealand workbook, one per sale and year. */
+export function auReadings(rows) {
+  const groups = new Map();
+  for (const r of rows) {
+    const p = num(r.Price);
+    if (!(p > 0) || !(num(r.Sold) > 0)) continue;
+    const k = `${r.SaleName}|${r.Year}`;
+    const list = groups.get(k) ?? [];
+    list.push(p);
+    groups.set(k, list);
+  }
+  const out = new Map();
+  for (const [k, prices] of groups) out.set(k, bestAuReading(prices));
+  return out;
+}
+
+/**
+ * A lot already read from the workbook, its price put back to the hammer
+ * under the sale-year's reading and its sterling figure worked again. For
+ * the seed parts, which were written before the reading was known.
+ */
+export function rereadAuLot(lot, reading) {
+  const read = AU_READINGS[reading] ?? AU_READINGS.price;
+  const sale = saleOf(null, lot.sale_label);
+  const moved = sale && sale.key !== lot.sale_key;
+  const reprice = lot.price > 0 && reading && reading !== "price";
+  if (!moved && !reprice) return lot;
+  const { price_gbp: _old, ...rest } = lot;
+  const where = moved ? { sale_key: sale.key, sale_name: sale.name, sale_tier: sale.tier, company: sale.company, region: sale.region, currency: sale.currency } : {};
+  return withSterling({ ...rest, ...where, price: reprice ? hammer(read(lot.price)) : lot.price });
+}
+
+/** The sale a lot of the workbook belongs under, as the sale table now reads its label. */
+export function saleKeyOfAuLot(lot) {
+  return saleOf(null, lot.sale_label)?.key ?? lot.sale_key;
+}
+
+/**
  * The Australian and New Zealand yearling workbook (2015-2025): Magic
  * Millions, Inglis, NZB Karaka and the regional sales; the race record of
  * each horse that ran. A southern yearling is sold in the year after its
  * birth year's spring, so its foaling year is the sale year less two.
  */
-export function fromAuRow(r) {
+export function fromAuRow(r, readings) {
   const year = num(r.Year);
   const sale = saleOf(null, r.SaleName);
   if (!sale || !year) return null;
@@ -400,7 +479,7 @@ export function fromAuRow(r) {
     vendor: str(r.Vendor),
     buyer: str(r.Buyer),
     status,
-    price: status === "sold" ? num(r.Price) : null,
+    price: status === "sold" ? auPrice(num(r.Price), readings?.get(`${r.SaleName}|${r.Year}`)?.name) : null,
     bid: status === "rna" ? reserve : null,
     currency: sale.currency,
     record: ran ? { runner: num(r.Runner), winner: num(r.Winner), sw: num(r["StakesWinner"]), gw: num(r["Group Winner"]), g1w: num(r["Grp1 Winner"]) } : null,
@@ -440,5 +519,5 @@ export const lotKey = (l) => `${l.sale_key}|${l.year}|${l.sale_label ?? ""}|${l.
 
 export default {
   nameKey, horseName, sexOf, saleOf, currencyOf, regionOf, statusOf, EU_READINGS, bestReading, hammer,
-  euReadings, fromEuRow, fromUsRow, fromAuRow, feeHintsFromEu, lotKey,
+  euReadings, fromEuRow, fromUsRow, fromAuRow, AU_READINGS, bestAuReading, auReadings, rereadAuLot, saleKeyOfAuLot, feeHintsFromEu, lotKey,
 };
